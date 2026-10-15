@@ -5,27 +5,13 @@ export default function App() {
   const [view, setView] = useState('linear');
   const [filter, setFilter] = useState('all');
   const [games, setGames] = useState(initialGames);
-  const [h2hData, setH2hData] = useState({
-    myRoster: initialH2H.myRoster.map(p => ({
-      ...p,
-      id: p.name.toLowerCase().includes('barkley') ? 'barkley' : 
-          p.name.toLowerCase().includes('allen') ? 'allen' : 
-          p.name.toLowerCase().includes('jefferson') ? 'jefferson' : p.name,
-      pts: p.name.toLowerCase().includes('barkley') ? 14.8 : 0.0
-    })),
-    opponents: initialH2H.opponents.map((p, idx) => ({
-      ...p,
-      id: p.name.toLowerCase().includes('kelce') ? 'kelce' : `opp_${idx}`,
-      pts: 0.0
-    }))
-  });
-
+  const [h2hData, setH2hData] = useState(initialH2H);
   const [selectedPlayerId, setSelectedPlayerId] = useState('barkley');
+  const [drawerPlayer, setDrawerPlayer] = useState(null);
   const [recentFlash, setRecentFlash] = useState(null);
 
-  // Synchronized Scoring Simulator
+  // Synchronized Scoring Engine
   const handleSimulatePlay = (ptsDelta, label) => {
-    // 1. Update Linear Slate Games
     setGames(prevGames =>
       prevGames.map(game => ({
         ...game,
@@ -39,7 +25,6 @@ export default function App() {
       }))
     );
 
-    // 2. Synchronize H2H Rosters & Scores
     setH2hData(prev => ({
       myRoster: prev.myRoster.map(p => 
         p.id === selectedPlayerId ? { ...p, pts: Math.max(0, +(p.pts + ptsDelta).toFixed(1)) } : p
@@ -49,12 +34,10 @@ export default function App() {
       )
     }));
 
-    // Trigger pulse
     setRecentFlash({ id: selectedPlayerId, label, delta: ptsDelta });
     setTimeout(() => setRecentFlash(null), 1800);
   };
 
-  // Compile full player list for simulator dropdown
   const linearPlayers = games.flatMap(g => g.players);
   const allSelectable = [
     ...linearPlayers,
@@ -68,7 +51,6 @@ export default function App() {
   ];
   const activePlayer = allSelectable.find(p => p.id === selectedPlayerId) || allSelectable[0];
 
-  // Aggregated Portfolio Totals
   const totalMyPts = h2hData.myRoster.reduce((sum, p) => sum + p.pts, 0).toFixed(1);
   const totalMyProj = h2hData.myRoster.reduce((sum, p) => sum + p.proj, 0).toFixed(1);
   const totalOppPts = h2hData.opponents.reduce((sum, p) => sum + p.pts, 0).toFixed(1);
@@ -167,19 +149,25 @@ export default function App() {
                     return (
                       <div 
                         key={player.id} 
-                        onClick={() => setSelectedPlayerId(player.id)}
+                        onClick={() => {
+                          setSelectedPlayerId(player.id);
+                          setDrawerPlayer(player);
+                        }}
                         className={`p-3.5 flex items-center justify-between cursor-pointer transition ${
                           isTarget ? 'bg-slate-700/30' : 'hover:bg-slate-700/20'
                         } ${isFlashing ? 'ring-2 ring-emerald-500 ring-inset bg-emerald-950/20' : ''}`}
                       >
                         <div>
                           <div className="flex items-center gap-2">
-                            <span className="text-sm font-bold text-white">{player.name}</span>
+                            <span className="text-sm font-bold text-white hover:text-emerald-400 transition">{player.name}</span>
                             <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-slate-700 text-slate-300">
                               {player.team} - {player.pos}
                             </span>
                           </div>
-                          <div className="text-xs text-slate-400 mt-0.5">{player.leagues}</div>
+                          <div className="text-xs text-slate-400 mt-0.5 flex items-center gap-1.5">
+                            <span>{player.leaguesSummary}</span>
+                            <span className="text-[10px] text-emerald-400 font-bold border-b border-dotted border-emerald-500">View Leagues →</span>
+                          </div>
                         </div>
                         <div className="text-right">
                           <div className="text-sm font-black text-slate-200">
@@ -201,9 +189,8 @@ export default function App() {
             ))}
           </div>
         ) : (
-          /* H2H Matchups & Live Portfolio Totals */
+          /* H2H Matchups View */
           <div className="space-y-4">
-            {/* Aggregate Scoreboard Card */}
             <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 shadow-lg">
               <div className="flex items-center justify-between border-b border-slate-800/80 pb-3 mb-3">
                 <div>
@@ -231,7 +218,7 @@ export default function App() {
               </div>
             </div>
 
-            {/* My Portfolio Starters */}
+            {/* My Starters */}
             <div className="bg-slate-800/80 rounded-xl border border-slate-700 p-4 shadow-sm">
               <div className="flex items-center justify-between mb-3">
                 <h2 className="text-xs font-bold uppercase tracking-wider text-emerald-400">Portfolio Starters</h2>
@@ -244,18 +231,29 @@ export default function App() {
                   return (
                     <div 
                       key={player.id}
-                      onClick={() => setSelectedPlayerId(player.id)}
+                      onClick={() => {
+                        setSelectedPlayerId(player.id);
+                        setDrawerPlayer(player);
+                      }}
                       className={`flex justify-between items-center p-2.5 rounded-lg border cursor-pointer transition ${
                         isTarget ? 'bg-slate-700/60 border-slate-600' : 'bg-slate-900/60 border-slate-700/50 hover:bg-slate-700/30'
                       } ${isFlashing ? 'ring-2 ring-emerald-500 bg-emerald-950/30' : ''}`}
                     >
                       <div>
-                        <div className="text-sm font-bold text-slate-100">{player.name}</div>
-                        <div className="text-[10px] font-bold text-slate-400">{player.pos} • {player.proj} proj</div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-bold text-slate-100">{player.name}</span>
+                          <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-slate-700 text-slate-300">
+                            {player.pos}
+                          </span>
+                        </div>
+                        <div className="text-[11px] text-slate-400 mt-0.5 flex items-center gap-1.5">
+                          <span>{player.league}</span>
+                          <span className="text-[10px] text-emerald-400 font-bold border-b border-dotted border-emerald-500">Breakdown →</span>
+                        </div>
                       </div>
                       <div className="text-right">
                         <div className="text-sm font-black text-emerald-400">{player.pts} pts</div>
-                        <span className="text-[10px] text-slate-400">Active</span>
+                        <span className="text-[10px] text-slate-400 font-semibold">{player.proj} proj</span>
                       </div>
                     </div>
                   );
@@ -263,7 +261,7 @@ export default function App() {
               </div>
             </div>
 
-            {/* Opposition Threats */}
+            {/* Opponents */}
             <div className="bg-slate-800/80 rounded-xl border border-slate-700 p-4 shadow-sm">
               <div className="flex items-center justify-between mb-3">
                 <h2 className="text-xs font-bold uppercase tracking-wider text-rose-400">Opposition Threats</h2>
@@ -298,7 +296,60 @@ export default function App() {
         )}
       </main>
 
-      {/* Bottom Navigation */}
+      {/* Slide-Up League Details Drawer */}
+      {drawerPlayer && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-end justify-center p-0 sm:p-4 animate-in fade-in">
+          <div className="bg-slate-900 border border-slate-700 w-full max-w-md rounded-t-2xl sm:rounded-2xl p-5 shadow-2xl space-y-4 max-h-[85vh] overflow-y-auto">
+            <div className="flex justify-between items-start border-b border-slate-800 pb-3">
+              <div>
+                <h3 className="text-lg font-black text-white flex items-center gap-2">
+                  {drawerPlayer.name}
+                  <span className="text-xs font-bold px-2 py-0.5 rounded bg-slate-800 text-slate-300">
+                    {drawerPlayer.team} - {drawerPlayer.pos}
+                  </span>
+                </h3>
+                <p className="text-xs text-slate-400 mt-0.5">League Portfolio Breakdown</p>
+              </div>
+              <button 
+                onClick={() => setDrawerPlayer(null)}
+                className="w-8 h-8 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white flex items-center justify-center font-bold text-sm"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="space-y-2.5">
+              {drawerPlayer.leagueDetails?.map((item, idx) => (
+                <div key={idx} className="p-3 rounded-xl bg-slate-800/60 border border-slate-700/60 flex items-center justify-between">
+                  <div>
+                    <div className="text-sm font-bold text-slate-100">{item.name}</div>
+                    <div className="text-[11px] text-slate-400 mt-0.5">vs. {item.opponent}</div>
+                  </div>
+                  <div className="text-right">
+                    <span className={`text-[10px] font-black px-2 py-0.5 rounded ${
+                      item.status === 'STARTER' ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' :
+                      item.status === 'OPPONENT' ? 'bg-rose-950 text-rose-400 border border-rose-800' :
+                      'bg-slate-800 text-slate-400'
+                    }`}>
+                      {item.status}
+                    </span>
+                    <div className="text-[11px] font-semibold text-slate-300 mt-1">{item.impact}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <button
+              onClick={() => setDrawerPlayer(null)}
+              className="w-full py-2.5 bg-slate-800 hover:bg-slate-700 rounded-xl text-xs font-bold text-slate-200 transition"
+            >
+              Close Ledger
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Bottom Sticky Navigation */}
       <nav className="fixed bottom-0 inset-x-0 bg-slate-950/95 backdrop-blur border-t border-slate-800 px-6 py-3.5 flex justify-around items-center z-40 shadow-2xl">
         <button
           onClick={() => setView('linear')}

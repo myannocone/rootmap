@@ -6,8 +6,39 @@ export const mockGames = [
     away: "NYG",
     status: "LIVE - Q2 8:42",
     players: [
-      { id: "barkley", name: "Saquon Barkley", team: "PHI", pos: "RB", pts: 14.8, exposure: "+18.4 pts", exposureColor: "green", leagues: "4/5 Leagues" },
-      { id: "brown", name: "A.J. Brown", team: "PHI", pos: "WR", pts: 8.2, exposure: "+6.1 pts", exposureColor: "green", leagues: "2/5 Leagues" }
+      {
+        id: "barkley",
+        name: "Saquon Barkley",
+        team: "PHI",
+        pos: "RB",
+        pts: 14.8,
+        exposure: "+18.4 pts",
+        exposureColor: "green",
+        leaguesSummary: "4/5 Leagues",
+        leagueDetails: [
+          { name: "Family League", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Cisco/Bloom" },
+          { name: "High Stakes 12-Man", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Gelardi" },
+          { name: "Work Dynasty", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Stoiber" },
+          { name: "Friends PPR", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Taxin" },
+          { name: "Eliminator", status: "UNOWNED", impact: "0.0x Neutral", opponent: "N/A" }
+        ]
+      },
+      {
+        id: "brown",
+        name: "A.J. Brown",
+        team: "PHI",
+        pos: "WR",
+        pts: 8.2,
+        exposure: "+6.1 pts",
+        exposureColor: "green",
+        leaguesSummary: "2/5 Leagues",
+        leagueDetails: [
+          { name: "Family League", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Cisco/Bloom" },
+          { name: "High Stakes 12-Man", status: "BENCH", impact: "0.0x (Benched)", opponent: "Gelardi" },
+          { name: "Work Dynasty", status: "OPPONENT", impact: "-1.0x (Against Me)", opponent: "Stoiber" },
+          { name: "Friends PPR", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Taxin" }
+        ]
+      }
     ]
   },
   {
@@ -17,8 +48,36 @@ export const mockGames = [
     away: "BUF",
     status: "PRE-GAME",
     players: [
-      { id: "allen", name: "Josh Allen", team: "BUF", pos: "QB", pts: 0.0, exposure: "+12.0 pts", exposureColor: "green", leagues: "3/5 Leagues" },
-      { id: "kelce", name: "Travis Kelce", team: "KC", pos: "TE", pts: 0.0, exposure: "-7.4 pts", exposureColor: "red", leagues: "Opponent Starter (3x)" }
+      {
+        id: "allen",
+        name: "Josh Allen",
+        team: "BUF",
+        pos: "QB",
+        pts: 0.0,
+        exposure: "+12.0 pts",
+        exposureColor: "green",
+        leaguesSummary: "3/5 Leagues",
+        leagueDetails: [
+          { name: "Family League", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Cisco/Bloom" },
+          { name: "Friends PPR", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Taxin" },
+          { name: "Work Dynasty", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Stoiber" }
+        ]
+      },
+      {
+        id: "kelce",
+        name: "Travis Kelce",
+        team: "KC",
+        pos: "TE",
+        pts: 0.0,
+        exposure: "-7.4 pts",
+        exposureColor: "red",
+        leaguesSummary: "Opponent Starter (3x)",
+        leagueDetails: [
+          { name: "High Stakes 12-Man", status: "OPPONENT", impact: "-1.0x (Against Me)", opponent: "Gelardi" },
+          { name: "Work Dynasty", status: "OPPONENT", impact: "-1.0x (Against Me)", opponent: "Stoiber" },
+          { name: "Friends PPR", status: "OPPONENT", impact: "-1.0x (Against Me)", opponent: "Taxin" }
+        ]
+      }
     ]
   },
   {
@@ -28,20 +87,111 @@ export const mockGames = [
     away: "GB",
     status: "PRE-GAME",
     players: [
-      { id: "jefferson", name: "Justin Jefferson", team: "MIN", pos: "WR", pts: 0.0, exposure: "+22.5 pts", exposureColor: "green", leagues: "5/5 Leagues" }
+      {
+        id: "jefferson",
+        name: "Justin Jefferson",
+        team: "MIN",
+        pos: "WR",
+        pts: 0.0,
+        exposure: "+22.5 pts",
+        exposureColor: "green",
+        leaguesSummary: "5/5 Leagues",
+        leagueDetails: [
+          { name: "Family League", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Cisco/Bloom" },
+          { name: "High Stakes 12-Man", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Gelardi" },
+          { name: "Work Dynasty", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Stoiber" },
+          { name: "Friends PPR", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Taxin" },
+          { name: "Eliminator", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Shifren" }
+        ]
+      }
     ]
   }
 ];
 
 export const mockH2H = {
   myRoster: [
-    { name: "Josh Allen", pos: "QB", proj: 22.4, status: "Active" },
-    { name: "Saquon Barkley", pos: "RB", proj: 18.2, status: "Active" },
-    { name: "Justin Jefferson", pos: "WR", proj: 19.5, status: "Active" }
+    { 
+      id: "allen", 
+      name: "Josh Allen", 
+      pos: "QB", 
+      team: "BUF",
+      proj: 22.4, 
+      pts: 0.0, 
+      league: "Family League • Friends PPR (2x)",
+      leagueDetails: [
+        { name: "Family League", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Cisco/Bloom" },
+        { name: "Friends PPR", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Taxin" },
+        { name: "Work Dynasty", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Stoiber" }
+      ]
+    },
+    { 
+      id: "barkley", 
+      name: "Saquon Barkley", 
+      pos: "RB", 
+      team: "PHI",
+      proj: 18.2, 
+      pts: 14.8, 
+      league: "High Stakes • Work Dynasty (4x)",
+      leagueDetails: [
+        { name: "Family League", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Cisco/Bloom" },
+        { name: "High Stakes 12-Man", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Gelardi" },
+        { name: "Work Dynasty", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Stoiber" },
+        { name: "Friends PPR", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Taxin" }
+      ]
+    },
+    { 
+      id: "jefferson", 
+      name: "Justin Jefferson", 
+      pos: "WR", 
+      team: "MIN",
+      proj: 19.5, 
+      pts: 0.0, 
+      league: "Family • High Stakes • Friends (5x)",
+      leagueDetails: [
+        { name: "Family League", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Cisco/Bloom" },
+        { name: "High Stakes 12-Man", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Gelardi" },
+        { name: "Work Dynasty", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Stoiber" },
+        { name: "Friends PPR", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Taxin" },
+        { name: "Eliminator", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Shifren" }
+      ]
+    }
   ],
   opponents: [
-    { name: "Patrick Mahomes", pos: "QB", proj: 21.0, league: "Family League" },
-    { name: "Travis Kelce", pos: "TE", proj: 14.1, league: "High Stakes 12-Man" },
-    { name: "Derrick Henry", pos: "RB", proj: 16.8, league: "Dynasty" }
+    { 
+      id: "mahomes", 
+      name: "Patrick Mahomes", 
+      pos: "QB", 
+      team: "KC",
+      proj: 21.0, 
+      pts: 0.0, 
+      league: "Family League",
+      leagueDetails: [
+        { name: "Family League", status: "OPPONENT", impact: "-1.0x (Against Me)", opponent: "Cisco/Bloom" }
+      ]
+    },
+    { 
+      id: "kelce", 
+      name: "Travis Kelce", 
+      pos: "TE", 
+      team: "KC",
+      proj: 14.1, 
+      pts: 0.0, 
+      league: "High Stakes 12-Man",
+      leagueDetails: [
+        { name: "High Stakes 12-Man", status: "OPPONENT", impact: "-1.0x (Against Me)", opponent: "Gelardi" }
+      ]
+    },
+    { 
+      id: "henry", 
+      name: "Derrick Henry", 
+      pos: "RB", 
+      team: "BAL",
+      proj: 16.8, 
+      pts: 0.0, 
+      league: "Work Dynasty",
+      leagueDetails: [
+        { name: "Work Dynasty", status: "OPPONENT", impact: "-1.0x (Against Me)", opponent: "Stoiber" }
+      ]
+    }
   ]
 };
