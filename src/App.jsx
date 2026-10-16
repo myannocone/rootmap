@@ -13,6 +13,7 @@ export default function App() {
   const [drawerPlayer, setDrawerPlayer] = useState(null);
   const [recentFlash, setRecentFlash] = useState(null);
   const [showConnectModal, setShowConnectModal] = useState(false);
+  const [rosterTab, setRosterTab] = useState('starters');
 
   const handleSimulatePlay = (eventType, label) => {
     const basePts = calculatePlayBasePoints(eventType);
@@ -243,6 +244,36 @@ export default function App() {
         {/* VIEW 2: Blended H2H Roots */}
         {view === 'combined' && (
           <div className="space-y-3">
+          {/* Roster Filter Tabs */}
+    <div className="flex gap-1.5 p-1 bg-slate-950 rounded-xl border border-slate-800 text-xs font-bold">
+      <button
+        type="button"
+        onClick={() => setRosterTab('starters')}
+        className={`flex-1 py-1.5 rounded-lg transition ${
+          rosterTab === 'starters' ? 'bg-emerald-600 text-white' : 'text-slate-400 hover:text-slate-200'
+        }`}
+      >
+        Starters
+      </button>
+      <button
+        type="button"
+        onClick={() => setRosterTab('idp')}
+        className={`flex-1 py-1.5 rounded-lg transition ${
+          rosterTab === 'idp' ? 'bg-emerald-600 text-white' : 'text-slate-400 hover:text-slate-200'
+        }`}
+      >
+        IDP Defense
+      </button>
+      <button
+        type="button"
+        onClick={() => setRosterTab('bench')}
+        className={`flex-1 py-1.5 rounded-lg transition ${
+          rosterTab === 'bench' ? 'bg-emerald-600 text-white' : 'text-slate-400 hover:text-slate-200'
+        }`}
+      >
+        Bench
+      </button>
+    </div>
             <div className="bg-slate-950 border border-slate-800 rounded-2xl p-4 shadow-lg">
               <div className="flex items-center justify-between border-b border-slate-800/80 pb-3 mb-3">
                 <div>
@@ -276,7 +307,14 @@ export default function App() {
                 <span className="text-xs font-black text-slate-300">{totalMyPts} pts total</span>
               </div>
               <div className="space-y-2">
-                {h2hData.myRoster.map((player) => {
+              {h2hData.myRoster
+  .filter(p => {
+    if (rosterTab === 'starters') return p.slot !== 'BENCH' && p.pos !== 'LB' && p.pos !== 'DL' && p.pos !== 'DB';
+    if (rosterTab === 'idp') return p.pos === 'LB' || p.pos === 'DL' || p.pos === 'DB';
+    if (rosterTab === 'bench') return p.slot === 'BENCH';
+    return true;
+  })
+  .map((player) => {
                   const isTarget = player.id === selectedPlayerId;
                   const isFlashing = recentFlash?.id === player.id;
                   const leverage = calculatePlayerLeverage(player.leagueDetails || []);
@@ -320,7 +358,14 @@ export default function App() {
                 <span className="text-xs font-black text-slate-300">{totalOppPts} pts total</span>
               </div>
               <div className="space-y-2">
-                {h2hData.opponents.map((player) => {
+              {h2hData.opponents
+  .filter(p => {
+    if (rosterTab === 'starters') return p.slot !== 'BENCH' && p.pos !== 'LB' && p.pos !== 'DL' && p.pos !== 'DB';
+    if (rosterTab === 'idp') return p.pos === 'LB' || p.pos === 'DL' || p.pos === 'DB';
+    if (rosterTab === 'bench') return p.slot === 'BENCH';
+    return true;
+  })
+  .map((player) => {
                   const isTarget = player.id === selectedPlayerId;
                   const isFlashing = recentFlash?.id === player.id;
                   const leverage = calculatePlayerLeverage(player.leagueDetails || []);

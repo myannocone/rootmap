@@ -110,87 +110,85 @@ export const mockGames = [
 
 export const mockH2H = {
   myRoster: [
-    { 
-      id: "allen", 
-      name: "Josh Allen", 
-      pos: "QB", 
-      team: "BUF",
-      proj: 22.4, 
-      pts: 0.0, 
-      league: "Family League • Friends PPR (2x)",
+    {
+      id: 'barkley',
+      name: 'Saquon Barkley',
+      pos: 'RB',
+      slot: 'RB',
+      pts: 21.4,
+      proj: 18.2,
+      league: 'Family League',
       leagueDetails: [
-        { name: "Family League", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Cisco/Bloom" },
-        { name: "Friends PPR", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Taxin" },
-        { name: "Work Dynasty", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Stoiber" }
+        { name: 'Family League', status: 'STARTER', opponent: 'Cisco / Bloom', impact: '+1.0x Win Prob' },
+        { name: 'High Stakes 12-Man', status: 'STARTER', opponent: 'Team Gelardi', impact: '+1.0x Win Prob' },
+        { name: 'Work Dynasty', status: 'STARTER', opponent: 'Stoiber Squad', impact: '+1.0x Win Prob' },
+        { name: 'Friends PPR', status: 'STARTER', opponent: 'Byrnes / Siegel', impact: '+1.0x Win Prob' }
       ]
     },
-    { 
-      id: "barkley", 
-      name: "Saquon Barkley", 
-      pos: "RB", 
-      team: "PHI",
-      proj: 18.2, 
-      pts: 14.8, 
-      league: "High Stakes • Work Dynasty (4x)",
+    {
+      id: 'brown',
+      name: 'A.J. Brown',
+      pos: 'WR',
+      slot: 'WR',
+      pts: 14.8,
+      proj: 15.6,
+      league: 'High Stakes 12-Man',
       leagueDetails: [
-        { name: "Family League", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Cisco/Bloom" },
-        { name: "High Stakes 12-Man", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Gelardi" },
-        { name: "Work Dynasty", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Stoiber" },
-        { name: "Friends PPR", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Taxin" }
+        { name: 'High Stakes 12-Man', status: 'STARTER', opponent: 'Team Gelardi', impact: '+1.0x Win Prob' },
+        { name: 'Family League', status: 'STARTER', opponent: 'Cisco / Bloom', impact: '+1.0x Win Prob' },
+        { name: 'Work Dynasty', status: 'OPPONENT', opponent: 'Stoiber Squad', impact: '-1.0x Win Prob' }
       ]
     },
-    { 
-      id: "jefferson", 
-      name: "Justin Jefferson", 
-      pos: "WR", 
-      team: "MIN",
-      proj: 19.5, 
-      pts: 0.0, 
-      league: "Family • High Stakes • Friends (5x)",
+    {
+      id: 'warner',
+      name: 'Fred Warner',
+      pos: 'LB',
+      slot: 'LB',
+      pts: 8.5,
+      proj: 9.2,
+      league: 'Work Dynasty',
       leagueDetails: [
-        { name: "Family League", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Cisco/Bloom" },
-        { name: "High Stakes 12-Man", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Gelardi" },
-        { name: "Work Dynasty", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Stoiber" },
-        { name: "Friends PPR", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Taxin" },
-        { name: "Eliminator", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Shifren" }
+        { name: 'Work Dynasty', status: 'STARTER', opponent: 'Stoiber Squad', impact: '+1.0x Win Prob' }
+      ]
+    },
+    {
+      id: 'breece',
+      name: 'Breece Hall',
+      pos: 'RB',
+      slot: 'BENCH',
+      pts: 0.0,
+      proj: 14.0,
+      league: 'Family League',
+      leagueDetails: [
+        { name: 'Family League', status: 'BENCH', opponent: 'Cisco / Bloom', impact: '0.0x Inactive' }
       ]
     }
   ],
   opponents: [
-    { 
-      id: "mahomes", 
-      name: "Patrick Mahomes", 
-      pos: "QB", 
-      team: "KC",
-      proj: 21.0, 
-      pts: 0.0, 
-      league: "Family League",
+    {
+      id: 'kelce',
+      name: 'Travis Kelce',
+      pos: 'TE',
+      slot: 'TE',
+      pts: 6.2,
+      proj: 13.5,
+      league: 'Family League',
       leagueDetails: [
-        { name: "Family League", status: "OPPONENT", impact: "-1.0x (Against Me)", opponent: "Cisco/Bloom" }
+        { name: 'Family League', status: 'OPPONENT', opponent: 'Yanno Dynasty', impact: '-1.0x Risk' },
+        { name: 'High Stakes 12-Man', status: 'OPPONENT', opponent: 'Briarcliff Bombers', impact: '-1.0x Risk' },
+        { name: 'Work Dynasty', status: 'OPPONENT', opponent: 'ArrowMark Alpha', impact: '-1.0x Risk' }
       ]
     },
-    { 
-      id: "kelce", 
-      name: "Travis Kelce", 
-      pos: "TE", 
-      team: "KC",
-      proj: 14.1, 
-      pts: 0.0, 
-      league: "High Stakes 12-Man",
+    {
+      id: 'watt',
+      name: 'T.J. Watt',
+      pos: 'DL',
+      slot: 'DL',
+      pts: 11.0,
+      proj: 7.8,
+      league: 'Work Dynasty',
       leagueDetails: [
-        { name: "High Stakes 12-Man", status: "OPPONENT", impact: "-1.0x (Against Me)", opponent: "Gelardi" }
-      ]
-    },
-    { 
-      id: "henry", 
-      name: "Derrick Henry", 
-      pos: "BAL", 
-      team: "BAL",
-      proj: 16.8, 
-      pts: 0.0, 
-      league: "Work Dynasty",
-      leagueDetails: [
-        { name: "Work Dynasty", status: "OPPONENT", impact: "-1.0x (Against Me)", opponent: "Stoiber" }
+        { name: 'Work Dynasty', status: 'OPPONENT', opponent: 'ArrowMark Alpha', impact: '-1.0x Risk' }
       ]
     }
   ]
