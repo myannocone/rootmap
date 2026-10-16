@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
 import { mockGames as initialGames, mockH2H as initialH2H, mockLeagues as initialLeagues } from './data/mockSlate';
+import { calculatePlayerLeverage, calculatePlayBasePoints } from './utils/leverageEngine';
 
 export default function App() {
-  const [view, setView] = useState('per-game'); // 'per-game' | 'combined' | 'leagues'
+  const [view, setView] = useState('per-game');
   const [filter, setFilter] = useState('all');
   const [games, setGames] = useState(initialGames);
   const [h2hData, setH2hData] = useState(initialH2H);
@@ -11,15 +12,18 @@ export default function App() {
   const [drawerPlayer, setDrawerPlayer] = useState(null);
   const [recentFlash, setRecentFlash] = useState(null);
 
-  // Synchronized Scoring Engine
-  const handleSimulatePlay = (ptsDelta, label) => {
+  const handleSimulatePlay = (eventType, label) => {
+    const basePts = calculatePlayBasePoints(eventType);
+    const activeObj = games.flatMap(g => g.players).find(p => p.id === selectedPlayerId);
+    const leverage = calculatePlayerLeverage(activeObj?.leagueDetails || []);
+    const portfolioDelta = +(basePts * leverage.netMultiplier).toFixed(1);
+
     setGames(prevGames =>
       prevGames.map(game => ({
         ...game,
         players: game.players.map(p => {
           if (p.id === selectedPlayerId) {
-            const updatedPts = Math.max(0, +(p.pts + ptsDelta).toFixed(1));
-            return { ...p, pts: updatedPts };
+            return { ...p, pts: Math.max(0, +(p.pts + basePts).toFixed(1)) };
           }
           return p;
         })
@@ -28,29 +32,33 @@ export default function App() {
 
     setH2hData(prev => ({
       myRoster: prev.myRoster.map(p => 
-        p.id === selectedPlayerId ? { ...p, pts: Math.max(0, +(p.pts + ptsDelta).toFixed(1)) } : p
+        p.id === selectedPlayerId ? { ...p, pts: Math.max(0, +(p.pts + basePts).toFixed(1)) } : p
       ),
       opponents: prev.opponents.map(p => 
-        p.id === selectedPlayerId ? { ...p, pts: Math.max(0, +(p.pts + ptsDelta).toFixed(1)) } : p
+        p.id === selectedPlayerId ? { ...p, pts: Math.max(0, +(p.pts + basePts).toFixed(1)) } : p
       )
     }));
 
     setLeagues(prevLeagues =>
       prevLeagues.map(lg => {
-        const playerRef = games.flatMap(g => g.players).find(p => p.id === selectedPlayerId);
-        const matchDetail = playerRef?.leagueDetails?.find(d => d.name === lg.name);
-        
+        const matchDetail = activeObj?.leagueDetails?.find(d => d.name === lg.name);
         if (matchDetail?.status === 'STARTER') {
-          return { ...lg, myScore: +(lg.myScore + ptsDelta).toFixed(1) };
+          return { ...lg, myScore: +(lg.myScore + basePts).toFixed(1) };
         } else if (matchDetail?.status === 'OPPONENT') {
-          return { ...lg, oppScore: +(lg.oppScore + ptsDelta).toFixed(1) };
+          return { ...lg, oppScore: +(lg.oppScore + basePts).toFixed(1) };
         }
         return lg;
       })
     );
 
-    setRecentFlash({ id: selectedPlayerId, label, delta: ptsDelta });
-    setTimeout(() => setRecentFlash(null), 1800);
+    setRecentFlash({ 
+      id: selectedPlayerId, 
+      label, 
+      basePts, 
+      portfolioDelta,
+      multiplier: leverage.netMultiplier 
+    });
+    setTimeout(() => setRecentFlash(null), 2400);
   };
 
   const linearPlayers = games.flatMap(g => g.players);
@@ -61,10 +69,12 @@ export default function App() {
       name: o.name,
       team: 'OPP',
       pos: o.pos,
-      pts: o.pts
+      pts: o.pts,
+      leagueDetails: o.leagueDetails || []
     }))
   ];
   const activePlayer = allSelectable.find(p => p.id === selectedPlayerId) || allSelectable[0];
+  const activeLeverage = calculatePlayerLeverage(activePlayer?.leagueDetails || []);
 
   const totalMyPts = h2hData.myRoster.reduce((sum, p) => sum + p.pts, 0).toFixed(1);
   const totalMyProj = h2hData.myRoster.reduce((sum, p) => sum + p.proj, 0).toFixed(1);
@@ -74,7 +84,6 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-900 text-slate-100 pb-36 font-sans antialiased selection:bg-emerald-500 selection:text-white">
-      {/* Top Header */}
       <header className="sticky top-0 z-30 bg-slate-950/90 backdrop-blur border-b border-slate-800 px-4 py-3 shadow-md flex items-center justify-between">
         <div>
           <h1 className="text-xl font-black tracking-tight text-white flex items-center gap-2">
@@ -82,7 +91,7 @@ export default function App() {
             ROOTMAP
           </h1>
           <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
-            {view === 'per-game' ? 'Per-Game Slate' : view === 'combined' ? 'Blended H2H Roots' : 'Linked League Matchups'}
+            {view === 'per-game' ? 'Per-Game Roots' : view === 'combined' ? 'Blended H2H Roots' : 'All Leagues'}
           </p>
         </div>
         <button 
@@ -93,11 +102,19 @@ export default function App() {
         </button>
       </header>
 
-      {/* Floating Simulation Dock */}
       <section className="max-w-md mx-auto px-4 pt-4">
         <div className="bg-slate-800/90 border border-slate-700 rounded-xl p-3 shadow-lg">
           <div className="flex items-center justify-between mb-2">
-            <span className="text-[11px] font-extrabold uppercase tracking-wider text-slate-400">Live Simulator</span>
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] font-extrabold uppercase tracking-wider text-slate-400">Play Simulator</span>
+              <span className={`text-[10px] font-black px-1.5 py-0.5 rounded ${
+                activeLeverage.color === 'green' ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' :
+                activeLeverage.color === 'red' ? 'bg-rose-950 text-rose-400 border border-rose-800' :
+                'bg-slate-900 text-slate-400 border border-slate-700'
+              }`}>
+                {activeLeverage.label}
+              </span>
+            </div>
             <select
               value={selectedPlayerId}
               onChange={(e) => setSelectedPlayerId(e.target.value)}
@@ -105,7 +122,7 @@ export default function App() {
             >
               {allSelectable.map(p => (
                 <option key={p.id} value={p.id}>
-                  {p.name} ({p.team || p.pos}) - {p.pts} pts
+                  {p.name} ({p.team || p.pos})
                 </option>
               ))}
             </select>
@@ -113,42 +130,44 @@ export default function App() {
 
           <div className="grid grid-cols-4 gap-1.5">
             <button
-              onClick={() => handleSimulatePlay(1.5, '+15 yd rush')}
+              onClick={() => handleSimulatePlay('RUSH_10YD', '+10y Rush')}
               className="py-1.5 px-1 bg-slate-700/70 hover:bg-slate-600 rounded text-[11px] font-bold text-slate-200 transition active:scale-95"
             >
-              +15y Run
+              +10y Run (+1.0)
             </button>
             <button
-              onClick={() => handleSimulatePlay(2.5, '+25 yd pass')}
+              onClick={() => handleSimulatePlay('REC_15YD', '+15y Rec')}
               className="py-1.5 px-1 bg-slate-700/70 hover:bg-slate-600 rounded text-[11px] font-bold text-slate-200 transition active:scale-95"
             >
-              +25y Pass
+              +15y Catch (+2.5)
             </button>
             <button
-              onClick={() => handleSimulatePlay(6.0, 'Touchdown!')}
+              onClick={() => handleSimulatePlay('TOUCHDOWN', 'Touchdown')}
               className="py-1.5 px-1 bg-emerald-600/80 hover:bg-emerald-500 rounded text-[11px] font-black text-white transition active:scale-95 shadow-sm shadow-emerald-950"
             >
-              +6 TD
+              +6 TD (+6.0)
             </button>
             <button
-              onClick={() => handleSimulatePlay(-2.0, 'Turnover')}
+              onClick={() => handleSimulatePlay('TURNOVER', 'Turnover')}
               className="py-1.5 px-1 bg-rose-600/80 hover:bg-rose-500 rounded text-[11px] font-black text-white transition active:scale-95 shadow-sm shadow-rose-950"
             >
-              -2 TO
+              -2 TO (-2.0)
             </button>
           </div>
 
           {recentFlash && (
-            <div className="mt-2 text-center text-xs font-bold text-emerald-400 animate-bounce">
-              ⚡ {activePlayer?.name}: {recentFlash.label} ({recentFlash.delta > 0 ? `+${recentFlash.delta}` : recentFlash.delta} pts)
+            <div className="mt-2 text-center text-xs font-bold text-emerald-400 bg-emerald-950/40 border border-emerald-800/60 rounded py-1 px-2">
+              ⚡ {activePlayer?.name}: {recentFlash.label} → 
+              <span className="text-white ml-1 font-black">
+                {recentFlash.portfolioDelta >= 0 ? `+${recentFlash.portfolioDelta}` : recentFlash.portfolioDelta} Net Portfolio Pts
+              </span>
+              <span className="text-slate-400 text-[10px] ml-1">({recentFlash.multiplier}x leverage)</span>
             </div>
           )}
         </div>
       </section>
 
-      {/* Main Content Area */}
       <main className="max-w-md mx-auto p-4 space-y-4">
-        {/* VIEW 1: Per-Game Roots */}
         {view === 'per-game' && (
           <div className="space-y-4">
             {games.map(game => (
@@ -163,6 +182,8 @@ export default function App() {
                   {game.players.map(player => {
                     const isTarget = player.id === selectedPlayerId;
                     const isFlashing = recentFlash?.id === player.id;
+                    const leverage = calculatePlayerLeverage(player.leagueDetails || []);
+
                     return (
                       <div 
                         key={player.id} 
@@ -183,7 +204,7 @@ export default function App() {
                           </div>
                           <div className="text-xs text-slate-400 mt-0.5 flex items-center gap-1.5">
                             <span>{player.leaguesSummary}</span>
-                            <span className="text-[10px] text-emerald-400 font-bold border-b border-dotted border-emerald-500">View Leagues →</span>
+                            <span className="text-[10px] text-emerald-400 font-bold border-b border-dotted border-emerald-500">Breakdown →</span>
                           </div>
                         </div>
                         <div className="text-right">
@@ -191,11 +212,13 @@ export default function App() {
                             {player.pts} <span className="text-[10px] font-normal text-slate-400">pts</span>
                           </div>
                           <span className={`inline-block text-xs font-black px-2 py-0.5 rounded-full mt-1 ${
-                            player.exposureColor === 'green' 
+                            leverage.color === 'green' 
                               ? 'bg-emerald-950 text-emerald-400 border border-emerald-700' 
-                              : 'bg-rose-950 text-rose-400 border border-rose-700'
+                              : leverage.color === 'red'
+                              ? 'bg-rose-950 text-rose-400 border border-rose-700'
+                              : 'bg-slate-800 text-slate-400 border border-slate-700'
                           }`}>
-                            {player.exposure}
+                            {leverage.label}
                           </span>
                         </div>
                       </div>
@@ -207,7 +230,6 @@ export default function App() {
           </div>
         )}
 
-        {/* VIEW 2: Blended H2H Roots */}
         {view === 'combined' && (
           <div className="space-y-4">
             <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 shadow-lg">
@@ -226,7 +248,7 @@ export default function App() {
                 </div>
               </div>
               <div className="flex items-center justify-between text-xs">
-                <span className="text-slate-400 font-semibold">Net Slate Spread:</span>
+                <span className="text-slate-400 font-semibold">Net Portfolio Margin:</span>
                 <span className={`font-black px-2 py-0.5 rounded ${
                   netMargin >= 0 
                     ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' 
@@ -237,7 +259,6 @@ export default function App() {
               </div>
             </div>
 
-            {/* My Starters */}
             <div className="bg-slate-800/80 rounded-xl border border-slate-700 p-4 shadow-sm">
               <div className="flex items-center justify-between mb-3">
                 <h2 className="text-xs font-bold uppercase tracking-wider text-emerald-400">Portfolio Starters</h2>
@@ -247,6 +268,8 @@ export default function App() {
                 {h2hData.myRoster.map((player) => {
                   const isTarget = player.id === selectedPlayerId;
                   const isFlashing = recentFlash?.id === player.id;
+                  const leverage = calculatePlayerLeverage(player.leagueDetails || []);
+
                   return (
                     <div 
                       key={player.id}
@@ -272,7 +295,7 @@ export default function App() {
                       </div>
                       <div className="text-right">
                         <div className="text-sm font-black text-emerald-400">{player.pts} pts</div>
-                        <span className="text-[10px] text-slate-400 font-semibold">{player.proj} proj</span>
+                        <span className="text-[10px] font-bold text-slate-400">{leverage.label}</span>
                       </div>
                     </div>
                   );
@@ -280,7 +303,6 @@ export default function App() {
               </div>
             </div>
 
-            {/* Opponents */}
             <div className="bg-slate-800/80 rounded-xl border border-slate-700 p-4 shadow-sm">
               <div className="flex items-center justify-between mb-3">
                 <h2 className="text-xs font-bold uppercase tracking-wider text-rose-400">Opposition Threats</h2>
@@ -290,6 +312,8 @@ export default function App() {
                 {h2hData.opponents.map((player) => {
                   const isTarget = player.id === selectedPlayerId;
                   const isFlashing = recentFlash?.id === player.id;
+                  const leverage = calculatePlayerLeverage(player.leagueDetails || []);
+
                   return (
                     <div 
                       key={player.id}
@@ -304,7 +328,7 @@ export default function App() {
                       </div>
                       <div className="text-right">
                         <div className="text-sm font-black text-rose-400">{player.pts} pts</div>
-                        <span className="text-[10px] text-slate-400">Threat</span>
+                        <span className="text-[10px] font-bold text-rose-400">{leverage.label}</span>
                       </div>
                     </div>
                   );
@@ -314,12 +338,11 @@ export default function App() {
           </div>
         )}
 
-        {/* VIEW 3: All Linked Leagues */}
         {view === 'leagues' && (
           <div className="space-y-3">
             <div className="px-1 flex justify-between items-center text-xs text-slate-400 font-semibold">
               <span>{leagues.length} Linked Leagues</span>
-              <span className="text-emerald-400 font-bold">All Synced</span>
+              <span className="text-emerald-400 font-bold">Live Synced</span>
             </div>
             {leagues.map(lg => {
               const diff = (lg.myScore - lg.oppScore).toFixed(1);
@@ -362,9 +385,8 @@ export default function App() {
         )}
       </main>
 
-      {/* Slide-Up League Details Drawer */}
       {drawerPlayer && (
-        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-end justify-center p-0 sm:p-4 animate-in fade-in">
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-end justify-center p-0 sm:p-4">
           <div className="bg-slate-900 border border-slate-700 w-full max-w-md rounded-t-2xl sm:rounded-2xl p-5 shadow-2xl space-y-4 max-h-[85vh] overflow-y-auto">
             <div className="flex justify-between items-start border-b border-slate-800 pb-3">
               <div>
@@ -415,7 +437,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Bottom Sticky Navigation */}
       <nav className="fixed bottom-0 inset-x-0 bg-slate-950/95 backdrop-blur border-t border-slate-800 px-3 py-3 flex justify-around items-center z-40 shadow-2xl">
         <button
           onClick={() => setView('per-game')}
