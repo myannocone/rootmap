@@ -1,11 +1,12 @@
 import React, { useState } from 'react';
-import { mockGames as initialGames, mockH2H as initialH2H } from './data/mockSlate';
+import { mockGames as initialGames, mockH2H as initialH2H, mockLeagues as initialLeagues } from './data/mockSlate';
 
 export default function App() {
-  const [view, setView] = useState('linear');
+  const [view, setView] = useState('per-game'); // 'per-game' | 'combined' | 'leagues'
   const [filter, setFilter] = useState('all');
   const [games, setGames] = useState(initialGames);
   const [h2hData, setH2hData] = useState(initialH2H);
+  const [leagues, setLeagues] = useState(initialLeagues);
   const [selectedPlayerId, setSelectedPlayerId] = useState('barkley');
   const [drawerPlayer, setDrawerPlayer] = useState(null);
   const [recentFlash, setRecentFlash] = useState(null);
@@ -33,6 +34,20 @@ export default function App() {
         p.id === selectedPlayerId ? { ...p, pts: Math.max(0, +(p.pts + ptsDelta).toFixed(1)) } : p
       )
     }));
+
+    setLeagues(prevLeagues =>
+      prevLeagues.map(lg => {
+        const playerRef = games.flatMap(g => g.players).find(p => p.id === selectedPlayerId);
+        const matchDetail = playerRef?.leagueDetails?.find(d => d.name === lg.name);
+        
+        if (matchDetail?.status === 'STARTER') {
+          return { ...lg, myScore: +(lg.myScore + ptsDelta).toFixed(1) };
+        } else if (matchDetail?.status === 'OPPONENT') {
+          return { ...lg, oppScore: +(lg.oppScore + ptsDelta).toFixed(1) };
+        }
+        return lg;
+      })
+    );
 
     setRecentFlash({ id: selectedPlayerId, label, delta: ptsDelta });
     setTimeout(() => setRecentFlash(null), 1800);
@@ -66,7 +81,9 @@ export default function App() {
             <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></span>
             ROOTMAP
           </h1>
-          <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Net Rooting Leverage</p>
+          <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
+            {view === 'per-game' ? 'Per-Game Slate' : view === 'combined' ? 'Blended H2H Roots' : 'Linked League Matchups'}
+          </p>
         </div>
         <button 
           onClick={() => setFilter(f => f === 'all' ? 'mine' : f === 'mine' ? 'opp' : 'all')}
@@ -129,10 +146,10 @@ export default function App() {
         </div>
       </section>
 
-      {/* Main View Area */}
+      {/* Main Content Area */}
       <main className="max-w-md mx-auto p-4 space-y-4">
-        {view === 'linear' ? (
-          /* Linear Slate View */
+        {/* VIEW 1: Per-Game Roots */}
+        {view === 'per-game' && (
           <div className="space-y-4">
             {games.map(game => (
               <div key={game.id} className="bg-slate-800/80 rounded-xl border border-slate-700/80 shadow-md overflow-hidden">
@@ -188,8 +205,10 @@ export default function App() {
               </div>
             ))}
           </div>
-        ) : (
-          /* H2H Matchups View */
+        )}
+
+        {/* VIEW 2: Blended H2H Roots */}
+        {view === 'combined' && (
           <div className="space-y-4">
             <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 shadow-lg">
               <div className="flex items-center justify-between border-b border-slate-800/80 pb-3 mb-3">
@@ -294,6 +313,53 @@ export default function App() {
             </div>
           </div>
         )}
+
+        {/* VIEW 3: All Linked Leagues */}
+        {view === 'leagues' && (
+          <div className="space-y-3">
+            <div className="px-1 flex justify-between items-center text-xs text-slate-400 font-semibold">
+              <span>{leagues.length} Linked Leagues</span>
+              <span className="text-emerald-400 font-bold">All Synced</span>
+            </div>
+            {leagues.map(lg => {
+              const diff = (lg.myScore - lg.oppScore).toFixed(1);
+              const isWinning = diff >= 0;
+              return (
+                <div key={lg.id} className="bg-slate-800/90 border border-slate-700/80 rounded-xl p-4 shadow-md space-y-3">
+                  <div className="flex justify-between items-center border-b border-slate-700/60 pb-2">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-black text-white">{lg.name}</span>
+                      <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-slate-900 text-slate-400 border border-slate-700">
+                        {lg.platform}
+                      </span>
+                    </div>
+                    <span className="text-[11px] font-extrabold text-emerald-400 animate-pulse">{lg.status}</span>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3 text-center">
+                    <div className="bg-slate-900/70 p-2.5 rounded-lg border border-slate-700/40">
+                      <div className="text-[11px] font-bold text-slate-400 truncate">{lg.myTeam}</div>
+                      <div className="text-xl font-black text-white mt-1">{lg.myScore}</div>
+                    </div>
+                    <div className="bg-slate-900/70 p-2.5 rounded-lg border border-slate-700/40">
+                      <div className="text-[11px] font-bold text-slate-400 truncate">{lg.oppTeam}</div>
+                      <div className="text-xl font-black text-slate-300 mt-1">{lg.oppScore}</div>
+                    </div>
+                  </div>
+
+                  <div className="flex justify-between items-center text-xs pt-1">
+                    <span className="text-slate-400">Matchup Margin:</span>
+                    <span className={`font-black px-2 py-0.5 rounded text-xs ${
+                      isWinning ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' : 'bg-rose-950 text-rose-400 border border-rose-800'
+                    }`}>
+                      {isWinning ? `+${diff}` : diff} pts
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </main>
 
       {/* Slide-Up League Details Drawer */}
@@ -305,7 +371,7 @@ export default function App() {
                 <h3 className="text-lg font-black text-white flex items-center gap-2">
                   {drawerPlayer.name}
                   <span className="text-xs font-bold px-2 py-0.5 rounded bg-slate-800 text-slate-300">
-                    {drawerPlayer.team} - {drawerPlayer.pos}
+                    {drawerPlayer.team || drawerPlayer.pos}
                   </span>
                 </h3>
                 <p className="text-xs text-slate-400 mt-0.5">League Portfolio Breakdown</p>
@@ -350,19 +416,26 @@ export default function App() {
       )}
 
       {/* Bottom Sticky Navigation */}
-      <nav className="fixed bottom-0 inset-x-0 bg-slate-950/95 backdrop-blur border-t border-slate-800 px-6 py-3.5 flex justify-around items-center z-40 shadow-2xl">
+      <nav className="fixed bottom-0 inset-x-0 bg-slate-950/95 backdrop-blur border-t border-slate-800 px-3 py-3 flex justify-around items-center z-40 shadow-2xl">
         <button
-          onClick={() => setView('linear')}
-          className={`flex flex-col items-center gap-1 ${view === 'linear' ? 'text-emerald-400' : 'text-slate-500 hover:text-slate-300'}`}
+          onClick={() => setView('per-game')}
+          className={`flex-1 text-center py-1 transition ${view === 'per-game' ? 'text-emerald-400 font-black' : 'text-slate-400 hover:text-slate-200 font-bold'}`}
         >
-          <span className="text-xs font-bold">Linear Slate</span>
+          <span className="text-xs">Per-Game Roots</span>
         </button>
-        <div className="h-5 w-px bg-slate-800" />
+        <div className="h-4 w-px bg-slate-800" />
         <button
-          onClick={() => setView('h2h')}
-          className={`flex flex-col items-center gap-1 ${view === 'h2h' ? 'text-emerald-400' : 'text-slate-500 hover:text-slate-300'}`}
+          onClick={() => setView('combined')}
+          className={`flex-1 text-center py-1 transition ${view === 'combined' ? 'text-emerald-400 font-black' : 'text-slate-400 hover:text-slate-200 font-bold'}`}
         >
-          <span className="text-xs font-bold">H2H Portfolio</span>
+          <span className="text-xs">Blended H2H Roots</span>
+        </button>
+        <div className="h-4 w-px bg-slate-800" />
+        <button
+          onClick={() => setView('leagues')}
+          className={`flex-1 text-center py-1 transition ${view === 'leagues' ? 'text-emerald-400 font-black' : 'text-slate-400 hover:text-slate-200 font-bold'}`}
+        >
+          <span className="text-xs">All Leagues</span>
         </button>
       </nav>
     </div>

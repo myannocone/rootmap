@@ -184,7 +184,7 @@ export const mockH2H = {
     { 
       id: "henry", 
       name: "Derrick Henry", 
-      pos: "RB", 
+      pos: "BAL", 
       team: "BAL",
       proj: 16.8, 
       pts: 0.0, 
@@ -195,3 +195,50 @@ export const mockH2H = {
     }
   ]
 };
+
+export const mockLeagues = [
+  {
+    id: "l1",
+    name: "Family League",
+    platform: "Sleeper",
+    myTeam: "Yanno's Dynasty",
+    myScore: 112.4,
+    oppTeam: "Cisco / Bloom",
+    oppScore: 98.6,
+    status: "LIVE",
+    projSpread: "+13.8"
+  },
+  {
+    id: "l2",
+    name: "High Stakes 12-Man",
+    platform: "Yahoo",
+    myTeam: "Briarcliff Bombers",
+    myScore: 88.2,
+    oppTeam: "Team Gelardi",
+    oppScore: 94.5,
+    status: "LIVE",
+    projSpread: "-6.3"
+  },
+  {
+    id: "l3",
+    name: "Work Dynasty",
+    platform: "MFL",
+    myTeam: "ArrowMark Alpha",
+    myScore: 104.0,
+    oppTeam: "Stoiber's Squad",
+    oppScore: 101.2,
+    status: "LIVE",
+    projSpread: "+2.8"
+  },
+  {
+    id: "l4",
+    name: "Friends PPR",
+    platform: "ESPN",
+    myTeam: "Yannocone Empire",
+    myScore: 79.5,
+    oppTeam: "Taxin All-Stars",
+    oppScore: 68.0,
+    status: "LIVE",
+    projSpread: "+11.5"
+  }
+];
