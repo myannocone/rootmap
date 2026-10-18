@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+﻿import React, { useState, useEffect, useMemo } from 'react';
 import { mockGames as initialGames, mockH2H as initialH2H, mockLeagues as initialLeagues } from './data/mockSlate';
 import { calculatePlayerLeverage } from './utils/leverageEngine';
 import ConnectModal from './components/ConnectModal';
@@ -93,7 +93,7 @@ export default function App() {
     const yahooToken = params.get('yahoo_token');
 
     if (yahooToken) {
-      window.history.replaceState({}, document.title, window.location.pathname); // Clean URL bar
+      window.history.replaceState({}, document.title, window.location.pathname);
 
       async function syncYahooLeagues() {
         try {
@@ -331,4 +331,111 @@ export default function App() {
 
             {(leagues || []).map((lg, idx) => (
               <div key={lg.id || idx} className="bg-slate-800/80 rounded-2xl border border-slate-700/80 p-3.5 space-y-2">
-                <div className="flex justify-between items-
+                <div className="flex justify-between items-center">
+                  <div className="font-bold text-white text-sm">{lg.name || `League ${idx + 1}`}</div>
+                  <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-full bg-slate-700/60 text-slate-300">
+                    {lg.platform || 'Custom'}
+                  </span>
+                </div>
+                <div className="flex justify-between text-xs text-slate-400">
+                  <span>Matchup vs {lg.opponentName || 'Opponent'}</span>
+                  <span className="font-bold text-slate-200">
+                    {Number(lg.userPoints || 0).toFixed(2)} - {Number(lg.oppPoints || 0).toFixed(2)}
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </main>
+
+      {/* Sticky Bottom Navigation */}
+      <nav className="fixed bottom-0 left-0 right-0 z-40 bg-slate-950/95 backdrop-blur-lg border-t border-slate-800 max-w-md mx-auto">
+        <div className="grid grid-cols-3 py-2 px-3 gap-1">
+          <button
+            onClick={() => setView('per-game')}
+            className={`py-2 flex flex-col items-center justify-center rounded-xl text-xs font-bold transition ${
+              view === 'per-game' ? 'bg-slate-800 text-emerald-400 shadow-sm' : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <span>🎮 Game Slate</span>
+          </button>
+          <button
+            onClick={() => setView('blended')}
+            className={`py-2 flex flex-col items-center justify-center rounded-xl text-xs font-bold transition ${
+              view === 'blended' ? 'bg-slate-800 text-emerald-400 shadow-sm' : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <span>⚖️ Blended H2H</span>
+          </button>
+          <button
+            onClick={() => setView('all-leagues')}
+            className={`py-2 flex flex-col items-center justify-center rounded-xl text-xs font-bold transition ${
+              view === 'all-leagues' ? 'bg-slate-800 text-emerald-400 shadow-sm' : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <span>🏆 All Leagues</span>
+          </button>
+        </div>
+      </nav>
+
+      {/* Connect Platform Modal */}
+      <ConnectModal
+        isOpen={showConnectModal}
+        onClose={() => setShowConnectModal(false)}
+        onAddLeague={handleAddLeague}
+      />
+
+      {/* Slide-Up Drawer */}
+      {drawerPlayer && (
+        <div
+          onClick={() => setDrawerPlayer(null)}
+          className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-end justify-center"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="bg-slate-900 border-t sm:border border-slate-700/80 rounded-t-3xl sm:rounded-3xl p-5 max-w-md w-full space-y-4 shadow-2xl"
+          >
+            <div className="w-12 h-1.5 bg-slate-700 rounded-full mx-auto" />
+            <div className="flex justify-between items-start border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-3">
+                <PlayerAvatar 
+                  playerId={drawerPlayer.id} 
+                  name={drawerPlayer.name} 
+                  position={drawerPlayer.position} 
+                  className="w-12 h-12" 
+                />
+                <div>
+                  <h3 className="text-lg font-black text-white">{drawerPlayer.name}</h3>
+                  <div className="text-xs text-slate-400 font-semibold">
+                    {drawerPlayer.position} • {drawerPlayer.nflTeam || 'NFL'}
+                  </div>
+                </div>
+              </div>
+              <button
+                onClick={() => setDrawerPlayer(null)}
+                className="w-8 h-8 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-400 flex items-center justify-center font-bold text-sm"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="space-y-2">
+              <div className="text-xs font-bold text-slate-400 uppercase tracking-wider">Portfolio Involvement</div>
+              {(drawerPlayer.leagueDetails || drawerPlayer.leagues || []).map((detail, idx) => (
+                <div key={idx} className="bg-slate-800/60 rounded-xl p-2.5 flex justify-between items-center text-xs border border-slate-700/40">
+                  <span className="font-semibold text-slate-200">{detail.leagueName || `League ${idx + 1}`}</span>
+                  <span className={`px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-wider ${
+                    detail.type === 'ROSTERED' ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' : 'bg-rose-950 text-rose-400 border border-rose-800'
+                  }`}>
+                    {detail.type || 'Rostered'}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
