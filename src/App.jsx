@@ -9,13 +9,12 @@ export default function App() {
   const [view, setView] = useState('per-game');
   const [filter, setFilter] = useState('all');
   const [sortOrder, setSortOrder] = useState('leverage');
-  const [rosterTab, setRosterTab] = useState('starters');
   const [selectedPlayerId, setSelectedPlayerId] = useState('barkley');
   const [drawerPlayer, setDrawerPlayer] = useState(null);
   const [recentFlash, setRecentFlash] = useState(null);
   const [showConnectModal, setShowConnectModal] = useState(false);
 
-  // LocalStorage Persistence
+  // LocalStorage Persistence with robust fallbacks
   const [games, setGames] = useState(() => {
     try {
       const saved = localStorage.getItem('rootmap_games');
@@ -45,7 +44,7 @@ export default function App() {
 
   const [playerDirectory, setPlayerDirectory] = useState(null);
 
-  // Load Sleeper NFL metadata once on startup
+  // Load Sleeper NFL directory safely
   useEffect(() => {
     async function loadDirectory() {
       try {
@@ -61,7 +60,7 @@ export default function App() {
   // Derive real portfolio roots from connected Sleeper leagues
   const liveRoots = useMemo(() => {
     const sleeperLeaguesWithStarters = leagues.filter(
-      lg => lg.platform === 'Sleeper' && lg.starters && lg.starters.length > 0
+      lg => lg && lg.platform === 'Sleeper' && Array.isArray(lg.starters) && lg.starters.length > 0
     );
 
     if (sleeperLeaguesWithStarters.length > 0 && playerDirectory) {
@@ -100,14 +99,14 @@ export default function App() {
   // Match live starters to game cards, or fall back to mock slate
   const getGamePlayers = (game) => {
     if (!liveRoots || liveRoots.length === 0) {
-      return game.players || [];
+      return (game && game.players) || [];
     }
 
     const matching = liveRoots.filter(
       p => p.nflTeam === game.away || p.nflTeam === game.home
     );
 
-    return matching.length > 0 ? matching : (game.players || []);
+    return matching.length > 0 ? matching : ((game && game.players) || []);
   };
 
   return (
@@ -143,7 +142,7 @@ export default function App() {
         {/* VIEW 1: Per-Game Roots */}
         {view === 'per-game' && (
           <div className="space-y-3">
-            {games.map(game => (
+            {(games || []).map(game => (
               <div key={game.id} className="bg-slate-800/80 rounded-2xl border border-slate-700/80 shadow-md overflow-hidden">
                 <div className="bg-slate-950/60 px-3.5 py-2.5 border-b border-slate-700/80 flex justify-between items-center text-xs font-semibold text-slate-400">
                   <span className="font-bold text-slate-300">{game.away} @ {game.home}</span>
@@ -161,6 +160,7 @@ export default function App() {
                     const isTarget = player.id === selectedPlayerId;
                     const isFlashing = recentFlash?.id === player.id;
                     const leverage = calculatePlayerLeverage(player.leagueDetails || player.leagues || []);
+                    const netMult = leverage.netMultiplier ?? 1;
 
                     return (
                       <div 
@@ -190,9 +190,9 @@ export default function App() {
 
                         <div className="text-right">
                           <div className={`text-sm font-black ${
-                            (leverage.netMultiplier || 1) >= 0 ? 'text-emerald-400' : 'text-rose-400'
+                            netMult >= 0 ? 'text-emerald-400' : 'text-rose-400'
                           }`}>
-                            {(leverage.netMultiplier || 1) > 0 ? '+' : ''}{(leverage.netMultiplier || 1).toFixed(1)}x
+                            {netMult > 0 ? '+' : ''}{Number(netMult).toFixed(1)}x
                           </div>
                           <div className="text-[10px] text-slate-400 font-semibold">
                             {player.shares ? `${player.shares} league shares` : 'High Leverage'}
@@ -215,18 +215,32 @@ export default function App() {
               <p className="text-xs text-slate-400 mb-4">Combined live portfolio equity across all active matchups.</p>
               
               <div className="space-y-3">
-                {h2hData.map((match, idx) => (
-                  <div key={idx} className="bg-slate-900/60 rounded-xl p-3 border border-slate-800 flex justify-between items-center text-xs">
-                    <div>
-                      <div className="font-bold text-slate-200">{match.leagueName || `League ${idx + 1}`}</div>
-                      <div className="text-slate-400">vs {match.opponent || 'Opponent'}</div>
+                {((h2hData && h2hData.length > 0) ? h2hData : (initialH2H || [])).map((match, idx) => {
+                  const myScore = Number(match.myScore ?? match.userPoints ?? 0);
+                  const oppScore = Number(match.oppScore ?? match.opponentScore ?? match.oppPoints ?? 0);
+                  const diff = myScore - oppScore;
+                  const isWinning = diff >= 0;
+
+                  return (
+                    <div key={match.id || idx} className="bg-slate-900/60 rounded-xl p-3 border border-slate-800 flex justify-between items-center text-xs">
+                      <div>
+                        <div className="font-bold text-slate-200">{match.leagueName || match.name || `League ${idx + 1}`}</div>
+                        <div className="text-slate-400">vs {match.opponent || match.opponentName || 'Opponent'}</div>
+                      </div>
+                      <div className="text-right">
+                        <div className="font-black text-emerald-400 text-sm">
+                          {myScore.toFixed(2)} pts
+                        </div>
+                        <div className="text-[10px] text-slate-400">
+                          Opp: {oppScore.toFixed(2)} 
+                          <span className={`ml-1 font-bold ${isWinning ? 'text-emerald-400' : 'text-rose-400'}`}>
+                            ({isWinning ? '+' : ''}{diff.toFixed(2)})
+                          </span>
+                        </div>
+                      </div>
                     </div>
-                    <div className="text-right">
-                      <div className="font-black text-emerald-400 text-sm">{match.myScore || '0.0'} pts</div>
-                      <div className="text-[10px] text-slate-500">Opp: {match.oppScore || '0.0'}</div>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           </div>
@@ -245,17 +259,19 @@ export default function App() {
               </button>
             </div>
 
-            {leagues.map((lg) => (
-              <div key={lg.id} className="bg-slate-800/80 rounded-2xl border border-slate-700/80 p-3.5 space-y-2">
+            {(leagues || []).map((lg, idx) => (
+              <div key={lg.id || idx} className="bg-slate-800/80 rounded-2xl border border-slate-700/80 p-3.5 space-y-2">
                 <div className="flex justify-between items-center">
-                  <div className="font-bold text-white text-sm">{lg.name}</div>
+                  <div className="font-bold text-white text-sm">{lg.name || `League ${idx + 1}`}</div>
                   <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-full bg-slate-700/60 text-slate-300">
-                    {lg.platform}
+                    {lg.platform || 'Custom'}
                   </span>
                 </div>
                 <div className="flex justify-between text-xs text-slate-400">
                   <span>Matchup vs {lg.opponentName || 'Opponent'}</span>
-                  <span className="font-bold text-slate-200">{lg.userPoints || 0} - {lg.oppPoints || 0}</span>
+                  <span className="font-bold text-slate-200">
+                    {Number(lg.userPoints || 0).toFixed(2)} - {Number(lg.oppPoints || 0).toFixed(2)}
+                  </span>
                 </div>
               </div>
             ))}
@@ -308,7 +324,7 @@ export default function App() {
         >
           <div
             onClick={(e) => e.stopPropagation()}
-            className="bg-slate-900 border-t sm:border border-slate-700/80 rounded-t-3xl sm:rounded-3xl p-5 max-w-md w-full space-y-4 shadow-2xl animate-in slide-in-from-bottom-6 duration-200"
+            className="bg-slate-900 border-t sm:border border-slate-700/80 rounded-t-3xl sm:rounded-3xl p-5 max-w-md w-full space-y-4 shadow-2xl"
           >
             <div className="w-12 h-1.5 bg-slate-700 rounded-full mx-auto" />
             <div className="flex justify-between items-start border-b border-slate-800 pb-3">
