@@ -43,7 +43,7 @@ export async function getSleeperPlayerDirectory() {
 /**
  * Fetches all user leagues and active rosters for a given Sleeper username
  */
-export async function fetchUserLeagues(username, season = '2024') {
+export async function fetchUserLeagues(username, season = '2026') {
   try {
     const userRes = await fetch(`${SLEEPER_BASE_URL}/user/${username}`);
     if (!userRes.ok) throw new Error('Sleeper user not found');
