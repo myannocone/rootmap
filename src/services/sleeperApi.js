@@ -1,95 +1,134 @@
-const BASE_URL = 'https://api.sleeper.app/v1';
-
 /**
- * Fetch Sleeper User details by username
+ * Sleeper API Service
+ * Fetches user leagues, rosters, NFL player directory, and derives active player roots.
  */
-export async function getSleeperUser(username) {
-  const res = await fetch(`${BASE_URL}/user/${encodeURIComponent(username.trim())}`);
-  if (!res.ok) throw new Error('User not found on Sleeper');
-  return res.json();
-}
 
-/**
- * Fetch all leagues for a user for a given season (default: 2026)
- */
-export async function getSleeperLeagues(userId, season = '2026') {
-  const res = await fetch(`${BASE_URL}/user/${userId}/leagues/nfl/${season}`);
-  if (!res.ok) throw new Error('Failed to fetch user leagues');
-  return res.json();
-}
+const SLEEPER_BASE_URL = 'https://api.sleeper.app/v1';
 
-/**
- * Fetch current NFL state (determines current active week)
- */
-export async function getNflState() {
-  const res = await fetch(`${BASE_URL}/state/nfl`);
-  if (!res.ok) throw new Error('Failed to fetch NFL week state');
-  return res.json();
-}
-
-/**
- * Fetch matchups and scores for a specific league and week
- */
-export async function getLeagueMatchups(leagueId, week = 1) {
-  const res = await fetch(`${BASE_URL}/league/${leagueId}/matchups/${week}`);
-  if (!res.ok) throw new Error('Failed to fetch league matchups');
-  return res.json();
-}
-
-/**
- * Ingests a Sleeper username, finds their leagues, and formats them for RootMap's Linked Leagues tab
- */
-export async function importSleeperPortfolio(username) {
-  const user = await getSleeperUser(username);
-  const nflState = await getNflState().catch(() => ({ week: 1 }));
-  const currentWeek = nflState.week || 1;
-  const userLeagues = await getSleeperLeagues(user.user_id, '2026');
-
-  if (!userLeagues || userLeagues.length === 0) {
-    return [];
-  }
-
-  const leaguePromises = userLeagues.slice(0, 5).map(async (lg) => {
-    try {
-      const matchups = await getLeagueMatchups(lg.league_id, currentWeek);
-      
-      // Matchup objects have a roster_id and matchup_id
-      // Find the user's matchup or fallback cleanly
-      const myMatchup = matchups[0] || {};
-      const oppMatchup = matchups.find(m => m.matchup_id === myMatchup.matchup_id && m.roster_id !== myMatchup.roster_id) || matchups[1] || {};
-
-      return {
-        id: `sleeper_${lg.league_id}`,
-        name: lg.name || 'Sleeper League',
-        platform: 'Sleeper',
-        myTeam: user.display_name || 'My Roster',
-        oppTeam: 'Opponent',
-        myScore: myMatchup.points || 0.0,
-        oppScore: oppMatchup.points || 0.0,
-        status: `Week ${currentWeek} • Active`,
-        starters: myMatchup.starters || []
-      };
-    } catch {
-      return {
-        id: `sleeper_${lg.league_id}`,
-        name: lg.name || 'Sleeper League',
-        platform: 'Sleeper',
-        myTeam: user.display_name || 'My Roster',
-        oppTeam: 'Opponent',
-        myScore: 0.0,
-        oppScore: 0.0,
-        status: `Week ${currentWeek} • Synced`,
-        starters: []
-      };
-    }
-  });
-
-  return Promise.all(leaguePromises);
-}
 /**
  * Returns the Sleeper CDN headshot image URL for any NFL player ID
  */
 export function getPlayerHeadshotUrl(playerId) {
-    if (!playerId) return null;
-    return `https://sleepercdn.com/content/nfl/players/thumb/${playerId}.jpg`;
+  if (!playerId) return null;
+  return `https://sleepercdn.com/content/nfl/players/thumb/${playerId}.jpg`;
+}
+
+/**
+ * Fetches the entire NFL player directory from Sleeper (cached in sessionStorage)
+ */
+export async function getSleeperPlayerDirectory() {
+  try {
+    const cached = sessionStorage.getItem('sleeper_nfl_players');
+    if (cached) {
+      return JSON.parse(cached);
+    }
+
+    const res = await fetch(`${SLEEPER_BASE_URL}/players/nfl`);
+    if (!res.ok) throw new Error('Failed to fetch Sleeper players');
+    const players = await res.json();
+
+    try {
+      sessionStorage.setItem('sleeper_nfl_players', JSON.stringify(players));
+    } catch (e) {
+      // Storage quota fallback
+    }
+
+    return players;
+  } catch (err) {
+    console.error('Error fetching Sleeper player directory:', err);
+    return {};
   }
+}
+
+/**
+ * Fetches all user leagues and active rosters for a given Sleeper username
+ */
+export async function fetchUserLeagues(username, season = '2024') {
+  try {
+    const userRes = await fetch(`${SLEEPER_BASE_URL}/user/${username}`);
+    if (!userRes.ok) throw new Error('Sleeper user not found');
+    const userData = await userRes.json();
+    const userId = userData.user_id;
+
+    const leaguesRes = await fetch(`${SLEEPER_BASE_URL}/user/${userId}/leagues/nfl/${season}`);
+    if (!leaguesRes.ok) throw new Error('Could not fetch leagues');
+    const leagues = await leaguesRes.json();
+
+    const leaguePromises = leagues.slice(0, 10).map(async (lg) => {
+      try {
+        const rostersRes = await fetch(`${SLEEPER_BASE_URL}/league/${lg.league_id}/rosters`);
+        const rosters = await rostersRes.json();
+        const userRoster = rosters.find(r => r.owner_id === userId);
+
+        return {
+          id: lg.league_id,
+          name: lg.name,
+          platform: 'Sleeper',
+          starters: userRoster?.starters || [],
+          players: userRoster?.players || [],
+          userPoints: userRoster?.settings?.fpts || 0,
+          oppPoints: 0,
+          opponentName: 'League Opponent'
+        };
+      } catch {
+        return {
+          id: lg.league_id,
+          name: lg.name,
+          platform: 'Sleeper',
+          starters: [],
+          players: [],
+          userPoints: 0,
+          oppPoints: 0,
+          opponentName: 'League Opponent'
+        };
+      }
+    });
+
+    return await Promise.all(leaguePromises);
+  } catch (err) {
+    console.error('fetchUserLeagues error:', err);
+    throw err;
+  }
+}
+
+/**
+ * Alias exported for ConnectModal compatibility
+ */
+export const importSleeperPortfolio = fetchUserLeagues;
+
+/**
+ * Derives aggregated player roots and shares across multiple Sleeper leagues
+ */
+export function buildRootsFromSleeper(sleeperLeagues, playerDirectory = {}) {
+  const playerMap = new Map();
+
+  sleeperLeagues.forEach(league => {
+    (league.starters || []).forEach(playerId => {
+      if (!playerId || playerId === '0') return;
+
+      const playerMeta = playerDirectory[playerId] || {};
+      const fullName = playerMeta.full_name || `${playerMeta.first_name || ''} ${playerMeta.last_name || ''}`.trim() || `Player ${playerId}`;
+
+      if (!playerMap.has(playerId)) {
+        playerMap.set(playerId, {
+          id: playerId,
+          name: fullName,
+          position: playerMeta.position || 'FB',
+          nflTeam: playerMeta.team || 'NFL',
+          shares: 0,
+          leagues: []
+        });
+      }
+
+      const p = playerMap.get(playerId);
+      p.shares += 1;
+      p.leagues.push({
+        leagueName: league.name,
+        type: 'ROSTERED',
+        weight: 1.0
+      });
+    });
+  });
+
+  return Array.from(playerMap.values());
+}
