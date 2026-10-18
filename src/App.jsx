@@ -1,8 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { mockGames as initialGames, mockH2H as initialH2H, mockLeagues as initialLeagues } from './data/mockSlate';
 import { calculatePlayerLeverage, calculatePlayBasePoints } from './utils/leverageEngine';
 import ConnectModal from './components/ConnectModal';
-
+import PlayerAvatar from './components/PlayerAvatar';
+import { getSleeperPlayerDirectory, buildRootsFromSleeper } from './services/sleeperApi';
 export default function App() {
   const [view, setView] = useState('per-game');
   const [filter, setFilter] = useState('all');
@@ -12,6 +13,7 @@ export default function App() {
   const [drawerPlayer, setDrawerPlayer] = useState(null);
   const [recentFlash, setRecentFlash] = useState(null);
   const [showConnectModal, setShowConnectModal] = useState(false);
+  
 
   // LocalStorage Persistence
   const [games, setGames] = useState(() => {
@@ -40,6 +42,68 @@ export default function App() {
       return initialLeagues;
     }
   });
+const [playerDirectory, setPlayerDirectory] = useState(null);
+
+  useEffect(() => {
+    async function loadDirectory() {
+      try {
+        const dir = await getSleeperPlayerDirectory();
+        setPlayerDirectory(dir);
+      } catch (err) {
+        console.warn('Could not load Sleeper player directory:', err);
+      }
+    }
+    loadDirectory();
+  }, []);
+  const liveRoots = useMemo(() => {
+    const sleeperLeaguesWithStarters = leagues.filter(
+      lg => lg.platform === 'Sleeper' && lg.starters && lg.starters.length > 0
+    );
+
+    if (sleeperLeaguesWithStarters.length > 0 && playerDirectory) {
+      return buildRootsFromSleeper(sleeperLeaguesWithStarters, playerDirectory);
+    }
+
+    return null;
+  }, [leagues, playerDirectory]);
+  
+      {/* Main Views */}
+      <main className="max-w-md mx-auto p-4 space-y-3">
+        {/* VIEW 1: Per-Game Roots */}
+        {view === 'per-game' && (
+          <div className="space-y-3">
+            {games.map(game => (
+              <div key={game.id} className="bg-slate-800/80 rounded-2xl border border-slate-700/80 shadow-md overflow-hidden">
+                <div className="bg-slate-950/60 px-3.5 py-2.5 border-b border-slate-700/80 flex justify-between items-center text-xs font-semibold text-slate-400">
+                  <span className="font-bold text-slate-300">{game.away} @ {game.home}</span>
+                  <span className={game.status.includes('LIVE') ? 'text-emerald-400 font-bold' : ''}>
+                    {game.status} • {game.time}
+                  </span>
+                </div>
+                <div className="divide-y divide-slate-700/50">
+                {game.players.slice().sort((a, b) => {
+                    if (sortOrder !== 'leverage') return 0;
+                    const levA = Math.abs(calculatePlayerLeverage(a.leagueDetails || []).netMultiplier);
+                    const levB = Math.abs(calculatePlayerLeverage(b.leagueDetails || []).netMultiplier);
+                    return levB - levA;
+                  }).map(player => {
+                    const isTarget = player.id === selectedPlayerId;
+                    const isFlashing = recentFlash?.id === player.id;
+                    const leverage = calculatePlayerLeverage(player.leagueDetails || []);
+
+                    return (
+                      <div 
+                        key={player.id} 
+                        onClick={() => {
+                          setSelectedPlayerId(player.id);
+                          setDrawerPlayer(player);
+                        }}
+                        className={`p-3.5 flex items-center justify-between cursor-pointer transition select-none active:scale-[0.99] ${
+                          isTarget ? 'bg-slate-700/30' : 'hover:bg-slate-700/20'
+                        } ${isFlashing ? 'ring-2 ring-emerald-500 ring-inset bg-emerald-950/20' : ''}`}
+                      >
+                        <div>
+                        <div className="flex items-center gap-2.5">
 
   useEffect(() => {
     try {
@@ -301,15 +365,15 @@ export default function App() {
                   </span>
                 </div>
                 <div className="divide-y divide-slate-700/50">
-                {game.players.slice().sort((a, b) => {
+                {getGamePlayers(game).slice().sort((a, b) => {
                     if (sortOrder !== 'leverage') return 0;
-                    const levA = Math.abs(calculatePlayerLeverage(a.leagueDetails || []).netMultiplier);
-                    const levB = Math.abs(calculatePlayerLeverage(b.leagueDetails || []).netMultiplier);
+                    const levA = Math.abs(calculatePlayerLeverage(a.leagueDetails || a.leagues || []).netMultiplier);
+                    const levB = Math.abs(calculatePlayerLeverage(b.leagueDetails || b.leagues || []).netMultiplier);
                     return levB - levA;
                   }).map(player => {
                     const isTarget = player.id === selectedPlayerId;
                     const isFlashing = recentFlash?.id === player.id;
-                    const leverage = calculatePlayerLeverage(player.leagueDetails || []);
+                    const leverage = calculatePlayerLeverage(player.leagueDetails || player.leagues || []);
 
                     return (
                       <div 
@@ -323,12 +387,20 @@ export default function App() {
                         } ${isFlashing ? 'ring-2 ring-emerald-500 ring-inset bg-emerald-950/20' : ''}`}
                       >
                         <div>
-                          <div className="flex items-center gap-2">
-                            <span className="text-sm font-bold text-white hover:text-emerald-400 transition">{player.name}</span>
-                            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-slate-700 text-slate-300">
-                              {player.team} - {player.pos}
-                            </span>
-                          </div>
+                        <div className="flex items-center gap-2.5">
+  <PlayerAvatar 
+    playerId={player.id} 
+    name={player.name} 
+    position={player.position} 
+    className="w-9 h-9" 
+  />
+  <div>
+    <div className="font-bold text-white text-sm leading-tight">{player.name}</div>
+    <div className="text-[11px] font-semibold text-slate-400">
+      {player.position} • {player.nflTeam || 'NFL'}
+    </div>
+  </div>
+</div>
                           <div className="text-xs text-slate-400 mt-1 flex items-center gap-1.5">
                             <span>{player.leaguesSummary}</span>
                             <span className="text-[10px] text-emerald-400 font-bold border-b border-dotted border-emerald-500">Breakdown →</span>

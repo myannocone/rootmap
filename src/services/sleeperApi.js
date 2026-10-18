@@ -86,3 +86,10 @@ export async function importSleeperPortfolio(username) {
 
   return Promise.all(leaguePromises);
 }
+/**
+ * Returns the Sleeper CDN headshot image URL for any NFL player ID
+ */
+export function getPlayerHeadshotUrl(playerId) {
+    if (!playerId) return null;
+    return `https://sleepercdn.com/content/nfl/players/thumb/${playerId}.jpg`;
+  }
