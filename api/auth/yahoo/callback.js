@@ -2,14 +2,18 @@
   const { code, error } = req.query || {};
 
   if (error || !code) {
-    const errParam = encodeURIComponent(error || 'Missing authorization code');
+    const errParam = encodeURIComponent(String(error || 'Missing authorization code').trim());
     res.writeHead(302, { Location: `/?auth_error=${errParam}` });
     return res.end();
   }
 
-  const clientId = process.env.YAHOO_CLIENT_ID;
-  const clientSecret = process.env.YAHOO_CLIENT_SECRET;
-  const appUrl = process.env.APP_URL || 'https://rootmap-wine.vercel.app';
+  const rawClientId = process.env.YAHOO_CLIENT_ID || '';
+  const rawClientSecret = process.env.YAHOO_CLIENT_SECRET || '';
+  const rawAppUrl = process.env.APP_URL || 'https://rootmap-wine.vercel.app';
+
+  const clientId = rawClientId.trim();
+  const clientSecret = rawClientSecret.trim();
+  const appUrl = rawAppUrl.trim().replace(/\/+$/, '');
   const redirectUri = `${appUrl}/api/auth/yahoo/callback`;
 
   try {
@@ -18,7 +22,7 @@
     const params = new URLSearchParams({
       grant_type: 'authorization_code',
       redirect_uri: redirectUri,
-      code: code
+      code: String(code).trim()
     });
 
     const tokenRes = await fetch('https://api.login.yahoo.com/oauth2/get_token', {
@@ -38,7 +42,8 @@
       return res.end();
     }
 
-    res.writeHead(302, { Location: `/?yahoo_token=${encodeURIComponent(tokenData.access_token)}` });
+    const token = encodeURIComponent(String(tokenData.access_token).trim());
+    res.writeHead(302, { Location: `/?yahoo_token=${token}` });
     return res.end();
   } catch (err) {
     console.error('OAuth callback execution error:', err);
