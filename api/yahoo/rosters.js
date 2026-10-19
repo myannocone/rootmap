@@ -9,91 +9,99 @@
   const token = authHeader.split(' ')[1];
 
   try {
-    // Primary query using game_codes=nfl
-    let leaguesUrl = 'https://fantasysports.yahooapis.com/fantasy/v2/users;use_login=1/games;game_codes=nfl/leagues?format=json';
-    let leaguesRes = await fetch(leaguesUrl, {
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Accept': 'application/json'
-      }
-    });
+    // Query teams and user leagues without restrictive nfl key filters
+    const endpoints = [
+      'https://fantasysports.yahooapis.com/fantasy/v2/users;use_login=1/games/teams?format=json',
+      'https://fantasysports.yahooapis.com/fantasy/v2/users;use_login=1/games;game_keys=nfl/leagues?format=json',
+      'https://fantasysports.yahooapis.com/fantasy/v2/users;use_login=1/leagues?format=json'
+    ];
 
-    let rawText = await leaguesRes.text();
+    let combinedData = [];
 
-    // If game_codes returned empty or error, fallback to general fantasy games query
-    if (!leaguesRes.ok || rawText.includes('"count":0') || rawText.includes('"count": 0')) {
-      const fallbackUrl = 'https://fantasysports.yahooapis.com/fantasy/v2/users;use_login=1/games/leagues?format=json';
-      const fallbackRes = await fetch(fallbackUrl, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Accept': 'application/json'
+    for (const url of endpoints) {
+      try {
+        const response = await fetch(url, {
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Accept': 'application/json'
+          }
+        });
+        if (response.ok) {
+          const json = await response.json();
+          combinedData.push(json);
         }
-      });
-      if (fallbackRes.ok) {
-        rawText = await fallbackRes.text();
+      } catch (e) {
+        // Continue to fallback endpoints
       }
-    }
-
-    let data;
-    try {
-      data = JSON.parse(rawText);
-    } catch (e) {
-      res.statusCode = 502;
-      res.setHeader('Content-Type', 'application/json');
-      return res.end(JSON.stringify({ error: 'Invalid JSON from Yahoo', details: rawText }));
     }
 
     const leaguesList = [];
 
-    // Deep recursive extractor for any object containing league metadata
-    function extractLeagues(node) {
-      if (!node || typeof node !== 'object') return;
+    // Helper to recursively parse Yahoo's nested JSON responses
+    function findLeaguesAndTeams(obj) {
+      if (!obj || typeof obj !== 'object') return;
 
-      if (node.league_key && node.name) {
+      // Match league objects
+      if (obj.league_key && (obj.name || obj.league_id)) {
         leaguesList.push({
-          id: String(node.league_key),
-          name: String(node.name),
-          season: node.season ? String(node.season) : '2026',
-          numTeams: node.num_teams || 10,
+          id: String(obj.league_key),
+          name: String(obj.name || `League ${obj.league_key}`),
+          season: String(obj.season || '2026'),
+          numTeams: parseInt(obj.num_teams || 12, 10),
           platform: 'Yahoo',
           starters: []
         });
-        return;
       }
 
-      if (Array.isArray(node)) {
-        for (const item of node) {
-          extractLeagues(item);
+      // Match team objects that contain league metadata
+      if (obj.team_key && typeof obj.team_key === 'string') {
+        const parts = obj.team_key.split('.t.');
+        if (parts.length === 2) {
+          const leagueKey = parts[0];
+          const teamName = Array.isArray(obj.name) ? obj.name[0] : (obj.name || 'My Team');
+          leaguesList.push({
+            id: leagueKey,
+            name: String(teamName),
+            season: '2026',
+            numTeams: 12,
+            platform: 'Yahoo',
+            starters: []
+          });
         }
+      }
+
+      if (Array.isArray(obj)) {
+        for (const item of obj) findLeaguesAndTeams(item);
       } else {
-        for (const key of Object.keys(node)) {
-          extractLeagues(node[key]);
-        }
+        for (const key of Object.keys(obj)) findLeaguesAndTeams(obj[key]);
       }
     }
 
-    extractLeagues(data);
+    for (const payload of combinedData) {
+      findLeaguesAndTeams(payload);
+    }
 
-    // Filter duplicates by league ID
-    const unique = [];
+    // Deduplicate leagues by unique key
+    const uniqueLeagues = [];
     const seen = new Set();
     for (const lg of leaguesList) {
       if (!seen.has(lg.id)) {
         seen.add(lg.id);
-        unique.push(lg);
+        uniqueLeagues.push(lg);
       }
     }
 
     res.statusCode = 200;
     res.setHeader('Content-Type', 'application/json');
     return res.end(JSON.stringify({ 
-      success: true,
-      count: unique.length,
-      leagues: unique 
+      success: true, 
+      count: uniqueLeagues.length, 
+      leagues: uniqueLeagues,
+      debugEndpointCount: combinedData.length
     }));
   } catch (err) {
     res.statusCode = 500;
     res.setHeader('Content-Type', 'application/json');
-    return res.end(JSON.stringify({ error: 'Server error parsing Yahoo rosters', message: err.message }));
+    return res.end(JSON.stringify({ error: 'Server error parsing Yahoo response', message: err.message }));
   }
 }
