@@ -7,11 +7,12 @@ import { getSleeperPlayerDirectory, buildRootsFromSleeper } from './services/sle
 import { fetchLiveNFLSlate } from './services/espnScoreboard';
 
 export default function App() {
-  const [view, setView] = useState('per-game');
+  const [view, setView] = useState('all-leagues');
   const [sortOrder, setSortOrder] = useState('leverage');
   const [selectedPlayerId, setSelectedPlayerId] = useState(null);
   const [drawerPlayer, setDrawerPlayer] = useState(null);
   const [showConnectModal, setShowConnectModal] = useState(false);
+  const [syncStatus, setSyncStatus] = useState('');
 
   const defaultH2H = [
     { id: 'lg_1', leagueName: 'Yannocone vs Gelardi', opponent: 'Gelardi', myScore: 112.4, oppScore: 104.8 },
@@ -43,9 +44,9 @@ export default function App() {
     try {
       const saved = localStorage.getItem('rootmap_leagues');
       const parsed = saved ? JSON.parse(saved) : null;
-      return (Array.isArray(parsed) && parsed.length > 0) ? parsed : (initialLeagues || []);
+      return (Array.isArray(parsed) && parsed.length > 0) ? parsed : [];
     } catch {
-      return initialLeagues || [];
+      return [];
     }
   });
 
@@ -85,13 +86,22 @@ export default function App() {
     loadDirectory();
   }, []);
 
+  // Process Yahoo OAuth Return
   useEffect(() => {
     try {
       const params = new URLSearchParams(window.location.search);
       const yahooToken = params.get('yahoo_token');
+      const authError = params.get('auth_error');
+
+      if (authError) {
+        alert('Yahoo Authentication Error: ' + authError);
+        window.history.replaceState({}, document.title, window.location.pathname);
+        return;
+      }
 
       if (yahooToken) {
         window.history.replaceState({}, document.title, window.location.pathname);
+        setSyncStatus('Connecting to Yahoo Fantasy API...');
 
         async function syncYahoo() {
           try {
@@ -100,23 +110,35 @@ export default function App() {
                 Authorization: `Bearer ${yahooToken}`
               }
             });
-            if (!res.ok) return;
+            
             const data = await res.json();
+
+            if (!res.ok) {
+              alert('Yahoo Sync Error: ' + (data?.error || res.statusText));
+              setSyncStatus('Sync failed.');
+              return;
+            }
+
             if (Array.isArray(data?.leagues) && data.leagues.length > 0) {
-              setLeagues(prev => {
-                const existing = new Set(prev.map(l => l.id));
-                const fresh = data.leagues.filter(l => !existing.has(l.id));
-                return [...prev, ...fresh];
-              });
+              setLeagues(data.leagues);
+              localStorage.setItem('rootmap_leagues', JSON.stringify(data.leagues));
+              setView('all-leagues');
+              alert(`Success! Imported ${data.leagues.length} Yahoo League(s).`);
+              setSyncStatus(`Connected: ${data.leagues.length} leagues`);
+            } else {
+              alert('Yahoo authorized successfully, but no active fantasy football leagues were returned for this account.');
+              setSyncStatus('0 leagues found.');
             }
           } catch (syncErr) {
-            console.warn('Yahoo background sync failed:', syncErr);
+            console.error('Yahoo background sync failed:', syncErr);
+            alert('Failed to connect to /api/yahoo/rosters endpoint.');
+            setSyncStatus('Network error.');
           }
         }
         syncYahoo();
       }
     } catch (e) {
-      console.warn('URL parameter parsing failed:', e);
+      console.warn('URL parsing error:', e);
     }
   }, []);
 
@@ -148,8 +170,9 @@ export default function App() {
       localStorage.removeItem('rootmap_leagues');
     } catch (e) {}
     setH2HData(defaultH2H);
-    setLeagues(initialLeagues || []);
+    setLeagues([]);
     await refreshLiveSlate();
+    alert('Cleared cached storage.');
   };
 
   const handleAddLeague = (newLeague) => {
@@ -177,28 +200,82 @@ export default function App() {
           <div className="w-8 h-8 rounded-lg bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center font-black text-emerald-400 text-sm">
             RM
           </div>
-          <span className="font-black text-lg tracking-tight bg-gradient-to-r from-white via-slate-200 to-slate-400 bg-clip-text text-transparent">
-            RootMap
-          </span>
+          <div>
+            <span className="font-black text-lg tracking-tight bg-gradient-to-r from-white via-slate-200 to-slate-400 bg-clip-text text-transparent block">
+              RootMap
+            </span>
+            {syncStatus && (
+              <span className="text-[10px] font-semibold text-emerald-400 block">
+                {syncStatus}
+              </span>
+            )}
+          </div>
         </div>
         <div className="flex items-center gap-2">
           <button 
             onClick={() => setShowConnectModal(true)}
-            className="px-2.5 py-1 text-xs font-semibold rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition"
+            className="px-2.5 py-1 text-xs font-semibold rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white transition"
           >
             + Link
           </button>
           <button 
             onClick={handleResetSlate}
-            className="px-2 py-1 text-xs font-semibold rounded-lg bg-rose-950/40 hover:bg-rose-900/60 text-rose-300 border border-rose-800/60 transition"
+            className="px-2 py-1 text-xs font-semibold rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition"
           >
-            Force Sync
+            Reset
           </button>
         </div>
       </header>
 
       {/* Main Views */}
       <main className="max-w-md mx-auto p-4 space-y-3">
+        {view === 'all-leagues' && (
+          <div className="space-y-3">
+            <div className="flex justify-between items-center mb-2">
+              <h2 className="text-sm font-bold text-slate-300 uppercase tracking-wider">
+                Connected Leagues ({leagues.length})
+              </h2>
+              <button
+                onClick={() => setShowConnectModal(true)}
+                className="px-3 py-1.5 bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-bold rounded-lg text-xs transition"
+              >
+                + Link Platform
+              </button>
+            </div>
+
+            {leagues.length === 0 ? (
+              <div className="bg-slate-800/40 rounded-2xl border border-dashed border-slate-700 p-8 text-center space-y-3">
+                <div className="text-3xl">🏈</div>
+                <div className="text-slate-300 text-sm font-bold">No Leagues Connected Yet</div>
+                <p className="text-slate-500 text-xs max-w-xs mx-auto">
+                  Tap "+ Link Platform" above and sign in with Yahoo to automatically import your active teams.
+                </p>
+                <button
+                  onClick={() => setShowConnectModal(true)}
+                  className="px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white font-bold rounded-xl text-xs transition inline-block shadow-lg shadow-purple-600/20"
+                >
+                  Connect Yahoo Sports
+                </button>
+              </div>
+            ) : (
+              leagues.map((lg, idx) => (
+                <div key={lg.id || idx} className="bg-slate-800/80 rounded-2xl border border-slate-700/80 p-4 space-y-2">
+                  <div className="flex justify-between items-center">
+                    <div className="font-bold text-white text-sm">{lg.name || `League ${idx + 1}`}</div>
+                    <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-full bg-purple-900/60 text-purple-300 border border-purple-700">
+                      {lg.platform || 'Yahoo'}
+                    </span>
+                  </div>
+                  <div className="flex justify-between text-xs text-slate-400">
+                    <span>{lg.numTeams ? `${lg.numTeams} Teams` : 'Active League'}</span>
+                    <span className="font-mono text-slate-300">{lg.season || '2026'}</span>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        )}
+
         {view === 'per-game' && (
           <div className="space-y-3">
             {(games || []).map(game => {
@@ -223,12 +300,7 @@ export default function App() {
                         No active rostered players in this matchup
                       </div>
                     ) : (
-                      players.slice().sort((a, b) => {
-                        if (sortOrder !== 'leverage' || !calculatePlayerLeverage) return 0;
-                        const levA = Math.abs(calculatePlayerLeverage(a.leagueDetails || a.leagues || []).netMultiplier || 1);
-                        const levB = Math.abs(calculatePlayerLeverage(b.leagueDetails || b.leagues || []).netMultiplier || 1);
-                        return levB - levA;
-                      }).map(player => {
+                      players.map(player => {
                         const isTarget = player.id === selectedPlayerId;
                         const leverage = calculatePlayerLeverage ? calculatePlayerLeverage(player.leagueDetails || player.leagues || []) : { netMultiplier: 1 };
                         const netMult = leverage.netMultiplier ?? 1;
@@ -240,7 +312,7 @@ export default function App() {
                               setSelectedPlayerId(player.id);
                               setDrawerPlayer(player);
                             }}
-                            className={`p-3.5 flex items-center justify-between cursor-pointer transition select-none active:scale-[0.99] ${
+                            className={`p-3.5 flex items-center justify-between cursor-pointer transition select-none ${
                               isTarget ? 'bg-slate-700/30' : 'hover:bg-slate-700/20'
                             }`}
                           >
@@ -317,37 +389,6 @@ export default function App() {
                 })}
               </div>
             </div>
-          </div>
-        )}
-
-        {view === 'all-leagues' && (
-          <div className="space-y-3">
-            <div className="flex justify-between items-center mb-2">
-              <h2 className="text-sm font-bold text-slate-300 uppercase tracking-wider">Connected Leagues ({leagues.length})</h2>
-              <button
-                onClick={() => setShowConnectModal(true)}
-                className="px-3 py-1.5 bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-bold rounded-lg text-xs transition"
-              >
-                + Link Platform
-              </button>
-            </div>
-
-            {(leagues || []).map((lg, idx) => (
-              <div key={lg.id || idx} className="bg-slate-800/80 rounded-2xl border border-slate-700/80 p-3.5 space-y-2">
-                <div className="flex justify-between items-center">
-                  <div className="font-bold text-white text-sm">{lg.name || `League ${idx + 1}`}</div>
-                  <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-full bg-slate-700/60 text-slate-300">
-                    {lg.platform || 'Custom'}
-                  </span>
-                </div>
-                <div className="flex justify-between text-xs text-slate-400">
-                  <span>Matchup vs {lg.opponentName || 'Opponent'}</span>
-                  <span className="font-bold text-slate-200">
-                    {Number(lg.userPoints || 0).toFixed(2)} - {Number(lg.oppPoints || 0).toFixed(2)}
-                  </span>
-                </div>
-              </div>
-            ))}
           </div>
         )}
       </main>
