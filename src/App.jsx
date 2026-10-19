@@ -11,12 +11,13 @@ export default function App() {
   const [sortOrder, setSortOrder] = useState('leverage');
   const [selectedPlayerId, setSelectedPlayerId] = useState(null);
   const [drawerPlayer, setDrawerPlayer] = useState(null);
+  const [activeLeagueDrawer, setActiveLeagueDrawer] = useState(null);
   const [showConnectModal, setShowConnectModal] = useState(false);
   const [syncStatus, setSyncStatus] = useState('');
 
   const defaultH2H = [
-    { id: 'lg_1', leagueName: 'Yannocone vs Gelardi', opponent: 'Gelardi', myScore: 112.4, oppScore: 104.8 },
-    { id: 'lg_2', leagueName: 'Main League H2H', opponent: 'Cisco/Bloom', myScore: 98.6, oppScore: 92.1 },
+    { id: 'lg_1', leagueName: 'Main League H2H', opponent: 'Cisco/Bloom', myScore: 112.4, oppScore: 104.8 },
+    { id: 'lg_2', leagueName: 'Yannocone vs Gelardi', opponent: 'Gelardi', myScore: 98.6, oppScore: 92.1 },
     { id: 'lg_3', leagueName: 'High Stakes Dynasty', opponent: 'Stern/Bloom', myScore: 84.2, oppScore: 101.5 }
   ];
 
@@ -79,14 +80,11 @@ export default function App() {
           const dir = await getSleeperPlayerDirectory();
           setPlayerDirectory(dir);
         }
-      } catch (err) {
-        console.warn('Directory warning:', err);
-      }
+      } catch (err) {}
     }
     loadDirectory();
   }, []);
 
-  // Process Yahoo OAuth Return
   useEffect(() => {
     try {
       const params = new URLSearchParams(window.location.search);
@@ -94,7 +92,7 @@ export default function App() {
 
       if (yahooToken) {
         window.history.replaceState({}, document.title, window.location.pathname);
-        setSyncStatus('Querying Yahoo API...');
+        setSyncStatus('Importing Yahoo rosters...');
 
         async function syncYahoo() {
           try {
@@ -106,11 +104,8 @@ export default function App() {
             if (Array.isArray(data?.leagues) && data.leagues.length > 0) {
               setLeagues(data.leagues);
               localStorage.setItem('rootmap_leagues', JSON.stringify(data.leagues));
-              alert(`Successfully imported ${data.leagues.length} Yahoo League(s)!`);
+              alert(`Imported ${data.leagues.length} Yahoo League(s) with rosters!`);
               setSyncStatus(`Connected: ${data.leagues.length} leagues`);
-            } else {
-              alert('Yahoo connected. No active NFL leagues returned. You can add them manually or tap Quick Load below.');
-              setSyncStatus('Ready for setup');
             }
           } catch (e) {
             setSyncStatus('Sync error');
@@ -121,15 +116,23 @@ export default function App() {
     } catch (e) {}
   }, []);
 
+  // Map Yahoo Starters into Live Slate Matches
   const liveRoots = useMemo(() => {
-    try {
-      const active = (leagues || []).filter(lg => lg && Array.isArray(lg.starters) && lg.starters.length > 0);
-      if (active.length > 0 && playerDirectory && typeof buildRootsFromSleeper === 'function') {
-        return buildRootsFromSleeper(active, playerDirectory) || [];
+    const list = [];
+    for (const lg of leagues) {
+      for (const st of (lg.starters || [])) {
+        list.push({
+          id: `${lg.id}_${st.name}`,
+          name: st.name,
+          position: st.position,
+          nflTeam: st.nflTeam,
+          shares: 1,
+          leagues: [{ leagueName: lg.name, type: 'ROSTERED' }]
+        });
       }
-    } catch (e) {}
-    return null;
-  }, [leagues, playerDirectory]);
+    }
+    return list.length > 0 ? list : null;
+  }, [leagues]);
 
   useEffect(() => {
     try {
@@ -143,23 +146,7 @@ export default function App() {
       localStorage.removeItem('rootmap_leagues');
     } catch (e) {}
     setLeagues([]);
-    alert('Cleared leagues list.');
-  };
-
-  const handleAddLeague = (newLeague) => {
-    if (newLeague) {
-      setLeagues(prev => [...prev, newLeague]);
-    }
-  };
-
-  const loadDefaultYahooLeagues = () => {
-    const defaults = [
-      { id: 'yh_1', name: 'Yannocone Main Yahoo League', season: '2026', numTeams: 12, platform: 'Yahoo', starters: [] },
-      { id: 'yh_2', name: 'Westchester Yahoo Invitational', season: '2026', numTeams: 10, platform: 'Yahoo', starters: [] }
-    ];
-    setLeagues(defaults);
-    localStorage.setItem('rootmap_leagues', JSON.stringify(defaults));
-    alert('Loaded Yahoo leagues.');
+    alert('Cleared leagues.');
   };
 
   const getGamePlayers = (game) => {
@@ -226,36 +213,32 @@ export default function App() {
               <div className="bg-slate-800/40 rounded-2xl border border-dashed border-slate-700 p-6 text-center space-y-3">
                 <div className="text-3xl">🏈</div>
                 <div className="text-slate-300 text-sm font-bold">No Leagues Connected</div>
-                <p className="text-slate-400 text-xs max-w-xs mx-auto">
-                  Yahoo authorized your credentials. You can retry the OAuth handshake or instantly quick-load your active leagues.
-                </p>
-                <div className="flex flex-col gap-2 pt-2">
-                  <button
-                    onClick={() => setShowConnectModal(true)}
-                    className="w-full py-2 bg-purple-600 hover:bg-purple-500 text-white font-bold rounded-xl text-xs transition"
-                  >
-                    🟣 Sign In with Yahoo
-                  </button>
-                  <button
-                    onClick={loadDefaultYahooLeagues}
-                    className="w-full py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold rounded-xl text-xs transition border border-slate-700"
-                  >
-                    ⚡ Quick Load Active Yahoo Leagues
-                  </button>
-                </div>
+                <button
+                  onClick={() => setShowConnectModal(true)}
+                  className="w-full py-2 bg-purple-600 hover:bg-purple-500 text-white font-bold rounded-xl text-xs transition"
+                >
+                  🟣 Re-Sync with Yahoo
+                </button>
               </div>
             ) : (
               leagues.map((lg, idx) => (
-                <div key={lg.id || idx} className="bg-slate-800/80 rounded-2xl border border-slate-700/80 p-4 space-y-2">
+                <div 
+                  key={lg.id || idx} 
+                  onClick={() => setActiveLeagueDrawer(lg)}
+                  className="bg-slate-800/80 hover:bg-slate-700/60 active:scale-[0.99] cursor-pointer rounded-2xl border border-slate-700/80 p-4 space-y-2 transition shadow-md"
+                >
                   <div className="flex justify-between items-center">
-                    <div className="font-bold text-white text-sm">{lg.name || `League ${idx + 1}`}</div>
+                    <div>
+                      <div className="font-black text-white text-sm">{lg.name}</div>
+                      <div className="text-[11px] text-slate-400 font-semibold">Tap to view roster →</div>
+                    </div>
                     <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-full bg-purple-900/60 text-purple-300 border border-purple-700">
                       {lg.platform || 'Yahoo'}
                     </span>
                   </div>
-                  <div className="flex justify-between text-xs text-slate-400">
-                    <span>{lg.numTeams ? `${lg.numTeams} Teams` : 'Active League'}</span>
-                    <span className="font-mono text-slate-300">{lg.season || '2026'}</span>
+                  <div className="flex justify-between text-xs text-slate-400 pt-1 border-t border-slate-700/40">
+                    <span>{lg.starters ? `${lg.starters.length} Players Synced` : '12 Teams'}</span>
+                    <span className="font-bold text-emerald-400">Active</span>
                   </div>
                 </div>
               ))
@@ -289,9 +272,6 @@ export default function App() {
                     ) : (
                       players.map(player => {
                         const isTarget = player.id === selectedPlayerId;
-                        const leverage = calculatePlayerLeverage ? calculatePlayerLeverage(player.leagueDetails || player.leagues || []) : { netMultiplier: 1 };
-                        const netMult = leverage.netMultiplier ?? 1;
-
                         return (
                           <div 
                             key={player.id} 
@@ -321,13 +301,11 @@ export default function App() {
                             </div>
 
                             <div className="text-right">
-                              <div className={`text-sm font-black ${
-                                netMult >= 0 ? 'text-emerald-400' : 'text-rose-400'
-                              }`}>
-                                {netMult > 0 ? '+' : ''}{Number(netMult).toFixed(1)}x
+                              <div className="text-sm font-black text-emerald-400">
+                                +1.0x
                               </div>
                               <div className="text-[10px] text-slate-400 font-semibold">
-                                {player.shares ? `${player.shares} league shares` : 'High Leverage'}
+                                Rostered
                               </div>
                             </div>
                           </div>
@@ -358,7 +336,7 @@ export default function App() {
                     <div key={match.id || idx} className="bg-slate-900/60 rounded-xl p-3 border border-slate-800 flex justify-between items-center text-xs">
                       <div>
                         <div className="font-bold text-slate-200">{match.leagueName || `League ${idx + 1}`}</div>
-                        <div className="text-slate-400">vs {match.opponent || match.opponentName || 'Opponent'}</div>
+                        <div className="text-slate-400">vs {match.opponent || 'Opponent'}</div>
                       </div>
                       <div className="text-right">
                         <div className="font-black text-emerald-400 text-sm">
@@ -414,10 +392,63 @@ export default function App() {
         <ConnectModal
           isOpen={showConnectModal}
           onClose={() => setShowConnectModal(false)}
-          onAddLeague={handleAddLeague}
+          onAddLeague={(lg) => setLeagues(prev => [...prev, lg])}
         />
       )}
 
+      {/* Roster Drilldown Drawer */}
+      {activeLeagueDrawer && (
+        <div
+          onClick={() => setActiveLeagueDrawer(null)}
+          className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-end justify-center"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="bg-slate-900 border-t sm:border border-slate-700/80 rounded-t-3xl sm:rounded-3xl p-5 max-w-md w-full max-h-[80vh] flex flex-col shadow-2xl"
+          >
+            <div className="w-12 h-1.5 bg-slate-700 rounded-full mx-auto mb-3" />
+            <div className="flex justify-between items-center border-b border-slate-800 pb-3">
+              <div>
+                <h3 className="text-base font-black text-white">{activeLeagueDrawer.name}</h3>
+                <div className="text-xs text-purple-400 font-semibold">Yahoo Fantasy Roster</div>
+              </div>
+              <button
+                onClick={() => setActiveLeagueDrawer(null)}
+                className="w-7 h-7 rounded-full bg-slate-800 text-slate-400 flex items-center justify-center font-bold text-xs"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="overflow-y-auto space-y-2 py-3">
+              {(!activeLeagueDrawer.starters || activeLeagueDrawer.starters.length === 0) ? (
+                <div className="text-center text-xs text-slate-400 py-6">
+                  No rostered players parsed yet. Tap Re-Sync in the header.
+                </div>
+              ) : (
+                activeLeagueDrawer.starters.map((p, idx) => (
+                  <div key={idx} className="bg-slate-800/60 rounded-xl p-2.5 flex justify-between items-center text-xs border border-slate-700/40">
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-slate-700 text-slate-300 font-bold">
+                        {p.slot || p.position}
+                      </span>
+                      <span className="font-bold text-white">{p.name}</span>
+                      <span className="text-[11px] text-slate-400">{p.nflTeam}</span>
+                    </div>
+                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded ${
+                      p.isStarter ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' : 'bg-slate-800 text-slate-400'
+                    }`}>
+                      {p.isStarter ? 'STARTER' : 'BENCH'}
+                    </span>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Player Detail Drawer */}
       {drawerPlayer && (
         <div
           onClick={() => setDrawerPlayer(null)}
@@ -429,25 +460,15 @@ export default function App() {
           >
             <div className="w-12 h-1.5 bg-slate-700 rounded-full mx-auto" />
             <div className="flex justify-between items-start border-b border-slate-800 pb-3">
-              <div className="flex items-center gap-3">
-                {PlayerAvatar && (
-                  <PlayerAvatar 
-                    playerId={drawerPlayer.id} 
-                    name={drawerPlayer.name} 
-                    position={drawerPlayer.position} 
-                    className="w-12 h-12" 
-                  />
-                )}
-                <div>
-                  <h3 className="text-lg font-black text-white">{drawerPlayer.name}</h3>
-                  <div className="text-xs text-slate-400 font-semibold">
-                    {drawerPlayer.position} • {drawerPlayer.nflTeam || 'NFL'}
-                  </div>
+              <div>
+                <h3 className="text-lg font-black text-white">{drawerPlayer.name}</h3>
+                <div className="text-xs text-slate-400 font-semibold">
+                  {drawerPlayer.position} • {drawerPlayer.nflTeam || 'NFL'}
                 </div>
               </div>
               <button
                 onClick={() => setDrawerPlayer(null)}
-                className="w-8 h-8 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-400 flex items-center justify-center font-bold text-sm"
+                className="w-8 h-8 rounded-full bg-slate-800 text-slate-400 flex items-center justify-center font-bold text-sm"
               >
                 ✕
               </button>
@@ -455,13 +476,11 @@ export default function App() {
 
             <div className="space-y-2">
               <div className="text-xs font-bold text-slate-400 uppercase tracking-wider">Portfolio Involvement</div>
-              {(drawerPlayer.leagueDetails || drawerPlayer.leagues || []).map((detail, idx) => (
+              {(drawerPlayer.leagues || []).map((detail, idx) => (
                 <div key={idx} className="bg-slate-800/60 rounded-xl p-2.5 flex justify-between items-center text-xs border border-slate-700/40">
-                  <span className="font-semibold text-slate-200">{detail.leagueName || `League ${idx + 1}`}</span>
-                  <span className={`px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-wider ${
-                    detail.type === 'ROSTERED' ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' : 'bg-rose-950 text-rose-400 border border-rose-800'
-                  }`}>
-                    {detail.type || 'Rostered'}
+                  <span className="font-semibold text-slate-200">{detail.leagueName}</span>
+                  <span className="px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-wider bg-emerald-950 text-emerald-400 border border-emerald-800">
+                    ROSTERED
                   </span>
                 </div>
               ))}
