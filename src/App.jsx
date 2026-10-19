@@ -13,20 +13,19 @@ export default function App() {
   const [drawerPlayer, setDrawerPlayer] = useState(null);
   const [showConnectModal, setShowConnectModal] = useState(false);
 
-  // Fallback default H2H matchups
   const defaultH2H = [
     { id: 'lg_1', leagueName: 'Yannocone vs Gelardi', opponent: 'Gelardi', myScore: 112.4, oppScore: 104.8 },
     { id: 'lg_2', leagueName: 'Main League H2H', opponent: 'Cisco/Bloom', myScore: 98.6, oppScore: 92.1 },
     { id: 'lg_3', leagueName: 'High Stakes Dynasty', opponent: 'Stern/Bloom', myScore: 84.2, oppScore: 101.5 }
   ];
 
-  // Games state (populated via ESPN live scoreboard feed)
   const [games, setGames] = useState(() => {
     try {
       const saved = localStorage.getItem('rootmap_games');
-      return saved ? JSON.parse(saved) : initialGames;
+      const parsed = saved ? JSON.parse(saved) : null;
+      return (Array.isArray(parsed) && parsed.length > 0) ? parsed : (initialGames || []);
     } catch {
-      return initialGames;
+      return initialGames || [];
     }
   });
 
@@ -44,15 +43,14 @@ export default function App() {
     try {
       const saved = localStorage.getItem('rootmap_leagues');
       const parsed = saved ? JSON.parse(saved) : null;
-      return (Array.isArray(parsed) && parsed.length > 0) ? parsed : initialLeagues;
+      return (Array.isArray(parsed) && parsed.length > 0) ? parsed : (initialLeagues || []);
     } catch {
-      return initialLeagues;
+      return initialLeagues || [];
     }
   });
 
   const [playerDirectory, setPlayerDirectory] = useState(null);
 
-  // Live ESPN score & slate loader
   const refreshLiveSlate = async () => {
     try {
       const liveGames = await fetchLiveNFLSlate();
@@ -63,74 +61,79 @@ export default function App() {
         } catch (e) {}
       }
     } catch (err) {
-      console.warn('Error fetching live ESPN scoreboard:', err);
+      console.warn('Scoreboard fetch error:', err);
     }
   };
 
-  // Immediate load on mount + 60s background refresh
   useEffect(() => {
     refreshLiveSlate();
     const interval = setInterval(refreshLiveSlate, 60000);
     return () => clearInterval(interval);
   }, []);
 
-  // Fetch NFL player directory metadata
   useEffect(() => {
     async function loadDirectory() {
       try {
-        const dir = await getSleeperPlayerDirectory();
-        setPlayerDirectory(dir);
+        if (typeof getSleeperPlayerDirectory === 'function') {
+          const dir = await getSleeperPlayerDirectory();
+          setPlayerDirectory(dir);
+        }
       } catch (err) {
-        console.warn('Could not load player directory:', err);
+        console.warn('Player directory load warning:', err);
       }
     }
     loadDirectory();
   }, []);
 
-  // Catch incoming Yahoo OAuth token from redirect URL and auto-sync leagues
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const yahooToken = params.get('yahoo_token');
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const yahooToken = params.get('yahoo_token');
 
-    if (yahooToken) {
-      window.history.replaceState({}, document.title, window.location.pathname);
+      if (yahooToken) {
+        window.history.replaceState({}, document.title, window.location.pathname);
 
-      async function syncYahooLeagues() {
-        try {
-          const res = await fetch('/api/yahoo/rosters', {
-            headers: { 'Authorization': `Bearer ${yahooToken}` }
-          });
-          if (!res.ok) throw new Error('Yahoo sync failed');
-          const data = await res.json();
-          if (Array.isArray(data.leagues) && data.leagues.length > 0) {
-            setLeagues(prev => {
-              const existingIds = new Set(prev.map(l => l.id));
-              const newLeagues = data.leagues.filter(l => !existingIds.has(l.id));
-              return [...prev, ...newLeagues];
+        async function syncYahoo() {
+          try {
+            const res = await fetch('/api/yahoo/rosters', {
+              headers: {
+                Authorization: `Bearer ${yahooToken}`
+              }
             });
-            alert(`Successfully connected Yahoo! Imported ${data.leagues.length} league(s).`);
+            if (!res.ok) return;
+            const data = await res.json();
+            if (Array.isArray(data?.leagues) && data.leagues.length > 0) {
+              setLeagues(prev => {
+                const existing = new Set(prev.map(l => l.id));
+                const fresh = data.leagues.filter(l => !existing.has(l.id));
+                return [...prev, ...fresh];
+              });
+            }
+          } catch (syncErr) {
+            console.warn('Yahoo background sync failed:', syncErr);
           }
-        } catch (err) {
-          console.error('Failed to sync Yahoo leagues:', err);
         }
+        syncYahoo();
       }
-      syncYahooLeagues();
+    } catch (e) {
+      console.warn('URL parameter parsing failed:', e);
     }
   }, []);
 
-  // Compute live roots if leagues with starters exist
   const liveRoots = useMemo(() => {
-    const activeLeaguesWithStarters = (leagues || []).filter(
-      lg => lg && Array.isArray(lg.starters) && lg.starters.length > 0
-    );
-
-    if (activeLeaguesWithStarters.length > 0 && playerDirectory) {
-      return buildRootsFromSleeper(activeLeaguesWithStarters, playerDirectory);
+    try {
+      const active = (leagues || []).filter(
+        lg => lg && Array.isArray(lg.starters) && lg.starters.length > 0
+      );
+      if (active.length > 0 && playerDirectory && typeof buildRootsFromSleeper === 'function') {
+        return buildRootsFromSleeper(active, playerDirectory) || [];
+      }
+    } catch (e) {
+      console.warn('Error calculating live roots:', e);
     }
     return null;
   }, [leagues, playerDirectory]);
 
-  // Sync state changes to localStorage
   useEffect(() => {
     try {
       localStorage.setItem('rootmap_h2h', JSON.stringify(h2hData));
@@ -138,13 +141,14 @@ export default function App() {
     } catch (e) {}
   }, [h2hData, leagues]);
 
-  // Hard Reset: Clears browser memory and pulls fresh ESPN live slate
   const handleResetSlate = async () => {
-    localStorage.removeItem('rootmap_games');
-    localStorage.removeItem('rootmap_h2h');
-    localStorage.removeItem('rootmap_leagues');
+    try {
+      localStorage.removeItem('rootmap_games');
+      localStorage.removeItem('rootmap_h2h');
+      localStorage.removeItem('rootmap_leagues');
+    } catch (e) {}
     setH2HData(defaultH2H);
-    setLeagues(initialLeagues);
+    setLeagues(initialLeagues || []);
     await refreshLiveSlate();
   };
 
@@ -160,7 +164,7 @@ export default function App() {
       return Array.isArray(game.players) ? game.players : [];
     }
     const matching = liveRoots.filter(
-      p => p.nflTeam === game.away || p.nflTeam === game.home
+      p => p && (p.nflTeam === game.away || p.nflTeam === game.home)
     );
     return matching.length > 0 ? matching : (Array.isArray(game.players) ? game.players : []);
   };
@@ -195,7 +199,6 @@ export default function App() {
 
       {/* Main Views */}
       <main className="max-w-md mx-auto p-4 space-y-3">
-        {/* VIEW 1: Per-Game Slate */}
         {view === 'per-game' && (
           <div className="space-y-3">
             {(games || []).map(game => {
@@ -221,13 +224,13 @@ export default function App() {
                       </div>
                     ) : (
                       players.slice().sort((a, b) => {
-                        if (sortOrder !== 'leverage') return 0;
+                        if (sortOrder !== 'leverage' || !calculatePlayerLeverage) return 0;
                         const levA = Math.abs(calculatePlayerLeverage(a.leagueDetails || a.leagues || []).netMultiplier || 1);
                         const levB = Math.abs(calculatePlayerLeverage(b.leagueDetails || b.leagues || []).netMultiplier || 1);
                         return levB - levA;
                       }).map(player => {
                         const isTarget = player.id === selectedPlayerId;
-                        const leverage = calculatePlayerLeverage(player.leagueDetails || player.leagues || []);
+                        const leverage = calculatePlayerLeverage ? calculatePlayerLeverage(player.leagueDetails || player.leagues || []) : { netMultiplier: 1 };
                         const netMult = leverage.netMultiplier ?? 1;
 
                         return (
@@ -242,12 +245,14 @@ export default function App() {
                             }`}
                           >
                             <div className="flex items-center gap-2.5">
-                              <PlayerAvatar 
-                                playerId={player.id} 
-                                name={player.name} 
-                                position={player.position} 
-                                className="w-9 h-9" 
-                              />
+                              {PlayerAvatar ? (
+                                <PlayerAvatar 
+                                  playerId={player.id} 
+                                  name={player.name} 
+                                  position={player.position} 
+                                  className="w-9 h-9" 
+                                />
+                              ) : null}
                               <div>
                                 <div className="font-bold text-white text-sm leading-tight">{player.name}</div>
                                 <div className="text-[11px] font-semibold text-slate-400">
@@ -277,7 +282,6 @@ export default function App() {
           </div>
         )}
 
-        {/* VIEW 2: Blended H2H View */}
         {view === 'blended' && (
           <div className="space-y-3">
             <div className="bg-slate-800/80 rounded-2xl border border-slate-700/80 p-4">
@@ -316,7 +320,6 @@ export default function App() {
           </div>
         )}
 
-        {/* VIEW 3: All Leagues */}
         {view === 'all-leagues' && (
           <div className="space-y-3">
             <div className="flex justify-between items-center mb-2">
@@ -349,7 +352,7 @@ export default function App() {
         )}
       </main>
 
-      {/* Sticky Bottom Navigation */}
+      {/* Navigation */}
       <nav className="fixed bottom-0 left-0 right-0 z-40 bg-slate-950/95 backdrop-blur-lg border-t border-slate-800 max-w-md mx-auto">
         <div className="grid grid-cols-3 py-2 px-3 gap-1">
           <button
@@ -379,14 +382,14 @@ export default function App() {
         </div>
       </nav>
 
-      {/* Connect Platform Modal */}
-      <ConnectModal
-        isOpen={showConnectModal}
-        onClose={() => setShowConnectModal(false)}
-        onAddLeague={handleAddLeague}
-      />
+      {showConnectModal && ConnectModal && (
+        <ConnectModal
+          isOpen={showConnectModal}
+          onClose={() => setShowConnectModal(false)}
+          onAddLeague={handleAddLeague}
+        />
+      )}
 
-      {/* Slide-Up Drawer */}
       {drawerPlayer && (
         <div
           onClick={() => setDrawerPlayer(null)}
@@ -399,12 +402,14 @@ export default function App() {
             <div className="w-12 h-1.5 bg-slate-700 rounded-full mx-auto" />
             <div className="flex justify-between items-start border-b border-slate-800 pb-3">
               <div className="flex items-center gap-3">
-                <PlayerAvatar 
-                  playerId={drawerPlayer.id} 
-                  name={drawerPlayer.name} 
-                  position={drawerPlayer.position} 
-                  className="w-12 h-12" 
-                />
+                {PlayerAvatar && (
+                  <PlayerAvatar 
+                    playerId={drawerPlayer.id} 
+                    name={drawerPlayer.name} 
+                    position={drawerPlayer.position} 
+                    className="w-12 h-12" 
+                  />
+                )}
                 <div>
                   <h3 className="text-lg font-black text-white">{drawerPlayer.name}</h3>
                   <div className="text-xs text-slate-400 font-semibold">
