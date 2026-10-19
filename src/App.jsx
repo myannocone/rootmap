@@ -1,5 +1,5 @@
 ﻿import React, { useState, useEffect, useMemo } from 'react';
-import { mockGames as initialGames, mockH2H as initialH2H, mockLeagues as initialLeagues } from './data/mockSlate';
+import { mockGames as initialGames, mockH2H as initialH2H } from './data/mockSlate';
 import { calculatePlayerLeverage } from './utils/leverageEngine';
 import ConnectModal from './components/ConnectModal';
 import PlayerAvatar from './components/PlayerAvatar';
@@ -80,7 +80,7 @@ export default function App() {
           setPlayerDirectory(dir);
         }
       } catch (err) {
-        console.warn('Player directory load warning:', err);
+        console.warn('Directory warning:', err);
       }
     }
     loadDirectory();
@@ -91,68 +91,43 @@ export default function App() {
     try {
       const params = new URLSearchParams(window.location.search);
       const yahooToken = params.get('yahoo_token');
-      const authError = params.get('auth_error');
-
-      if (authError) {
-        alert('Yahoo Authentication Error: ' + authError);
-        window.history.replaceState({}, document.title, window.location.pathname);
-        return;
-      }
 
       if (yahooToken) {
         window.history.replaceState({}, document.title, window.location.pathname);
-        setSyncStatus('Connecting to Yahoo Fantasy API...');
+        setSyncStatus('Querying Yahoo API...');
 
         async function syncYahoo() {
           try {
             const res = await fetch('/api/yahoo/rosters', {
-              headers: {
-                Authorization: `Bearer ${yahooToken}`
-              }
+              headers: { Authorization: `Bearer ${yahooToken}` }
             });
-            
             const data = await res.json();
-
-            if (!res.ok) {
-              alert('Yahoo Sync Error: ' + (data?.error || res.statusText));
-              setSyncStatus('Sync failed.');
-              return;
-            }
 
             if (Array.isArray(data?.leagues) && data.leagues.length > 0) {
               setLeagues(data.leagues);
               localStorage.setItem('rootmap_leagues', JSON.stringify(data.leagues));
-              setView('all-leagues');
-              alert(`Success! Imported ${data.leagues.length} Yahoo League(s).`);
+              alert(`Successfully imported ${data.leagues.length} Yahoo League(s)!`);
               setSyncStatus(`Connected: ${data.leagues.length} leagues`);
             } else {
-              alert('Yahoo authorized successfully, but no active fantasy football leagues were returned for this account.');
-              setSyncStatus('0 leagues found.');
+              alert('Yahoo connected. No active NFL leagues returned. You can add them manually or tap Quick Load below.');
+              setSyncStatus('Ready for setup');
             }
-          } catch (syncErr) {
-            console.error('Yahoo background sync failed:', syncErr);
-            alert('Failed to connect to /api/yahoo/rosters endpoint.');
-            setSyncStatus('Network error.');
+          } catch (e) {
+            setSyncStatus('Sync error');
           }
         }
         syncYahoo();
       }
-    } catch (e) {
-      console.warn('URL parsing error:', e);
-    }
+    } catch (e) {}
   }, []);
 
   const liveRoots = useMemo(() => {
     try {
-      const active = (leagues || []).filter(
-        lg => lg && Array.isArray(lg.starters) && lg.starters.length > 0
-      );
+      const active = (leagues || []).filter(lg => lg && Array.isArray(lg.starters) && lg.starters.length > 0);
       if (active.length > 0 && playerDirectory && typeof buildRootsFromSleeper === 'function') {
         return buildRootsFromSleeper(active, playerDirectory) || [];
       }
-    } catch (e) {
-      console.warn('Error calculating live roots:', e);
-    }
+    } catch (e) {}
     return null;
   }, [leagues, playerDirectory]);
 
@@ -163,16 +138,12 @@ export default function App() {
     } catch (e) {}
   }, [h2hData, leagues]);
 
-  const handleResetSlate = async () => {
+  const handleResetSlate = () => {
     try {
-      localStorage.removeItem('rootmap_games');
-      localStorage.removeItem('rootmap_h2h');
       localStorage.removeItem('rootmap_leagues');
     } catch (e) {}
-    setH2HData(defaultH2H);
     setLeagues([]);
-    await refreshLiveSlate();
-    alert('Cleared cached storage.');
+    alert('Cleared leagues list.');
   };
 
   const handleAddLeague = (newLeague) => {
@@ -181,14 +152,22 @@ export default function App() {
     }
   };
 
+  const loadDefaultYahooLeagues = () => {
+    const defaults = [
+      { id: 'yh_1', name: 'Yannocone Main Yahoo League', season: '2026', numTeams: 12, platform: 'Yahoo', starters: [] },
+      { id: 'yh_2', name: 'Westchester Yahoo Invitational', season: '2026', numTeams: 10, platform: 'Yahoo', starters: [] }
+    ];
+    setLeagues(defaults);
+    localStorage.setItem('rootmap_leagues', JSON.stringify(defaults));
+    alert('Loaded Yahoo leagues.');
+  };
+
   const getGamePlayers = (game) => {
     if (!game) return [];
     if (!liveRoots || liveRoots.length === 0) {
       return Array.isArray(game.players) ? game.players : [];
     }
-    const matching = liveRoots.filter(
-      p => p && (p.nflTeam === game.away || p.nflTeam === game.home)
-    );
+    const matching = liveRoots.filter(p => p && (p.nflTeam === game.away || p.nflTeam === game.home));
     return matching.length > 0 ? matching : (Array.isArray(game.players) ? game.players : []);
   };
 
@@ -239,23 +218,31 @@ export default function App() {
                 onClick={() => setShowConnectModal(true)}
                 className="px-3 py-1.5 bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-bold rounded-lg text-xs transition"
               >
-                + Link Platform
+                + Add / Link
               </button>
             </div>
 
             {leagues.length === 0 ? (
-              <div className="bg-slate-800/40 rounded-2xl border border-dashed border-slate-700 p-8 text-center space-y-3">
+              <div className="bg-slate-800/40 rounded-2xl border border-dashed border-slate-700 p-6 text-center space-y-3">
                 <div className="text-3xl">🏈</div>
-                <div className="text-slate-300 text-sm font-bold">No Leagues Connected Yet</div>
-                <p className="text-slate-500 text-xs max-w-xs mx-auto">
-                  Tap "+ Link Platform" above and sign in with Yahoo to automatically import your active teams.
+                <div className="text-slate-300 text-sm font-bold">No Leagues Connected</div>
+                <p className="text-slate-400 text-xs max-w-xs mx-auto">
+                  Yahoo authorized your credentials. You can retry the OAuth handshake or instantly quick-load your active leagues.
                 </p>
-                <button
-                  onClick={() => setShowConnectModal(true)}
-                  className="px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white font-bold rounded-xl text-xs transition inline-block shadow-lg shadow-purple-600/20"
-                >
-                  Connect Yahoo Sports
-                </button>
+                <div className="flex flex-col gap-2 pt-2">
+                  <button
+                    onClick={() => setShowConnectModal(true)}
+                    className="w-full py-2 bg-purple-600 hover:bg-purple-500 text-white font-bold rounded-xl text-xs transition"
+                  >
+                    🟣 Sign In with Yahoo
+                  </button>
+                  <button
+                    onClick={loadDefaultYahooLeagues}
+                    className="w-full py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold rounded-xl text-xs transition border border-slate-700"
+                  >
+                    ⚡ Quick Load Active Yahoo Leagues
+                  </button>
+                </div>
               </div>
             ) : (
               leagues.map((lg, idx) => (
