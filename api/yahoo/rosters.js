@@ -9,85 +9,79 @@
   const token = authHeader.split(' ')[1];
 
   try {
-    // Query teams and user leagues without restrictive nfl key filters
-    const endpoints = [
-      'https://fantasysports.yahooapis.com/fantasy/v2/users;use_login=1/games/teams?format=json',
-      'https://fantasysports.yahooapis.com/fantasy/v2/users;use_login=1/games;game_keys=nfl/leagues?format=json',
-      'https://fantasysports.yahooapis.com/fantasy/v2/users;use_login=1/leagues?format=json'
-    ];
+    // 1. Get the current active NFL game key for the user
+    const gamesUrl = 'https://fantasysports.yahooapis.com/fantasy/v2/users;use_login=1/games?format=json';
+    const gamesRes = await fetch(gamesUrl, {
+      headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'application/json' }
+    });
 
-    let combinedData = [];
-
-    for (const url of endpoints) {
-      try {
-        const response = await fetch(url, {
-          headers: {
-            'Authorization': `Bearer ${token}`,
-            'Accept': 'application/json'
+    let activeGameKeys = [];
+    if (gamesRes.ok) {
+      const gamesData = await gamesRes.json();
+      const users = gamesData?.fantasy_content?.users;
+      const userObj = users?.[0]?.user;
+      const gamesList = userObj?.find(item => item?.games)?.games;
+      
+      if (gamesList && typeof gamesList === 'object') {
+        const count = gamesList.count || 0;
+        for (let i = 0; i < count; i++) {
+          const g = gamesList[i]?.game?.[0];
+          if (g && (g.code === 'nfl' || g.type === 'full')) {
+            activeGameKeys.push(g.game_key);
           }
-        });
-        if (response.ok) {
-          const json = await response.json();
-          combinedData.push(json);
         }
-      } catch (e) {
-        // Continue to fallback endpoints
       }
+    }
+
+    // Default to NFL code if none explicitly parsed
+    if (activeGameKeys.length === 0) {
+      activeGameKeys = ['nfl'];
     }
 
     const leaguesList = [];
 
-    // Helper to recursively parse Yahoo's nested JSON responses
-    function findLeaguesAndTeams(obj) {
-      if (!obj || typeof obj !== 'object') return;
+    // 2. Fetch user leagues and teams for each active key
+    for (const gKey of activeGameKeys) {
+      const url = `https://fantasysports.yahooapis.com/fantasy/v2/users;use_login=1/games;game_keys=${gKey}/leagues/teams?format=json`;
+      const r = await fetch(url, {
+        headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'application/json' }
+      });
 
-      // Match league objects
-      if (obj.league_key && (obj.name || obj.league_id)) {
-        leaguesList.push({
-          id: String(obj.league_key),
-          name: String(obj.name || `League ${obj.league_key}`),
-          season: String(obj.season || '2026'),
-          numTeams: parseInt(obj.num_teams || 12, 10),
-          platform: 'Yahoo',
-          starters: []
-        });
-      }
+      if (r.ok) {
+        const payload = await r.json();
+        
+        function parsePayload(node) {
+          if (!node || typeof node !== 'object') return;
 
-      // Match team objects that contain league metadata
-      if (obj.team_key && typeof obj.team_key === 'string') {
-        const parts = obj.team_key.split('.t.');
-        if (parts.length === 2) {
-          const leagueKey = parts[0];
-          const teamName = Array.isArray(obj.name) ? obj.name[0] : (obj.name || 'My Team');
-          leaguesList.push({
-            id: leagueKey,
-            name: String(teamName),
-            season: '2026',
-            numTeams: 12,
-            platform: 'Yahoo',
-            starters: []
-          });
+          if (node.league_key && node.name) {
+            leaguesList.push({
+              id: String(node.league_key),
+              name: String(node.name),
+              season: String(node.season || '2026'),
+              numTeams: parseInt(node.num_teams || 12, 10),
+              platform: 'Yahoo',
+              starters: []
+            });
+          }
+
+          if (Array.isArray(node)) {
+            for (const item of node) parsePayload(item);
+          } else {
+            for (const k of Object.keys(node)) parsePayload(node[k]);
+          }
         }
-      }
 
-      if (Array.isArray(obj)) {
-        for (const item of obj) findLeaguesAndTeams(item);
-      } else {
-        for (const key of Object.keys(obj)) findLeaguesAndTeams(obj[key]);
+        parsePayload(payload);
       }
     }
 
-    for (const payload of combinedData) {
-      findLeaguesAndTeams(payload);
-    }
-
-    // Deduplicate leagues by unique key
-    const uniqueLeagues = [];
+    // Deduplicate leagues by id
+    const unique = [];
     const seen = new Set();
     for (const lg of leaguesList) {
       if (!seen.has(lg.id)) {
         seen.add(lg.id);
-        uniqueLeagues.push(lg);
+        unique.push(lg);
       }
     }
 
@@ -95,9 +89,8 @@
     res.setHeader('Content-Type', 'application/json');
     return res.end(JSON.stringify({ 
       success: true, 
-      count: uniqueLeagues.length, 
-      leagues: uniqueLeagues,
-      debugEndpointCount: combinedData.length
+      count: unique.length, 
+      leagues: unique 
     }));
   } catch (err) {
     res.statusCode = 500;
