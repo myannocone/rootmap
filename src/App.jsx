@@ -1,6 +1,7 @@
 ﻿import React, { useState, useEffect, useMemo, useRef, useLayoutEffect } from 'react';
 import PlayerAvatar from './components/PlayerAvatar';
 import RootMapLogo from './components/Logo';
+import { mockGames as initialGames } from './data/mockSlate';
 import { fetchLiveNFLSlate } from './services/espnScoreboard';
 
 const INITIAL_LEAGUES = [
@@ -78,8 +79,9 @@ const INITIAL_LEAGUES = [
 ];
 
 export default function App() {
-  const [view, setView] = useState('matchups');
+  const [view, setView] = useState('matchups'); // Default to Battleboard
   const [leagues, setLeagues] = useState(INITIAL_LEAGUES);
+  const [games, setGames] = useState(initialGames || []);
   const [selectedPlayer, setSelectedPlayer] = useState(null);
   const [hoveredConflictPlayer, setHoveredConflictPlayer] = useState(null);
   const [activeLeagueDrawer, setActiveLeagueDrawer] = useState(null);
@@ -88,6 +90,24 @@ export default function App() {
   const leftCardRefs = useRef({});
   const rightCardRefs = useRef({});
   const [connectors, setConnectors] = useState([]);
+
+  // Fetch live ESPN scores on mount and every 60s
+  const refreshLiveSlate = async () => {
+    try {
+      const live = await fetchLiveNFLSlate();
+      if (Array.isArray(live) && live.length > 0) {
+        setGames(live);
+      }
+    } catch (err) {
+      console.warn('Scoreboard fetch error:', err);
+    }
+  };
+
+  useEffect(() => {
+    refreshLiveSlate();
+    const interval = setInterval(refreshLiveSlate, 60000);
+    return () => clearInterval(interval);
+  }, []);
 
   const totalNetDelta = useMemo(() => {
     return leagues.reduce((acc, lg) => acc + (lg.myScore - lg.oppScore), 0);
@@ -142,7 +162,7 @@ export default function App() {
       .sort((a, b) => b.oppShares - a.oppShares);
   }, [playerMasterIndex]);
 
-  // Dynamically compute wire paths between matched conflicted players
+  // Dynamic SVG wire computation
   const updateConnectors = () => {
     if (!containerRef.current) return;
     const containerRect = containerRef.current.getBoundingClientRect();
@@ -188,6 +208,13 @@ export default function App() {
     }
   }, [view, myPortfolio, oppThreats]);
 
+  const getGamePlayers = (game) => {
+    if (!game) return [];
+    return myPortfolio.filter(
+      p => p.nflTeam === game.away || p.nflTeam === game.home
+    );
+  };
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 pb-28 font-sans select-none">
       {/* Top Header */}
@@ -208,7 +235,7 @@ export default function App() {
 
       {/* Main Container */}
       <main className="max-w-md mx-auto p-3 space-y-3">
-        {/* VIEW 1: MATCHUPS (DUEL GRID WITH CORRIDOR SVG CONNECTORS) */}
+        {/* VIEW 1: MATCHUPS (BATTLEBOARD REPLACING BLENDED H2H) */}
         {view === 'matchups' && (
           <div className="space-y-3">
             <div className="flex justify-between items-center px-1">
@@ -234,7 +261,6 @@ export default function App() {
 
             {/* Duel Grid Relative Container for SVG Overlay */}
             <div ref={containerRef} className="relative">
-              {/* Dynamic SVG Center Corridor */}
               <svg 
                 className="pointer-events-none absolute inset-0 w-full h-full z-20 overflow-visible"
               >
@@ -256,7 +282,6 @@ export default function App() {
 
                   return (
                     <g key={c.name}>
-                      {/* Thicker background trace */}
                       <path
                         d={pathData}
                         fill="none"
@@ -266,7 +291,6 @@ export default function App() {
                         strokeOpacity={isHovered ? 1 : 0.65}
                         filter={isHovered ? "url(#wireGlow)" : undefined}
                       />
-                      {/* Connection node dots */}
                       <circle cx={c.x1} cy={c.y1} r={isHovered ? 3.5 : 2.5} fill="#10b981" />
                       <circle cx={c.x2} cy={c.y2} r={isHovered ? 3.5 : 2.5} fill="#f43f5e" />
                     </g>
@@ -274,7 +298,6 @@ export default function App() {
                 })}
               </svg>
 
-              {/* Columns */}
               <div className="grid grid-cols-2 gap-4 relative z-10">
                 {/* LEFT COLUMN: YOUR PORTFOLIO */}
                 <div className="space-y-2">
@@ -400,7 +423,85 @@ export default function App() {
           </div>
         )}
 
-        {/* VIEW 2: ALL LEAGUES */}
+        {/* VIEW 2: GAME SLATE (RESTORED WITH LIVE ESPN SCORES & CLOCKS) */}
+        {view === 'game-slate' && (
+          <div className="space-y-3">
+            <div className="bg-slate-900 rounded-2xl p-3 border border-slate-800 flex justify-between items-center">
+              <div>
+                <div className="text-xs font-black text-emerald-400 uppercase tracking-wide">
+                  Live NFL Scoreboard
+                </div>
+                <div className="text-[11px] text-slate-400">
+                  Real-time ESPN feed polling active game slates
+                </div>
+              </div>
+              <div className="text-right">
+                <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-950 text-emerald-400 border border-emerald-800">
+                  ● LIVE
+                </span>
+              </div>
+            </div>
+
+            {(games || []).map(game => {
+              const activeMatchPlayers = getGamePlayers(game);
+              return (
+                <div key={game.id} className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-sm">
+                  {/* Game Status Banner */}
+                  <div className="bg-slate-950 px-3.5 py-2.5 border-b border-slate-800 flex justify-between items-center text-xs">
+                    <div className="flex items-center gap-2">
+                      <span className="font-bold text-white">{game.away} @ {game.home}</span>
+                      <span className="font-mono text-slate-400 text-[11px]">
+                        ({game.awayScore || 0} - {game.homeScore || 0})
+                      </span>
+                    </div>
+                    <span className={`text-[11px] font-bold ${game.status?.includes('LIVE') ? 'text-emerald-400' : 'text-slate-400'}`}>
+                      {game.status} • {game.time}
+                    </span>
+                  </div>
+
+                  {/* Active Roster Players in this Game */}
+                  <div className="divide-y divide-slate-800/60 p-1">
+                    {activeMatchPlayers.length === 0 ? (
+                      <div className="p-3 text-center text-xs text-slate-500 italic">
+                        No portfolio starters active in this matchup
+                      </div>
+                    ) : (
+                      activeMatchPlayers.map(player => (
+                        <div
+                          key={player.name}
+                          onClick={() => setSelectedPlayer(player)}
+                          className="p-2.5 flex items-center justify-between cursor-pointer hover:bg-slate-800/40 rounded-xl transition"
+                        >
+                          <div className="flex items-center gap-2.5">
+                            {PlayerAvatar && (
+                              <PlayerAvatar name={player.name} position={player.position} className="w-8 h-8" />
+                            )}
+                            <div>
+                              <div className="font-bold text-white text-xs">{player.name}</div>
+                              <div className="text-[10px] text-slate-400">{player.position} • {player.nflTeam}</div>
+                            </div>
+                          </div>
+                          <div className="text-right font-mono">
+                            <div className="text-xs font-black text-emerald-400">
+                              {player.myShares} {player.myShares === 1 ? 'League' : 'Leagues'}
+                            </div>
+                            {player.oppShares > 0 && (
+                              <div className="text-[10px] text-amber-400 font-bold">
+                                Facing in {player.oppShares}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* VIEW 3: ALL LEAGUES */}
         {view === 'all-leagues' && (
           <div className="space-y-3">
             <div className="text-xs font-black uppercase tracking-wider text-slate-300">
@@ -431,36 +532,9 @@ export default function App() {
             ))}
           </div>
         )}
-
-        {/* VIEW 3: BLENDED H2H */}
-        {view === 'blended' && (
-          <div className="space-y-3">
-            <div className="text-xs font-black uppercase tracking-wider text-slate-300">
-              Blended Head-to-Head Margin
-            </div>
-            {leagues.map((lg) => {
-              const diff = lg.myScore - lg.oppScore;
-              const isWinning = diff >= 0;
-              return (
-                <div key={lg.id} className="bg-slate-900 border border-slate-800 rounded-xl p-3 flex justify-between items-center text-xs">
-                  <div>
-                    <div className="font-bold text-slate-200">{lg.name}</div>
-                    <div className="text-slate-400">vs {lg.opponent}</div>
-                  </div>
-                  <div className="text-right">
-                    <div className="font-mono font-black text-emerald-400 text-sm">{lg.myScore.toFixed(2)} pts</div>
-                    <div className={`text-[10px] font-bold ${isWinning ? 'text-emerald-400' : 'text-rose-400'}`}>
-                      {isWinning ? `+${diff.toFixed(2)}` : diff.toFixed(2)}
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
       </main>
 
-      {/* Persistent Bottom Navigation */}
+      {/* Persistent Bottom Navigation: Matchups | Game Slate | All Leagues */}
       <nav className="fixed bottom-0 left-0 right-0 z-40 bg-slate-950/95 backdrop-blur-lg border-t border-slate-800 max-w-md mx-auto">
         <div className="grid grid-cols-3 py-2 px-3 gap-1">
           <button
@@ -472,12 +546,12 @@ export default function App() {
             <span>⚔️ Matchups</span>
           </button>
           <button
-            onClick={() => setView('blended')}
+            onClick={() => setView('game-slate')}
             className={`py-2 flex flex-col items-center justify-center rounded-xl text-xs font-bold transition ${
-              view === 'blended' ? 'bg-slate-800 text-emerald-400' : 'text-slate-400 hover:text-slate-200'
+              view === 'game-slate' ? 'bg-slate-800 text-emerald-400' : 'text-slate-400 hover:text-slate-200'
             }`}
           >
-            <span>⚖️ Blended H2H</span>
+            <span>🎮 Game Slate</span>
           </button>
           <button
             onClick={() => setView('all-leagues')}
@@ -485,7 +559,7 @@ export default function App() {
               view === 'all-leagues' ? 'bg-slate-800 text-emerald-400' : 'text-slate-400 hover:text-slate-200'
             }`}
           >
-            <span>🏆 Leagues</span>
+            <span>🏆 All Leagues</span>
           </button>
         </div>
       </nav>
