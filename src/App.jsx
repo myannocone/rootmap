@@ -79,6 +79,7 @@ const INITIAL_LEAGUES = [
 ];
 
 export default function App() {
+  const [theme, setTheme] = useState('dark'); // 'dark' | 'light'
   const [view, setView] = useState('matchups');
   const [sortMode, setSortMode] = useState('exposure');
   const [leagues, setLeagues] = useState(INITIAL_LEAGUES);
@@ -91,6 +92,8 @@ export default function App() {
   const leftCardRefs = useRef({});
   const rightCardRefs = useRef({});
   const [connectors, setConnectors] = useState([]);
+
+  const isLight = theme === 'light';
 
   const refreshLiveSlate = async () => {
     try {
@@ -234,7 +237,7 @@ export default function App() {
         window.removeEventListener('resize', updateConnectors);
       };
     }
-  }, [view, sortMode, myPortfolio, oppThreats]);
+  }, [view, sortMode, theme, myPortfolio, oppThreats]);
 
   const getGamePlayers = (game) => {
     if (!game) return [];
@@ -244,17 +247,34 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 pb-28 font-sans select-none">
+    <div className={`min-h-screen pb-28 font-sans select-none transition-colors duration-200 ${
+      isLight ? 'bg-slate-100 text-slate-800' : 'bg-slate-950 text-slate-100'
+    }`}>
       {/* Top Header */}
-      <header className="sticky top-0 z-40 bg-slate-950/95 backdrop-blur-md border-b border-slate-800/80 px-4 py-3 max-w-md mx-auto flex items-center justify-between">
+      <header className={`sticky top-0 z-40 backdrop-blur-md border-b px-4 py-3 max-w-md mx-auto flex items-center justify-between transition-colors ${
+        isLight ? 'bg-white/90 border-slate-200 shadow-sm' : 'bg-slate-950/95 border-slate-800/80'
+      }`}>
         <div className="flex items-center gap-2.5">
           <RootMapLogo className="w-8 h-8" showWordmark={true} />
         </div>
         <div className="flex items-center gap-2">
+          {/* Light/Dark Toggle */}
+          <button
+            onClick={() => setTheme(prev => prev === 'dark' ? 'light' : 'dark')}
+            className={`px-2 py-1 rounded-lg text-xs font-bold border transition ${
+              isLight 
+                ? 'bg-slate-100 text-slate-700 border-slate-300 hover:bg-slate-200' 
+                : 'bg-slate-900 text-slate-300 border-slate-700 hover:bg-slate-800'
+            }`}
+          >
+            {isLight ? '🌙 Dark' : '☀️ Light'}
+          </button>
+
+          {/* Net Stance Badge */}
           <div className={`px-2.5 py-1 rounded-full text-xs font-black font-mono border ${
             totalNetDelta >= 0 
-              ? 'bg-emerald-950/80 text-emerald-400 border-emerald-700/60' 
-              : 'bg-rose-950/80 text-rose-400 border-rose-700/60'
+              ? isLight ? 'bg-emerald-50 text-emerald-700 border-emerald-300' : 'bg-emerald-950/80 text-emerald-400 border-emerald-700/60'
+              : isLight ? 'bg-rose-50 text-rose-700 border-rose-300' : 'bg-rose-950/80 text-rose-400 border-rose-700/60'
           }`}>
             {totalNetDelta >= 0 ? `+${totalNetDelta.toFixed(1)}` : totalNetDelta.toFixed(1)}
           </div>
@@ -263,27 +283,27 @@ export default function App() {
 
       {/* Main Container */}
       <main className="max-w-md mx-auto p-3 space-y-3">
-        {/* VIEW 1: MATCHUPS */}
+        {/* VIEW 1: MATCHUPS (DUEL BATTLEBOARD) */}
         {view === 'matchups' && (
           <div className="space-y-3">
             <div className="space-y-2">
               <div className="flex justify-between items-center px-1">
-                <div className="text-xs font-black uppercase tracking-wider text-slate-300">
+                <div className={`text-xs font-black uppercase tracking-wider ${isLight ? 'text-slate-700' : 'text-slate-300'}`}>
                   Week 7 Portfolio Grid
                 </div>
-                <div className="text-[11px] font-mono font-bold text-slate-400">
+                <div className={`text-[11px] font-mono font-bold ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
                   {myPortfolio.length} Active • {oppThreats.length} Threats
                 </div>
               </div>
 
-              {/* Dynamic Sort Filter Bar */}
+              {/* Dynamic Filter Strip */}
               <div className="flex gap-1.5 overflow-x-auto pb-1 scrollbar-none text-[11px] font-bold">
                 <button
                   onClick={() => setSortMode('exposure')}
                   className={`px-2.5 py-1 rounded-lg border whitespace-nowrap transition ${
                     sortMode === 'exposure'
-                      ? 'bg-slate-800 text-white border-slate-600 shadow-sm'
-                      : 'bg-slate-900/60 text-slate-400 border-slate-800 hover:text-slate-200'
+                      ? isLight ? 'bg-slate-900 text-white border-slate-900 shadow-sm' : 'bg-slate-800 text-white border-slate-600 shadow-sm'
+                      : isLight ? 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50' : 'bg-slate-900/60 text-slate-400 border-slate-800 hover:text-slate-200'
                   }`}
                 >
                   ⚡ Exposure
@@ -292,8 +312,8 @@ export default function App() {
                   onClick={() => setSortMode('live')}
                   className={`px-2.5 py-1 rounded-lg border whitespace-nowrap transition ${
                     sortMode === 'live'
-                      ? 'bg-emerald-950 text-emerald-400 border-emerald-700 shadow-sm'
-                      : 'bg-slate-900/60 text-slate-400 border-slate-800 hover:text-slate-200'
+                      ? isLight ? 'bg-emerald-600 text-white border-emerald-600 shadow-sm' : 'bg-emerald-950 text-emerald-400 border-emerald-700 shadow-sm'
+                      : isLight ? 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50' : 'bg-slate-900/60 text-slate-400 border-slate-800 hover:text-slate-200'
                   }`}
                 >
                   🟢 Live On Field
@@ -302,8 +322,8 @@ export default function App() {
                   onClick={() => setSortMode('redzone')}
                   className={`px-2.5 py-1 rounded-lg border whitespace-nowrap transition ${
                     sortMode === 'redzone'
-                      ? 'bg-rose-950 text-rose-400 border-rose-700 shadow-sm'
-                      : 'bg-slate-900/60 text-slate-400 border-slate-800 hover:text-slate-200'
+                      ? isLight ? 'bg-rose-600 text-white border-rose-600 shadow-sm' : 'bg-rose-950 text-rose-400 border-rose-700 shadow-sm'
+                      : isLight ? 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50' : 'bg-slate-900/60 text-slate-400 border-slate-800 hover:text-slate-200'
                   }`}
                 >
                   🔴 Red Zone
@@ -312,8 +332,8 @@ export default function App() {
                   onClick={() => setSortMode('conflict')}
                   className={`px-2.5 py-1 rounded-lg border whitespace-nowrap transition ${
                     sortMode === 'conflict'
-                      ? 'bg-amber-950 text-amber-400 border-amber-700 shadow-sm'
-                      : 'bg-slate-900/60 text-slate-400 border-slate-800 hover:text-slate-200'
+                      ? isLight ? 'bg-amber-500 text-slate-900 border-amber-500 font-black shadow-sm' : 'bg-amber-950 text-amber-400 border-amber-700 shadow-sm'
+                      : isLight ? 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50' : 'bg-slate-900/60 text-slate-400 border-slate-800 hover:text-slate-200'
                   }`}
                 >
                   🔀 Conflicted First
@@ -323,13 +343,21 @@ export default function App() {
 
             {/* Split Column Headers */}
             <div className="grid grid-cols-2 gap-4 text-center text-xs font-black tracking-wider uppercase">
-              <div className="bg-slate-900 border border-emerald-500/30 rounded-xl py-2 px-1 text-emerald-400 flex flex-col items-center justify-center">
+              <div className={`rounded-xl py-2 px-1 flex flex-col items-center justify-center border shadow-sm transition ${
+                isLight ? 'bg-emerald-50 border-emerald-200 text-emerald-800' : 'bg-slate-900 border-emerald-500/30 text-emerald-400'
+              }`}>
                 <span>Your Portfolio</span>
-                <span className="text-[10px] text-slate-400 font-normal">({myPortfolio.length} Active)</span>
+                <span className={`text-[10px] font-normal ${isLight ? 'text-emerald-700' : 'text-slate-400'}`}>
+                  ({myPortfolio.length} Active)
+                </span>
               </div>
-              <div className="bg-slate-900 border border-rose-500/30 rounded-xl py-2 px-1 text-rose-400 flex flex-col items-center justify-center">
+              <div className={`rounded-xl py-2 px-1 flex flex-col items-center justify-center border shadow-sm transition ${
+                isLight ? 'bg-rose-50 border-rose-200 text-rose-800' : 'bg-slate-900 border-rose-500/30 text-rose-400'
+              }`}>
                 <span>Opposition Threats</span>
-                <span className="text-[10px] text-slate-400 font-normal">({oppThreats.length} Total)</span>
+                <span className={`text-[10px] font-normal ${isLight ? 'text-rose-700' : 'text-slate-400'}`}>
+                  ({oppThreats.length} Total)
+                </span>
               </div>
             </div>
 
@@ -362,7 +390,7 @@ export default function App() {
                         stroke={isHovered ? "#f59e0b" : "url(#conflictWireGrad)"}
                         strokeWidth={isHovered ? 3.5 : 2}
                         strokeDasharray={isHovered ? "none" : "3,3"}
-                        strokeOpacity={isHovered ? 1 : 0.65}
+                        strokeOpacity={isHovered ? 1 : 0.75}
                         filter={isHovered ? "url(#wireGlow)" : undefined}
                       />
                       <circle cx={c.x1} cy={c.y1} r={isHovered ? 3.5 : 2.5} fill="#10b981" />
@@ -386,7 +414,13 @@ export default function App() {
                         onMouseEnter={() => isConflict && setHoveredConflictPlayer(player.name)}
                         onMouseLeave={() => setHoveredConflictPlayer(null)}
                         className={`relative rounded-xl p-2.5 transition active:scale-[0.98] cursor-pointer border shadow-sm ${
-                          isConflict
+                          isLight
+                            ? isConflict
+                              ? isHovered
+                                ? 'bg-amber-50 border-amber-400 ring-2 ring-amber-300'
+                                : 'bg-white border-amber-300 hover:bg-amber-50/50'
+                              : 'bg-white border-emerald-200 hover:border-emerald-300 hover:shadow'
+                            : isConflict
                             ? isHovered
                               ? 'bg-amber-950/40 border-amber-400 ring-1 ring-amber-400'
                               : 'bg-amber-950/20 border-amber-500/50 hover:bg-amber-950/30'
@@ -400,19 +434,21 @@ export default function App() {
                             </span>
                           )}
                           {player.isLive && (
-                            <span className="h-2 w-2 rounded-full bg-emerald-400 ring-2 ring-slate-950" />
+                            <span className="h-2 w-2 rounded-full bg-emerald-500 ring-2 ring-white" />
                           )}
                         </div>
 
                         <div className="flex items-start justify-between gap-1 mb-1">
                           <div className="truncate">
-                            <div className="font-black text-xs text-white truncate leading-tight">
+                            <div className={`font-black text-xs truncate leading-tight ${isLight ? 'text-slate-900' : 'text-white'}`}>
                               {player.name}
                             </div>
-                            <div className="text-[10px] font-bold text-slate-400 flex items-center gap-1 mt-0.5">
+                            <div className={`text-[10px] font-bold flex items-center gap-1 mt-0.5 ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
                               <span>{player.position} • {player.nflTeam}</span>
                               <span className={`font-mono text-[9px] px-1 py-0.2 rounded ${
-                                player.isLive ? 'bg-emerald-950/80 text-emerald-300' : 'text-slate-500'
+                                player.isLive 
+                                  ? isLight ? 'bg-emerald-100 text-emerald-800 font-bold' : 'bg-emerald-950/80 text-emerald-300' 
+                                  : isLight ? 'text-slate-400' : 'text-slate-500'
                               }`}>
                                 {player.gameClock}
                               </span>
@@ -420,29 +456,33 @@ export default function App() {
                           </div>
 
                           <div className="text-right shrink-0">
-                            <span className="font-mono font-black text-xs text-emerald-400">
+                            <span className={`font-mono font-black text-xs ${isLight ? 'text-emerald-700' : 'text-emerald-400'}`}>
                               {player.points.toFixed(1)}
                             </span>
-                            <span className="text-[9px] font-bold text-slate-400 ml-0.5">pts</span>
+                            <span className={`text-[9px] font-bold ml-0.5 ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>pts</span>
                           </div>
                         </div>
 
                         {player.bigPlay && (
                           <div className="mb-1.5">
-                            <span className="inline-flex items-center px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 font-mono text-[9px] font-black">
+                            <span className={`inline-flex items-center px-1.5 py-0.2 rounded font-mono text-[9px] font-black border ${
+                              isLight ? 'bg-amber-100 text-amber-800 border-amber-300' : 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                            }`}>
                               ⚡ {player.bigPlay}
                             </span>
                           </div>
                         )}
 
-                        <div className="flex justify-between items-center text-[10px] pt-1.5 border-t border-slate-800/80 font-mono">
-                          <span className="font-bold text-emerald-400">
+                        <div className={`flex justify-between items-center text-[10px] pt-1.5 border-t font-mono ${
+                          isLight ? 'border-slate-100' : 'border-slate-800/80'
+                        }`}>
+                          <span className={`font-bold ${isLight ? 'text-emerald-700' : 'text-emerald-400'}`}>
                             {player.myShares} {player.myShares === 1 ? 'LEAGUE' : 'LEAGUES'}
                           </span>
                           {isConflict ? (
-                            <span className="text-amber-400 font-bold">v {player.oppShares} Opp</span>
+                            <span className="text-amber-600 font-bold">v {player.oppShares} Opp</span>
                           ) : (
-                            <span className="text-slate-500">PURE</span>
+                            <span className={isLight ? 'text-slate-400' : 'text-slate-500'}>PURE</span>
                           )}
                         </div>
                       </div>
@@ -463,7 +503,13 @@ export default function App() {
                         onMouseEnter={() => isConflict && setHoveredConflictPlayer(threat.name)}
                         onMouseLeave={() => setHoveredConflictPlayer(null)}
                         className={`relative rounded-xl p-2.5 transition active:scale-[0.98] cursor-pointer border shadow-sm ${
-                          isConflict
+                          isLight
+                            ? isConflict
+                              ? isHovered
+                                ? 'bg-amber-50 border-amber-400 ring-2 ring-amber-300'
+                                : 'bg-white border-amber-300 hover:bg-amber-50/50'
+                              : 'bg-white border-rose-200 hover:border-rose-300 hover:shadow'
+                            : isConflict
                             ? isHovered
                               ? 'bg-amber-950/40 border-amber-400 ring-1 ring-amber-400'
                               : 'bg-amber-950/20 border-amber-500/50 hover:bg-amber-950/30'
@@ -477,19 +523,21 @@ export default function App() {
                             </span>
                           )}
                           {threat.isLive && (
-                            <span className="h-2 w-2 rounded-full bg-rose-400 ring-2 ring-slate-950" />
+                            <span className="h-2 w-2 rounded-full bg-rose-500 ring-2 ring-white" />
                           )}
                         </div>
 
                         <div className="flex items-start justify-between gap-1 mb-1">
                           <div className="truncate">
-                            <div className="font-black text-xs text-white truncate leading-tight">
+                            <div className={`font-black text-xs truncate leading-tight ${isLight ? 'text-slate-900' : 'text-white'}`}>
                               {threat.name}
                             </div>
-                            <div className="text-[10px] font-bold text-slate-400 flex items-center gap-1 mt-0.5">
+                            <div className={`text-[10px] font-bold flex items-center gap-1 mt-0.5 ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
                               <span>{threat.position} • {threat.nflTeam}</span>
                               <span className={`font-mono text-[9px] px-1 py-0.2 rounded ${
-                                threat.isLive ? 'bg-rose-950/80 text-rose-300' : 'text-slate-500'
+                                threat.isLive 
+                                  ? isLight ? 'bg-rose-100 text-rose-800 font-bold' : 'bg-rose-950/80 text-rose-300' 
+                                  : isLight ? 'text-slate-400' : 'text-slate-500'
                               }`}>
                                 {threat.gameClock}
                               </span>
@@ -497,29 +545,33 @@ export default function App() {
                           </div>
 
                           <div className="text-right shrink-0">
-                            <span className="font-mono font-black text-xs text-rose-400">
+                            <span className={`font-mono font-black text-xs ${isLight ? 'text-rose-700' : 'text-rose-400'}`}>
                               {threat.points.toFixed(1)}
                             </span>
-                            <span className="text-[9px] font-bold text-slate-400 ml-0.5">pts</span>
+                            <span className={`text-[9px] font-bold ml-0.5 ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>pts</span>
                           </div>
                         </div>
 
                         {threat.bigPlay && (
                           <div className="mb-1.5">
-                            <span className="inline-flex items-center px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 font-mono text-[9px] font-black">
+                            <span className={`inline-flex items-center px-1.5 py-0.2 rounded font-mono text-[9px] font-black border ${
+                              isLight ? 'bg-amber-100 text-amber-800 border-amber-300' : 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                            }`}>
                               ⚡ {threat.bigPlay}
                             </span>
                           </div>
                         )}
 
-                        <div className="flex justify-between items-center text-[10px] pt-1.5 border-t border-slate-800/80 font-mono">
-                          <span className="font-bold text-rose-400">
+                        <div className={`flex justify-between items-center text-[10px] pt-1.5 border-t font-mono ${
+                          isLight ? 'border-slate-100' : 'border-slate-800/80'
+                        }`}>
+                          <span className={`font-bold ${isLight ? 'text-rose-700' : 'text-rose-400'}`}>
                             {threat.oppShares} {threat.oppShares === 1 ? 'LEAGUE' : 'LEAGUES'}
                           </span>
                           {isConflict ? (
-                            <span className="text-amber-400 font-bold">CONFLICTED ({threat.myShares}x)</span>
+                            <span className="text-amber-600 font-bold">CONFLICTED ({threat.myShares}x)</span>
                           ) : (
-                            <span className="text-rose-400 font-bold">THREAT</span>
+                            <span className={isLight ? 'text-rose-700 font-bold' : 'text-rose-400 font-bold'}>THREAT</span>
                           )}
                         </div>
                       </div>
@@ -534,17 +586,21 @@ export default function App() {
         {/* VIEW 2: GAME SLATE */}
         {view === 'game-slate' && (
           <div className="space-y-3">
-            <div className="bg-slate-900 rounded-2xl p-3 border border-slate-800 flex justify-between items-center">
+            <div className={`rounded-2xl p-3 border flex justify-between items-center shadow-sm ${
+              isLight ? 'bg-white border-slate-200' : 'bg-slate-900 border-slate-800'
+            }`}>
               <div>
-                <div className="text-xs font-black text-emerald-400 uppercase tracking-wide">
+                <div className={`text-xs font-black uppercase tracking-wide ${isLight ? 'text-emerald-700' : 'text-emerald-400'}`}>
                   Live NFL Scoreboard
                 </div>
-                <div className="text-[11px] text-slate-400">
+                <div className={`text-[11px] ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
                   Real-time ESPN feed polling active game slates
                 </div>
               </div>
               <div className="text-right">
-                <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-950 text-emerald-400 border border-emerald-800">
+                <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold border ${
+                  isLight ? 'bg-emerald-50 text-emerald-700 border-emerald-300' : 'bg-emerald-950 text-emerald-400 border-emerald-800'
+                }`}>
                   ● LIVE
                 </span>
               </div>
@@ -553,22 +609,30 @@ export default function App() {
             {(games || []).map(game => {
               const activeMatchPlayers = getGamePlayers(game);
               return (
-                <div key={game.id} className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-sm">
-                  <div className="bg-slate-950 px-3.5 py-2.5 border-b border-slate-800 flex justify-between items-center text-xs">
+                <div key={game.id} className={`rounded-2xl overflow-hidden border shadow-sm ${
+                  isLight ? 'bg-white border-slate-200' : 'bg-slate-900 border-slate-800'
+                }`}>
+                  <div className={`px-3.5 py-2.5 border-b flex justify-between items-center text-xs ${
+                    isLight ? 'bg-slate-50 border-slate-200' : 'bg-slate-950 border-slate-800'
+                  }`}>
                     <div className="flex items-center gap-2">
-                      <span className="font-bold text-white">{game.away} @ {game.home}</span>
-                      <span className="font-mono text-slate-400 text-[11px]">
+                      <span className={`font-bold ${isLight ? 'text-slate-900' : 'text-white'}`}>{game.away} @ {game.home}</span>
+                      <span className={`font-mono text-[11px] ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
                         ({game.awayScore || 0} - {game.homeScore || 0})
                       </span>
                     </div>
-                    <span className={`text-[11px] font-bold ${game.status?.includes('LIVE') ? 'text-emerald-400' : 'text-slate-400'}`}>
+                    <span className={`text-[11px] font-bold ${
+                      game.status?.includes('LIVE') 
+                        ? isLight ? 'text-emerald-700' : 'text-emerald-400' 
+                        : isLight ? 'text-slate-500' : 'text-slate-400'
+                    }`}>
                       {game.status} • {game.time}
                     </span>
                   </div>
 
-                  <div className="divide-y divide-slate-800/60 p-1">
+                  <div className={`divide-y p-1 ${isLight ? 'divide-slate-100' : 'divide-slate-800/60'}`}>
                     {activeMatchPlayers.length === 0 ? (
-                      <div className="p-3 text-center text-xs text-slate-500 italic">
+                      <div className="p-3 text-center text-xs text-slate-400 italic">
                         No portfolio starters active in this matchup
                       </div>
                     ) : (
@@ -576,22 +640,24 @@ export default function App() {
                         <div
                           key={player.name}
                           onClick={() => setSelectedPlayer(player)}
-                          className="p-2.5 flex items-center justify-between cursor-pointer hover:bg-slate-800/40 rounded-xl transition"
+                          className={`p-2.5 flex items-center justify-between cursor-pointer rounded-xl transition ${
+                            isLight ? 'hover:bg-slate-50' : 'hover:bg-slate-800/40'
+                          }`}
                         >
                           <div className="flex items-center gap-2.5">
                             {PlayerAvatar && (
                               <PlayerAvatar name={player.name} position={player.position} className="w-8 h-8" />
                             )}
                             <div>
-                              <div className="font-bold text-white text-xs">{player.name}</div>
-                              <div className="text-[10px] text-slate-400">{player.position} • {player.nflTeam}</div>
+                              <div className={`font-bold text-xs ${isLight ? 'text-slate-900' : 'text-white'}`}>{player.name}</div>
+                              <div className={`text-[10px] ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>{player.position} • {player.nflTeam}</div>
                             </div>
                           </div>
                           <div className="text-right font-mono">
-                            <div className="text-xs font-black text-emerald-400">
+                            <div className={`text-xs font-black ${isLight ? 'text-emerald-700' : 'text-emerald-400'}`}>
                               {player.points.toFixed(1)} pts
                             </div>
-                            <div className="text-[10px] text-slate-400">
+                            <div className={`text-[10px] ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
                               {player.myShares} {player.myShares === 1 ? 'League' : 'Leagues'}
                             </div>
                           </div>
@@ -608,27 +674,35 @@ export default function App() {
         {/* VIEW 3: ALL LEAGUES */}
         {view === 'all-leagues' && (
           <div className="space-y-3">
-            <div className="text-xs font-black uppercase tracking-wider text-slate-300">
+            <div className={`text-xs font-black uppercase tracking-wider ${isLight ? 'text-slate-700' : 'text-slate-300'}`}>
               Connected Leagues ({leagues.length})
             </div>
             {leagues.map((lg) => (
               <div
                 key={lg.id}
                 onClick={() => setActiveLeagueDrawer(lg)}
-                className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-3 cursor-pointer hover:border-slate-700 transition"
+                className={`rounded-2xl p-4 space-y-3 cursor-pointer border shadow-sm transition ${
+                  isLight 
+                    ? 'bg-white border-slate-200 hover:border-slate-300 hover:shadow' 
+                    : 'bg-slate-900 border-slate-800 hover:border-slate-700'
+                }`}
               >
                 <div className="flex justify-between items-start">
                   <div>
-                    <div className="font-black text-white text-base">{lg.name}</div>
-                    <div className="text-xs text-slate-400">vs {lg.opponent}</div>
+                    <div className={`font-black text-base ${isLight ? 'text-slate-900' : 'text-white'}`}>{lg.name}</div>
+                    <div className={`text-xs ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>vs {lg.opponent}</div>
                   </div>
-                  <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-purple-950 text-purple-300 border border-purple-800 font-bold">
+                  <span className={`text-[10px] font-mono px-2 py-0.5 rounded-full font-bold border ${
+                    isLight ? 'bg-purple-50 text-purple-700 border-purple-200' : 'bg-purple-950 text-purple-300 border-purple-800'
+                  }`}>
                     {lg.platform}
                   </span>
                 </div>
-                <div className="flex justify-between items-center pt-2 border-t border-slate-800 text-xs">
-                  <span className="text-slate-400">{lg.starters.length} Starters Synced</span>
-                  <span className="font-mono font-bold text-slate-200">
+                <div className={`flex justify-between items-center pt-2 border-t text-xs ${
+                  isLight ? 'border-slate-100 text-slate-500' : 'border-slate-800 text-slate-400'
+                }`}>
+                  <span>{lg.starters.length} Starters Synced</span>
+                  <span className={`font-mono font-bold ${isLight ? 'text-slate-800' : 'text-slate-200'}`}>
                     {lg.myScore.toFixed(2)} - {lg.oppScore.toFixed(2)}
                   </span>
                 </div>
@@ -639,12 +713,16 @@ export default function App() {
       </main>
 
       {/* Persistent Bottom Navigation */}
-      <nav className="fixed bottom-0 left-0 right-0 z-40 bg-slate-950/95 backdrop-blur-lg border-t border-slate-800 max-w-md mx-auto">
+      <nav className={`fixed bottom-0 left-0 right-0 z-40 backdrop-blur-lg border-t max-w-md mx-auto transition-colors ${
+        isLight ? 'bg-white/95 border-slate-200' : 'bg-slate-950/95 border-slate-800'
+      }`}>
         <div className="grid grid-cols-3 py-2 px-3 gap-1">
           <button
             onClick={() => setView('matchups')}
             className={`py-2 flex flex-col items-center justify-center rounded-xl text-xs font-bold transition ${
-              view === 'matchups' ? 'bg-slate-800 text-emerald-400' : 'text-slate-400 hover:text-slate-200'
+              view === 'matchups' 
+                ? isLight ? 'bg-emerald-50 text-emerald-700 shadow-sm' : 'bg-slate-800 text-emerald-400' 
+                : isLight ? 'text-slate-500 hover:text-slate-800' : 'text-slate-400 hover:text-slate-200'
             }`}
           >
             <span>⚔️ Matchups</span>
@@ -652,7 +730,9 @@ export default function App() {
           <button
             onClick={() => setView('game-slate')}
             className={`py-2 flex flex-col items-center justify-center rounded-xl text-xs font-bold transition ${
-              view === 'game-slate' ? 'bg-slate-800 text-emerald-400' : 'text-slate-400 hover:text-slate-200'
+              view === 'game-slate' 
+                ? isLight ? 'bg-emerald-50 text-emerald-700 shadow-sm' : 'bg-slate-800 text-emerald-400' 
+                : isLight ? 'text-slate-500 hover:text-slate-800' : 'text-slate-400 hover:text-slate-200'
             }`}
           >
             <span>🎮 Game Slate</span>
@@ -660,7 +740,9 @@ export default function App() {
           <button
             onClick={() => setView('all-leagues')}
             className={`py-2 flex flex-col items-center justify-center rounded-xl text-xs font-bold transition ${
-              view === 'all-leagues' ? 'bg-slate-800 text-emerald-400' : 'text-slate-400 hover:text-slate-200'
+              view === 'all-leagues' 
+                ? isLight ? 'bg-emerald-50 text-emerald-700 shadow-sm' : 'bg-slate-800 text-emerald-400' 
+                : isLight ? 'text-slate-500 hover:text-slate-800' : 'text-slate-400 hover:text-slate-200'
             }`}
           >
             <span>🏆 All Leagues</span>
@@ -672,48 +754,58 @@ export default function App() {
       {selectedPlayer && (
         <div
           onClick={() => setSelectedPlayer(null)}
-          className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-end justify-center"
+          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-end justify-center"
         >
           <div
             onClick={(e) => e.stopPropagation()}
-            className="bg-slate-900 border-t sm:border border-slate-800 rounded-t-3xl sm:rounded-3xl p-5 max-w-md w-full space-y-4 shadow-2xl"
+            className={`border-t sm:border rounded-t-3xl sm:rounded-3xl p-5 max-w-md w-full space-y-4 shadow-2xl transition-colors ${
+              isLight ? 'bg-white border-slate-200' : 'bg-slate-900 border-slate-800'
+            }`}
           >
-            <div className="w-12 h-1.5 bg-slate-700 rounded-full mx-auto" />
+            <div className={`w-12 h-1.5 rounded-full mx-auto ${isLight ? 'bg-slate-300' : 'bg-slate-700'}`} />
             
-            <div className="flex justify-between items-start border-b border-slate-800 pb-3">
+            <div className={`flex justify-between items-start border-b pb-3 ${isLight ? 'border-slate-100' : 'border-slate-800'}`}>
               <div>
-                <h3 className="text-lg font-black text-white flex items-center gap-2">
+                <h3 className={`text-lg font-black flex items-center gap-2 ${isLight ? 'text-slate-900' : 'text-white'}`}>
                   <span>{selectedPlayer.name}</span>
                   {selectedPlayer.bigPlay && (
-                    <span className="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 text-xs font-mono font-black">
+                    <span className={`px-1.5 py-0.5 rounded text-xs font-mono font-black border ${
+                      isLight ? 'bg-amber-100 text-amber-800 border-amber-300' : 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                    }`}>
                       ⚡ {selectedPlayer.bigPlay}
                     </span>
                   )}
                 </h3>
-                <div className="text-xs text-slate-400 font-semibold flex items-center gap-2 mt-0.5">
+                <div className={`text-xs font-semibold flex items-center gap-2 mt-0.5 ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
                   <span>{selectedPlayer.position} • {selectedPlayer.nflTeam}</span>
                   <span>•</span>
-                  <span className="font-mono text-emerald-400 font-bold">{selectedPlayer.points.toFixed(1)} PTS</span>
+                  <span className={`font-mono font-bold ${isLight ? 'text-emerald-700' : 'text-emerald-400'}`}>
+                    {selectedPlayer.points.toFixed(1)} PTS
+                  </span>
                   <span>•</span>
-                  <span className="font-mono text-slate-400">{selectedPlayer.gameClock}</span>
+                  <span className="font-mono">{selectedPlayer.gameClock}</span>
                 </div>
               </div>
               <button
                 onClick={() => setSelectedPlayer(null)}
-                className="w-8 h-8 rounded-full bg-slate-800 text-slate-400 flex items-center justify-center font-bold text-sm"
+                className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm ${
+                  isLight ? 'bg-slate-100 text-slate-500 hover:bg-slate-200' : 'bg-slate-800 text-slate-400'
+                }`}
               >
                 ✕
               </button>
             </div>
 
-            <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 flex justify-between items-center text-xs">
-              <span className="font-bold text-slate-300">Portfolio Net Stance:</span>
-              <span className={`font-mono font-black px-2.5 py-0.5 rounded-full ${
+            <div className={`p-3 rounded-xl border flex justify-between items-center text-xs ${
+              isLight ? 'bg-slate-50 border-slate-200' : 'bg-slate-950 border-slate-800'
+            }`}>
+              <span className={`font-bold ${isLight ? 'text-slate-700' : 'text-slate-300'}`}>Portfolio Net Stance:</span>
+              <span className={`font-mono font-black px-2.5 py-0.5 rounded-full border ${
                 selectedPlayer.myShares > selectedPlayer.oppShares
-                  ? 'bg-emerald-950 text-emerald-400 border border-emerald-800'
+                  ? isLight ? 'bg-emerald-100 text-emerald-800 border-emerald-300' : 'bg-emerald-950 text-emerald-400 border-emerald-800'
                   : selectedPlayer.myShares < selectedPlayer.oppShares
-                  ? 'bg-rose-950 text-rose-400 border border-rose-800'
-                  : 'bg-amber-950 text-amber-400 border border-amber-800'
+                  ? isLight ? 'bg-rose-100 text-rose-800 border-rose-300' : 'bg-rose-950 text-rose-400 border-rose-800'
+                  : isLight ? 'bg-amber-100 text-amber-800 border-amber-300' : 'bg-amber-950 text-amber-400 border-amber-800'
               }`}>
                 {selectedPlayer.myShares > selectedPlayer.oppShares
                   ? `ROOTING FOR (+${selectedPlayer.myShares - selectedPlayer.oppShares})`
@@ -725,42 +817,56 @@ export default function App() {
 
             <div className="space-y-3">
               <div>
-                <div className="text-[11px] font-bold text-emerald-400 uppercase tracking-wider mb-1.5 flex justify-between">
+                <div className={`text-[11px] font-bold uppercase tracking-wider mb-1.5 flex justify-between ${
+                  isLight ? 'text-emerald-700' : 'text-emerald-400'
+                }`}>
                   <span>Your Roster ({selectedPlayer.myShares} Leagues)</span>
-                  <span className="text-[10px] text-slate-500">ROOTING FOR</span>
+                  <span className={`text-[10px] ${isLight ? 'text-slate-400' : 'text-slate-500'}`}>ROOTING FOR</span>
                 </div>
                 {selectedPlayer.myShares > 0 ? (
                   <div className="space-y-1.5">
                     {selectedPlayer.myLeagues.map((item, i) => (
-                      <div key={i} className="bg-slate-800/60 rounded-xl px-3 py-2 text-xs flex justify-between items-center border border-slate-700/50">
-                        <span className="font-semibold text-slate-200">{item.league}</span>
-                        <span className="text-[10px] text-slate-400">vs {item.opponent}</span>
+                      <div key={i} className={`rounded-xl px-3 py-2 text-xs flex justify-between items-center border ${
+                        isLight ? 'bg-slate-50 border-slate-200 text-slate-800' : 'bg-slate-800/60 border-slate-700/50 text-slate-200'
+                      }`}>
+                        <span className="font-semibold">{item.league}</span>
+                        <span className={`text-[10px] ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>vs {item.opponent}</span>
                       </div>
                     ))}
                   </div>
                 ) : (
-                  <div className="bg-slate-950/40 rounded-xl p-2.5 text-xs text-slate-500 italic text-center border border-slate-800/50">
+                  <div className={`rounded-xl p-2.5 text-xs italic text-center border ${
+                    isLight ? 'bg-slate-50 border-slate-200 text-slate-400' : 'bg-slate-950/40 border-slate-800/50 text-slate-500'
+                  }`}>
                     Not rostered on any of your active teams
                   </div>
                 )}
               </div>
 
               <div>
-                <div className="text-[11px] font-bold text-rose-400 uppercase tracking-wider mb-1.5 flex justify-between">
+                <div className={`text-[11px] font-bold uppercase tracking-wider mb-1.5 flex justify-between ${
+                  isLight ? 'text-rose-700' : 'text-rose-400'
+                }`}>
                   <span>Opponent Starters ({selectedPlayer.oppShares} Leagues)</span>
-                  <span className="text-[10px] text-slate-500">ROOTING AGAINST</span>
+                  <span className={`text-[10px] ${isLight ? 'text-slate-400' : 'text-slate-500'}`}>ROOTING AGAINST</span>
                 </div>
                 {selectedPlayer.oppShares > 0 ? (
                   <div className="space-y-1.5">
                     {selectedPlayer.oppLeagues.map((item, i) => (
-                      <div key={i} className="bg-slate-800/60 rounded-xl px-3 py-2 text-xs flex justify-between items-center border border-slate-700/50">
-                        <span className="font-semibold text-slate-200">{item.league}</span>
-                        <span className="text-[10px] text-rose-400 font-bold">Started by {item.opponent}</span>
+                      <div key={i} className={`rounded-xl px-3 py-2 text-xs flex justify-between items-center border ${
+                        isLight ? 'bg-slate-50 border-slate-200 text-slate-800' : 'bg-slate-800/60 border-slate-700/50 text-slate-200'
+                      }`}>
+                        <span className="font-semibold">{item.league}</span>
+                        <span className={`text-[10px] font-bold ${isLight ? 'text-rose-700' : 'text-rose-400'}`}>
+                          Started by {item.opponent}
+                        </span>
                       </div>
                     ))}
                   </div>
                 ) : (
-                  <div className="bg-slate-950/40 rounded-xl p-2.5 text-xs text-slate-500 italic text-center border border-slate-800/50">
+                  <div className={`rounded-xl p-2.5 text-xs italic text-center border ${
+                    isLight ? 'bg-slate-50 border-slate-200 text-slate-400' : 'bg-slate-950/40 border-slate-800/50 text-slate-500'
+                  }`}>
                     Zero opponent exposure across your leagues
                   </div>
                 )}
@@ -774,36 +880,44 @@ export default function App() {
       {activeLeagueDrawer && (
         <div
           onClick={() => setActiveLeagueDrawer(null)}
-          className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-end justify-center"
+          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-end justify-center"
         >
           <div
             onClick={(e) => e.stopPropagation()}
-            className="bg-slate-900 border-t sm:border border-slate-800 rounded-t-3xl sm:rounded-3xl p-5 max-w-md w-full max-h-[80vh] flex flex-col shadow-2xl"
+            className={`border-t sm:border rounded-t-3xl sm:rounded-3xl p-5 max-w-md w-full max-h-[80vh] flex flex-col shadow-2xl transition-colors ${
+              isLight ? 'bg-white border-slate-200' : 'bg-slate-900 border-slate-800'
+            }`}
           >
-            <div className="w-12 h-1.5 bg-slate-700 rounded-full mx-auto mb-3" />
-            <div className="flex justify-between items-center border-b border-slate-800 pb-3">
+            <div className={`w-12 h-1.5 rounded-full mx-auto mb-3 ${isLight ? 'bg-slate-300' : 'bg-slate-700'}`} />
+            <div className={`flex justify-between items-center border-b pb-3 ${isLight ? 'border-slate-100' : 'border-slate-800'}`}>
               <div>
-                <h3 className="text-base font-black text-white">{activeLeagueDrawer.name}</h3>
-                <div className="text-xs text-slate-400">vs {activeLeagueDrawer.opponent}</div>
+                <h3 className={`text-base font-black ${isLight ? 'text-slate-900' : 'text-white'}`}>{activeLeagueDrawer.name}</h3>
+                <div className={`text-xs ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>vs {activeLeagueDrawer.opponent}</div>
               </div>
               <button
                 onClick={() => setActiveLeagueDrawer(null)}
-                className="w-7 h-7 rounded-full bg-slate-800 text-slate-400 flex items-center justify-center font-bold text-xs"
+                className={`w-7 h-7 rounded-full flex items-center justify-center font-bold text-xs ${
+                  isLight ? 'bg-slate-100 text-slate-500 hover:bg-slate-200' : 'bg-slate-800 text-slate-400'
+                }`}
               >
                 ✕
               </button>
             </div>
             <div className="overflow-y-auto space-y-2 py-3">
               {activeLeagueDrawer.starters.map((p, idx) => (
-                <div key={idx} className="bg-slate-800/60 rounded-xl p-2.5 flex justify-between items-center text-xs border border-slate-700/40">
+                <div key={idx} className={`rounded-xl p-2.5 flex justify-between items-center text-xs border ${
+                  isLight ? 'bg-slate-50 border-slate-200' : 'bg-slate-800/60 border-slate-700/40'
+                }`}>
                   <div className="flex items-center gap-2">
-                    <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-slate-700 text-slate-300 font-bold">
+                    <span className={`font-mono text-[10px] px-1.5 py-0.5 rounded font-bold ${
+                      isLight ? 'bg-slate-200 text-slate-700' : 'bg-slate-700 text-slate-300'
+                    }`}>
                       {p.slot}
                     </span>
-                    <span className="font-bold text-white">{p.name}</span>
-                    <span className="text-[11px] text-slate-400">{p.nflTeam}</span>
+                    <span className={`font-bold ${isLight ? 'text-slate-900' : 'text-white'}`}>{p.name}</span>
+                    <span className={`text-[11px] ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>{p.nflTeam}</span>
                   </div>
-                  <span className="font-mono font-bold text-emerald-400">{p.points} pts</span>
+                  <span className={`font-mono font-bold ${isLight ? 'text-emerald-700' : 'text-emerald-400'}`}>{p.points} pts</span>
                 </div>
               ))}
             </div>
