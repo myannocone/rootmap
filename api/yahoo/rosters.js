@@ -8,34 +8,37 @@
 
   const token = authHeader.split(' ')[1];
 
+  const customHeaders = {
+    'Authorization': `Bearer ${token}`,
+    'Accept': 'application/json',
+    'User-Agent': 'RootMapFantasy/1.0.0 (Windows NT 10.0; Win64; x64)'
+  };
+
   try {
-    // Primary: fetch leagues directly via game_keys=nfl
-    const targetUrl = 'https://fantasysports.yahooapis.com/fantasy/v2/users;use_login=1/games;game_keys=nfl/leagues?format=json';
-    
-    let response = await fetch(targetUrl, {
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Accept': 'application/json'
-      }
-    });
+    // 1. Try fetching current NFL metadata & games
+    const testEndpoints = [
+      'https://fantasysports.yahooapis.com/fantasy/v2/game/nfl?format=json',
+      'https://fantasysports.yahooapis.com/fantasy/v2/users;use_login=1/games;game_keys=nfl/leagues?format=json',
+      'https://fantasysports.yahooapis.com/fantasy/v2/users;use_login=1/games/teams?format=json'
+    ];
 
-    let rawText = await response.text();
-    let status = response.status;
-    let usedUrl = targetUrl;
+    let result = null;
+    let successfulUrl = '';
 
-    // Fallback if use_login=1 games returned 403: query teams directly
-    if (status === 403) {
-      const fallbackUrl = 'https://fantasysports.yahooapis.com/fantasy/v2/users;use_login=1/teams?format=json';
-      const fallbackRes = await fetch(fallbackUrl, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Accept': 'application/json'
+    for (const url of testEndpoints) {
+      try {
+        const r = await fetch(url, { headers: customHeaders });
+        const text = await r.text();
+        if (r.ok) {
+          result = { status: r.status, url, body: text };
+          successfulUrl = url;
+          break;
+        } else if (!result) {
+          // Store first error for diagnostic review if all fail
+          result = { status: r.status, url, body: text };
         }
-      });
-      if (fallbackRes.ok) {
-        status = fallbackRes.status;
-        rawText = await fallbackRes.text();
-        usedUrl = fallbackUrl;
+      } catch (err) {
+        // Continue to fallback endpoint
       }
     }
 
@@ -43,10 +46,10 @@
     res.setHeader('Content-Type', 'application/json');
     return res.end(JSON.stringify({
       debug: true,
-      httpStatus: status,
-      targetUrl: usedUrl,
-      rawLength: rawText.length,
-      rawPayload: rawText
+      httpStatus: result?.status || 500,
+      targetUrl: successfulUrl || result?.url,
+      rawLength: result?.body?.length || 0,
+      rawPayload: result?.body || 'No response body'
     }));
   } catch (err) {
     res.statusCode = 500;
