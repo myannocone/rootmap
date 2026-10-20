@@ -14,21 +14,21 @@ const INITIAL_LEAGUES = [
     myScore: 126.28,
     oppScore: 126.44,
     starters: [
-      { name: 'Justin Herbert', nflTeam: 'LAC', position: 'QB', slot: 'QB', points: 18.4, isLive: true, inRedZone: true },
-      { name: 'Saquon Barkley', nflTeam: 'PHI', position: 'RB', slot: 'RB', points: 24.2, isLive: true, inRedZone: false },
-      { name: 'Amon-Ra St. Brown', nflTeam: 'DET', position: 'WR', slot: 'WR', points: 16.8, isLive: false, inRedZone: false },
-      { name: 'Nico Collins', nflTeam: 'HOU', position: 'WR', slot: 'WR', points: 14.1, isLive: false, inRedZone: false },
-      { name: 'Trey McBride', nflTeam: 'ARI', position: 'TE', slot: 'TE', points: 11.6, isLive: true, inRedZone: false },
-      { name: 'Zay Flowers', nflTeam: 'BAL', position: 'WR', slot: 'FLEX', points: 13.9, isLive: false, inRedZone: false },
-      { name: 'Roquan Smith', nflTeam: 'BAL', position: 'LB', slot: 'IDP', points: 12.0, isLive: false, inRedZone: false },
-      { name: 'Bobby Wagner', nflTeam: 'WAS', position: 'LB', slot: 'IDP', points: 10.5, isLive: false, inRedZone: false }
+      { name: 'Justin Herbert', nflTeam: 'LAC', position: 'QB', slot: 'QB', points: 18.4, isLive: true, inRedZone: true, bigPlay: null },
+      { name: 'Saquon Barkley', nflTeam: 'PHI', position: 'RB', slot: 'RB', points: 24.2, isLive: true, inRedZone: false, bigPlay: '42yd TD' },
+      { name: 'Amon-Ra St. Brown', nflTeam: 'DET', position: 'WR', slot: 'WR', points: 16.8, isLive: false, inRedZone: false, bigPlay: null },
+      { name: 'Nico Collins', nflTeam: 'HOU', position: 'WR', slot: 'WR', points: 14.1, isLive: false, inRedZone: false, bigPlay: null },
+      { name: 'Trey McBride', nflTeam: 'ARI', position: 'TE', slot: 'TE', points: 11.6, isLive: true, inRedZone: false, bigPlay: null },
+      { name: 'Zay Flowers', nflTeam: 'BAL', position: 'WR', slot: 'FLEX', points: 13.9, isLive: false, inRedZone: false, bigPlay: null },
+      { name: 'Roquan Smith', nflTeam: 'BAL', position: 'LB', slot: 'IDP', points: 12.0, isLive: false, inRedZone: false, bigPlay: null },
+      { name: 'Bobby Wagner', nflTeam: 'WAS', position: 'LB', slot: 'IDP', points: 10.5, isLive: false, inRedZone: false, bigPlay: null }
     ],
     opponentStarters: [
-      { name: 'Patrick Mahomes', nflTeam: 'KC', position: 'QB', slot: 'QB', points: 21.6, isLive: true, inRedZone: true },
-      { name: 'Tyreek Hill', nflTeam: 'MIA', position: 'WR', slot: 'WR', points: 19.4, isLive: false, inRedZone: false },
-      { name: 'Alvin Kamara', nflTeam: 'NO', position: 'RB', slot: 'RB', points: 15.2, isLive: false, inRedZone: false },
-      { name: 'George Kittle', nflTeam: 'SF', position: 'TE', slot: 'TE', points: 13.8, isLive: true, inRedZone: false },
-      { name: 'Fred Warner', nflTeam: 'SF', position: 'LB', slot: 'IDP', points: 9.5, isLive: true, inRedZone: false }
+      { name: 'Patrick Mahomes', nflTeam: 'KC', position: 'QB', slot: 'QB', points: 21.6, isLive: true, inRedZone: true, bigPlay: '35yd PASS' },
+      { name: 'Tyreek Hill', nflTeam: 'MIA', position: 'WR', slot: 'WR', points: 19.4, isLive: false, inRedZone: false, bigPlay: null },
+      { name: 'Alvin Kamara', nflTeam: 'NO', position: 'RB', slot: 'RB', points: 15.2, isLive: false, inRedZone: false, bigPlay: null },
+      { name: 'George Kittle', nflTeam: 'SF', position: 'TE', slot: 'TE', points: 13.8, isLive: true, inRedZone: false, bigPlay: null },
+      { name: 'Fred Warner', nflTeam: 'SF', position: 'LB', slot: 'IDP', points: 9.5, isLive: true, inRedZone: false, bigPlay: null }
     ]
   },
   {
@@ -40,18 +40,18 @@ const INITIAL_LEAGUES = [
     myScore: 114.60,
     oppScore: 108.20,
     starters: [
-      { name: 'Lamar Jackson', nflTeam: 'BAL', position: 'QB', slot: 'QB', points: 26.4, isLive: false, inRedZone: false },
-      { name: 'Bijan Robinson', nflTeam: 'ATL', position: 'RB', slot: 'RB', points: 17.5, isLive: false, inRedZone: false },
-      { name: 'Saquon Barkley', nflTeam: 'PHI', position: 'RB', slot: 'RB', points: 24.2, isLive: true, inRedZone: false },
-      { name: 'CeeDee Lamb', nflTeam: 'DAL', position: 'WR', slot: 'WR', points: 18.2, isLive: true, inRedZone: true },
-      { name: 'George Kittle', nflTeam: 'SF', position: 'TE', slot: 'TE', points: 13.8, isLive: true, inRedZone: false },
-      { name: 'Fred Warner', nflTeam: 'SF', position: 'LB', slot: 'IDP', points: 9.5, isLive: true, inRedZone: false }
+      { name: 'Lamar Jackson', nflTeam: 'BAL', position: 'QB', slot: 'QB', points: 26.4, isLive: false, inRedZone: false, bigPlay: null },
+      { name: 'Bijan Robinson', nflTeam: 'ATL', position: 'RB', slot: 'RB', points: 17.5, isLive: false, inRedZone: false, bigPlay: null },
+      { name: 'Saquon Barkley', nflTeam: 'PHI', position: 'RB', slot: 'RB', points: 24.2, isLive: true, inRedZone: false, bigPlay: '42yd TD' },
+      { name: 'CeeDee Lamb', nflTeam: 'DAL', position: 'WR', slot: 'WR', points: 18.2, isLive: true, inRedZone: true, bigPlay: '28yd REC' },
+      { name: 'George Kittle', nflTeam: 'SF', position: 'TE', slot: 'TE', points: 13.8, isLive: true, inRedZone: false, bigPlay: null },
+      { name: 'Fred Warner', nflTeam: 'SF', position: 'LB', slot: 'IDP', points: 9.5, isLive: true, inRedZone: false, bigPlay: null }
     ],
     opponentStarters: [
-      { name: 'Josh Allen', nflTeam: 'BUF', position: 'QB', slot: 'QB', points: 24.8, isLive: false, inRedZone: false },
-      { name: 'Justin Jefferson', nflTeam: 'MIN', position: 'WR', slot: 'WR', points: 20.1, isLive: false, inRedZone: false },
-      { name: 'Travis Kelce', nflTeam: 'KC', position: 'TE', slot: 'TE', points: 11.2, isLive: true, inRedZone: true },
-      { name: 'Roquan Smith', nflTeam: 'BAL', position: 'LB', slot: 'IDP', points: 12.0, isLive: false, inRedZone: false }
+      { name: 'Josh Allen', nflTeam: 'BUF', position: 'QB', slot: 'QB', points: 24.8, isLive: false, inRedZone: false, bigPlay: null },
+      { name: 'Justin Jefferson', nflTeam: 'MIN', position: 'WR', slot: 'WR', points: 20.1, isLive: false, inRedZone: false, bigPlay: null },
+      { name: 'Travis Kelce', nflTeam: 'KC', position: 'TE', slot: 'TE', points: 11.2, isLive: true, inRedZone: true, bigPlay: null },
+      { name: 'Roquan Smith', nflTeam: 'BAL', position: 'LB', slot: 'IDP', points: 12.0, isLive: false, inRedZone: false, bigPlay: null }
     ]
   },
   {
@@ -63,24 +63,24 @@ const INITIAL_LEAGUES = [
     myScore: 98.40,
     oppScore: 112.50,
     starters: [
-      { name: 'Josh Allen', nflTeam: 'BUF', position: 'QB', slot: 'QB', points: 24.8, isLive: false, inRedZone: false },
-      { name: 'James Cook', nflTeam: 'BUF', position: 'RB', slot: 'RB', points: 16.3, isLive: false, inRedZone: false },
-      { name: 'Justin Jefferson', nflTeam: 'MIN', position: 'WR', slot: 'WR', points: 20.1, isLive: false, inRedZone: false },
-      { name: 'Davante Adams', nflTeam: 'NYJ', position: 'WR', slot: 'WR', points: 12.4, isLive: false, inRedZone: false },
-      { name: 'Brock Bowers', nflTeam: 'LV', position: 'TE', slot: 'TE', points: 14.5, isLive: true, inRedZone: false }
+      { name: 'Josh Allen', nflTeam: 'BUF', position: 'QB', slot: 'QB', points: 24.8, isLive: false, inRedZone: false, bigPlay: null },
+      { name: 'James Cook', nflTeam: 'BUF', position: 'RB', slot: 'RB', points: 16.3, isLive: false, inRedZone: false, bigPlay: null },
+      { name: 'Justin Jefferson', nflTeam: 'MIN', position: 'WR', slot: 'WR', points: 20.1, isLive: false, inRedZone: false, bigPlay: null },
+      { name: 'Davante Adams', nflTeam: 'NYJ', position: 'WR', slot: 'WR', points: 12.4, isLive: false, inRedZone: false, bigPlay: null },
+      { name: 'Brock Bowers', nflTeam: 'LV', position: 'TE', slot: 'TE', points: 14.5, isLive: true, inRedZone: false, bigPlay: null }
     ],
     opponentStarters: [
-      { name: 'Patrick Mahomes', nflTeam: 'KC', position: 'QB', slot: 'QB', points: 21.6, isLive: true, inRedZone: true },
-      { name: 'Saquon Barkley', nflTeam: 'PHI', position: 'RB', slot: 'RB', points: 24.2, isLive: true, inRedZone: false },
-      { name: 'Amon-Ra St. Brown', nflTeam: 'DET', position: 'WR', slot: 'WR', points: 16.8, isLive: false, inRedZone: false },
-      { name: 'CeeDee Lamb', nflTeam: 'DAL', position: 'WR', slot: 'WR', points: 18.2, isLive: true, inRedZone: true }
+      { name: 'Patrick Mahomes', nflTeam: 'KC', position: 'QB', slot: 'QB', points: 21.6, isLive: true, inRedZone: true, bigPlay: '35yd PASS' },
+      { name: 'Saquon Barkley', nflTeam: 'PHI', position: 'RB', slot: 'RB', points: 24.2, isLive: true, inRedZone: false, bigPlay: '42yd TD' },
+      { name: 'Amon-Ra St. Brown', nflTeam: 'DET', position: 'WR', slot: 'WR', points: 16.8, isLive: false, inRedZone: false, bigPlay: null },
+      { name: 'CeeDee Lamb', nflTeam: 'DAL', position: 'WR', slot: 'WR', points: 18.2, isLive: true, inRedZone: true, bigPlay: '28yd REC' }
     ]
   }
 ];
 
 export default function App() {
   const [view, setView] = useState('matchups');
-  const [sortMode, setSortMode] = useState('exposure'); // 'exposure', 'live', 'redzone', 'conflict'
+  const [sortMode, setSortMode] = useState('exposure');
   const [leagues, setLeagues] = useState(INITIAL_LEAGUES);
   const [games, setGames] = useState(initialGames || []);
   const [selectedPlayer, setSelectedPlayer] = useState(null);
@@ -116,7 +116,7 @@ export default function App() {
   const playerMasterIndex = useMemo(() => {
     const map = new Map();
 
-    const getOrCreate = (name, nflTeam, position, isLive = false, inRedZone = false) => {
+    const getOrCreate = (name, nflTeam, position, isLive = false, inRedZone = false, bigPlay = null) => {
       if (!map.has(name)) {
         map.set(name, {
           name,
@@ -124,6 +124,7 @@ export default function App() {
           position,
           isLive,
           inRedZone,
+          bigPlay,
           myShares: 0,
           myLeagues: [],
           oppShares: 0,
@@ -133,12 +134,13 @@ export default function App() {
       const item = map.get(name);
       if (isLive) item.isLive = true;
       if (inRedZone) item.inRedZone = true;
+      if (bigPlay) item.bigPlay = bigPlay;
       return item;
     };
 
     leagues.forEach(lg => {
       (lg.starters || []).forEach(p => {
-        const item = getOrCreate(p.name, p.nflTeam, p.position, p.isLive, p.inRedZone);
+        const item = getOrCreate(p.name, p.nflTeam, p.position, p.isLive, p.inRedZone, p.bigPlay);
         item.myShares += 1;
         item.myLeagues.push({ league: lg.name, opponent: lg.opponent });
       });
@@ -146,7 +148,7 @@ export default function App() {
 
     leagues.forEach(lg => {
       (lg.opponentStarters || []).forEach(p => {
-        const item = getOrCreate(p.name, p.nflTeam, p.position, p.isLive, p.inRedZone);
+        const item = getOrCreate(p.name, p.nflTeam, p.position, p.isLive, p.inRedZone, p.bigPlay);
         item.oppShares += 1;
         item.oppLeagues.push({ league: lg.name, opponent: lg.opponent });
       });
@@ -155,7 +157,6 @@ export default function App() {
     return map;
   }, [leagues]);
 
-  // Dynamic sorting comparison function
   const sortComparator = (a, b, isLeftColumn) => {
     if (sortMode === 'live') {
       if (a.isLive !== b.isLive) return a.isLive ? -1 : 1;
@@ -169,7 +170,6 @@ export default function App() {
       const bConflict = (b.myShares > 0 && b.oppShares > 0) ? 1 : 0;
       if (aConflict !== bConflict) return bConflict - aConflict;
     }
-    // Fallback to primary share weight
     const aShares = isLeftColumn ? a.myShares : a.oppShares;
     const bShares = isLeftColumn ? b.myShares : b.oppShares;
     return bShares - aShares;
@@ -262,7 +262,7 @@ export default function App() {
         {/* VIEW 1: MATCHUPS */}
         {view === 'matchups' && (
           <div className="space-y-3">
-            {/* Title & Stacking Controls Strip */}
+            {/* Header & Filter Controls */}
             <div className="space-y-2">
               <div className="flex justify-between items-center px-1">
                 <div className="text-xs font-black uppercase tracking-wider text-slate-300">
@@ -293,7 +293,7 @@ export default function App() {
                       : 'bg-slate-900/60 text-slate-400 border-slate-800 hover:text-slate-200'
                   }`}
                 >
-                  🔴 Live On Field
+                  🟢 Live On Field
                 </button>
                 <button
                   onClick={() => setSortMode('redzone')}
@@ -303,7 +303,7 @@ export default function App() {
                       : 'bg-slate-900/60 text-slate-400 border-slate-800 hover:text-slate-200'
                   }`}
                 >
-                  🔥 Red Zone
+                  🔴 Red Zone
                 </button>
                 <button
                   onClick={() => setSortMode('conflict')}
@@ -390,28 +390,30 @@ export default function App() {
                             : 'bg-emerald-950/20 border-emerald-500/40 hover:bg-emerald-950/30'
                         }`}
                       >
-                        {/* Status Badges */}
-                        <div className="absolute -top-1 -right-1 flex gap-1 items-center">
+                        {/* Status Badges - Clean & Non-blinking */}
+                        <div className="absolute -top-1.5 -right-1 flex gap-1 items-center">
                           {player.inRedZone && (
-                            <span className="px-1.5 py-0.2 rounded-full text-[8px] font-black uppercase bg-rose-600 text-white animate-pulse">
+                            <span className="px-1.5 py-0.5 rounded text-[8px] font-black uppercase bg-rose-600 text-white tracking-wider shadow">
                               RZ
                             </span>
                           )}
                           {player.isLive && (
-                            <span className="h-2 w-2 rounded-full bg-emerald-400 animate-ping" />
-                          )}
-                          {isConflict && (
-                            <span className="h-2.5 w-2.5 rounded-full bg-amber-400" />
+                            <span className="h-2 w-2 rounded-full bg-emerald-400 ring-2 ring-slate-950" />
                           )}
                         </div>
 
                         <div className="flex items-center justify-between gap-1 mb-1.5">
                           <div className="truncate">
-                            <div className="font-black text-xs text-white truncate leading-tight">
-                              {player.name}
+                            <div className="font-black text-xs text-white truncate leading-tight flex items-center gap-1">
+                              <span>{player.name}</span>
                             </div>
-                            <div className="text-[10px] font-bold text-slate-400">
-                              {player.position} • {player.nflTeam}
+                            <div className="text-[10px] font-bold text-slate-400 flex items-center gap-1 mt-0.5">
+                              <span>{player.position} • {player.nflTeam}</span>
+                              {player.bigPlay && (
+                                <span className="inline-flex items-center px-1 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 font-mono text-[9px] font-black">
+                                  ⚡ {player.bigPlay}
+                                </span>
+                              )}
                             </div>
                           </div>
                           {PlayerAvatar && (
@@ -458,27 +460,30 @@ export default function App() {
                             : 'bg-rose-950/20 border-rose-500/40 hover:bg-rose-950/30'
                         }`}
                       >
-                        <div className="absolute -top-1 -left-1 flex gap-1 items-center">
+                        {/* Status Badges - Clean & Non-blinking */}
+                        <div className="absolute -top-1.5 -left-1 flex gap-1 items-center">
                           {threat.inRedZone && (
-                            <span className="px-1.5 py-0.2 rounded-full text-[8px] font-black uppercase bg-rose-600 text-white animate-pulse">
+                            <span className="px-1.5 py-0.5 rounded text-[8px] font-black uppercase bg-rose-600 text-white tracking-wider shadow">
                               RZ
                             </span>
                           )}
                           {threat.isLive && (
-                            <span className="h-2 w-2 rounded-full bg-rose-400 animate-ping" />
-                          )}
-                          {isConflict && (
-                            <span className="h-2.5 w-2.5 rounded-full bg-amber-400" />
+                            <span className="h-2 w-2 rounded-full bg-rose-400 ring-2 ring-slate-950" />
                           )}
                         </div>
 
                         <div className="flex items-center justify-between gap-1 mb-1.5">
                           <div className="truncate">
-                            <div className="font-black text-xs text-white truncate leading-tight">
-                              {threat.name}
+                            <div className="font-black text-xs text-white truncate leading-tight flex items-center gap-1">
+                              <span>{threat.name}</span>
                             </div>
-                            <div className="text-[10px] font-bold text-slate-400">
-                              {threat.position} • {threat.nflTeam}
+                            <div className="text-[10px] font-bold text-slate-400 flex items-center gap-1 mt-0.5">
+                              <span>{threat.position} • {threat.nflTeam}</span>
+                              {threat.bigPlay && (
+                                <span className="inline-flex items-center px-1 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 font-mono text-[9px] font-black">
+                                  ⚡ {threat.bigPlay}
+                                </span>
+                              )}
                             </div>
                           </div>
                           {PlayerAvatar && (
@@ -662,7 +667,14 @@ export default function App() {
             
             <div className="flex justify-between items-start border-b border-slate-800 pb-3">
               <div>
-                <h3 className="text-lg font-black text-white">{selectedPlayer.name}</h3>
+                <h3 className="text-lg font-black text-white flex items-center gap-2">
+                  <span>{selectedPlayer.name}</span>
+                  {selectedPlayer.bigPlay && (
+                    <span className="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 text-xs font-mono font-black">
+                      ⚡ {selectedPlayer.bigPlay}
+                    </span>
+                  )}
+                </h3>
                 <div className="text-xs text-slate-400 font-semibold">
                   {selectedPlayer.position} • {selectedPlayer.nflTeam}
                 </div>
