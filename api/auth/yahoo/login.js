@@ -14,11 +14,11 @@
 
     const redirectUri = `${appUrl}/api/auth/yahoo/callback`;
 
-    // Strictly standard Yahoo OAuth 2.0 query structure
     const authUrl = new URL('https://api.login.yahoo.com/oauth2/request_auth');
     authUrl.searchParams.set('client_id', clientId);
     authUrl.searchParams.set('redirect_uri', redirectUri);
     authUrl.searchParams.set('response_type', 'code');
+    authUrl.searchParams.set('scope', 'fspt-r');
     authUrl.searchParams.set('language', 'en-us');
 
     const cleanLocation = authUrl.toString().trim();
