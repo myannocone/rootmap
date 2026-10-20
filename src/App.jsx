@@ -14,21 +14,21 @@ const INITIAL_LEAGUES = [
     myScore: 126.28,
     oppScore: 126.44,
     starters: [
-      { name: 'Justin Herbert', nflTeam: 'LAC', position: 'QB', slot: 'QB', points: 18.4 },
-      { name: 'Saquon Barkley', nflTeam: 'PHI', position: 'RB', slot: 'RB', points: 24.2 },
-      { name: 'Amon-Ra St. Brown', nflTeam: 'DET', position: 'WR', slot: 'WR', points: 16.8 },
-      { name: 'Nico Collins', nflTeam: 'HOU', position: 'WR', slot: 'WR', points: 14.1 },
-      { name: 'Trey McBride', nflTeam: 'ARI', position: 'TE', slot: 'TE', points: 11.6 },
-      { name: 'Zay Flowers', nflTeam: 'BAL', position: 'WR', slot: 'FLEX', points: 13.9 },
-      { name: 'Roquan Smith', nflTeam: 'BAL', position: 'LB', slot: 'IDP', points: 12.0 },
-      { name: 'Bobby Wagner', nflTeam: 'WAS', position: 'LB', slot: 'IDP', points: 10.5 }
+      { name: 'Justin Herbert', nflTeam: 'LAC', position: 'QB', slot: 'QB', points: 18.4, isLive: true, inRedZone: true },
+      { name: 'Saquon Barkley', nflTeam: 'PHI', position: 'RB', slot: 'RB', points: 24.2, isLive: true, inRedZone: false },
+      { name: 'Amon-Ra St. Brown', nflTeam: 'DET', position: 'WR', slot: 'WR', points: 16.8, isLive: false, inRedZone: false },
+      { name: 'Nico Collins', nflTeam: 'HOU', position: 'WR', slot: 'WR', points: 14.1, isLive: false, inRedZone: false },
+      { name: 'Trey McBride', nflTeam: 'ARI', position: 'TE', slot: 'TE', points: 11.6, isLive: true, inRedZone: false },
+      { name: 'Zay Flowers', nflTeam: 'BAL', position: 'WR', slot: 'FLEX', points: 13.9, isLive: false, inRedZone: false },
+      { name: 'Roquan Smith', nflTeam: 'BAL', position: 'LB', slot: 'IDP', points: 12.0, isLive: false, inRedZone: false },
+      { name: 'Bobby Wagner', nflTeam: 'WAS', position: 'LB', slot: 'IDP', points: 10.5, isLive: false, inRedZone: false }
     ],
     opponentStarters: [
-      { name: 'Patrick Mahomes', nflTeam: 'KC', position: 'QB', slot: 'QB', points: 21.6 },
-      { name: 'Tyreek Hill', nflTeam: 'MIA', position: 'WR', slot: 'WR', points: 19.4 },
-      { name: 'Alvin Kamara', nflTeam: 'NO', position: 'RB', slot: 'RB', points: 15.2 },
-      { name: 'George Kittle', nflTeam: 'SF', position: 'TE', slot: 'TE', points: 13.8 },
-      { name: 'Fred Warner', nflTeam: 'SF', position: 'LB', slot: 'IDP', points: 9.5 }
+      { name: 'Patrick Mahomes', nflTeam: 'KC', position: 'QB', slot: 'QB', points: 21.6, isLive: true, inRedZone: true },
+      { name: 'Tyreek Hill', nflTeam: 'MIA', position: 'WR', slot: 'WR', points: 19.4, isLive: false, inRedZone: false },
+      { name: 'Alvin Kamara', nflTeam: 'NO', position: 'RB', slot: 'RB', points: 15.2, isLive: false, inRedZone: false },
+      { name: 'George Kittle', nflTeam: 'SF', position: 'TE', slot: 'TE', points: 13.8, isLive: true, inRedZone: false },
+      { name: 'Fred Warner', nflTeam: 'SF', position: 'LB', slot: 'IDP', points: 9.5, isLive: true, inRedZone: false }
     ]
   },
   {
@@ -40,18 +40,18 @@ const INITIAL_LEAGUES = [
     myScore: 114.60,
     oppScore: 108.20,
     starters: [
-      { name: 'Lamar Jackson', nflTeam: 'BAL', position: 'QB', slot: 'QB', points: 26.4 },
-      { name: 'Bijan Robinson', nflTeam: 'ATL', position: 'RB', slot: 'RB', points: 17.5 },
-      { name: 'Saquon Barkley', nflTeam: 'PHI', position: 'RB', slot: 'RB', points: 24.2 },
-      { name: 'CeeDee Lamb', nflTeam: 'DAL', position: 'WR', slot: 'WR', points: 18.2 },
-      { name: 'George Kittle', nflTeam: 'SF', position: 'TE', slot: 'TE', points: 13.8 },
-      { name: 'Fred Warner', nflTeam: 'SF', position: 'LB', slot: 'IDP', points: 9.5 }
+      { name: 'Lamar Jackson', nflTeam: 'BAL', position: 'QB', slot: 'QB', points: 26.4, isLive: false, inRedZone: false },
+      { name: 'Bijan Robinson', nflTeam: 'ATL', position: 'RB', slot: 'RB', points: 17.5, isLive: false, inRedZone: false },
+      { name: 'Saquon Barkley', nflTeam: 'PHI', position: 'RB', slot: 'RB', points: 24.2, isLive: true, inRedZone: false },
+      { name: 'CeeDee Lamb', nflTeam: 'DAL', position: 'WR', slot: 'WR', points: 18.2, isLive: true, inRedZone: true },
+      { name: 'George Kittle', nflTeam: 'SF', position: 'TE', slot: 'TE', points: 13.8, isLive: true, inRedZone: false },
+      { name: 'Fred Warner', nflTeam: 'SF', position: 'LB', slot: 'IDP', points: 9.5, isLive: true, inRedZone: false }
     ],
     opponentStarters: [
-      { name: 'Josh Allen', nflTeam: 'BUF', position: 'QB', slot: 'QB', points: 24.8 },
-      { name: 'Justin Jefferson', nflTeam: 'MIN', position: 'WR', slot: 'WR', points: 20.1 },
-      { name: 'Travis Kelce', nflTeam: 'KC', position: 'TE', slot: 'TE', points: 11.2 },
-      { name: 'Roquan Smith', nflTeam: 'BAL', position: 'LB', slot: 'IDP', points: 12.0 }
+      { name: 'Josh Allen', nflTeam: 'BUF', position: 'QB', slot: 'QB', points: 24.8, isLive: false, inRedZone: false },
+      { name: 'Justin Jefferson', nflTeam: 'MIN', position: 'WR', slot: 'WR', points: 20.1, isLive: false, inRedZone: false },
+      { name: 'Travis Kelce', nflTeam: 'KC', position: 'TE', slot: 'TE', points: 11.2, isLive: true, inRedZone: true },
+      { name: 'Roquan Smith', nflTeam: 'BAL', position: 'LB', slot: 'IDP', points: 12.0, isLive: false, inRedZone: false }
     ]
   },
   {
@@ -63,23 +63,24 @@ const INITIAL_LEAGUES = [
     myScore: 98.40,
     oppScore: 112.50,
     starters: [
-      { name: 'Josh Allen', nflTeam: 'BUF', position: 'QB', slot: 'QB', points: 24.8 },
-      { name: 'James Cook', nflTeam: 'BUF', position: 'RB', slot: 'RB', points: 16.3 },
-      { name: 'Justin Jefferson', nflTeam: 'MIN', position: 'WR', slot: 'WR', points: 20.1 },
-      { name: 'Davante Adams', nflTeam: 'NYJ', position: 'WR', slot: 'WR', points: 12.4 },
-      { name: 'Brock Bowers', nflTeam: 'LV', position: 'TE', slot: 'TE', points: 14.5 }
+      { name: 'Josh Allen', nflTeam: 'BUF', position: 'QB', slot: 'QB', points: 24.8, isLive: false, inRedZone: false },
+      { name: 'James Cook', nflTeam: 'BUF', position: 'RB', slot: 'RB', points: 16.3, isLive: false, inRedZone: false },
+      { name: 'Justin Jefferson', nflTeam: 'MIN', position: 'WR', slot: 'WR', points: 20.1, isLive: false, inRedZone: false },
+      { name: 'Davante Adams', nflTeam: 'NYJ', position: 'WR', slot: 'WR', points: 12.4, isLive: false, inRedZone: false },
+      { name: 'Brock Bowers', nflTeam: 'LV', position: 'TE', slot: 'TE', points: 14.5, isLive: true, inRedZone: false }
     ],
     opponentStarters: [
-      { name: 'Patrick Mahomes', nflTeam: 'KC', position: 'QB', slot: 'QB', points: 21.6 },
-      { name: 'Saquon Barkley', nflTeam: 'PHI', position: 'RB', slot: 'RB', points: 24.2 },
-      { name: 'Amon-Ra St. Brown', nflTeam: 'DET', position: 'WR', slot: 'WR', points: 16.8 },
-      { name: 'CeeDee Lamb', nflTeam: 'DAL', position: 'WR', slot: 'WR', points: 18.2 }
+      { name: 'Patrick Mahomes', nflTeam: 'KC', position: 'QB', slot: 'QB', points: 21.6, isLive: true, inRedZone: true },
+      { name: 'Saquon Barkley', nflTeam: 'PHI', position: 'RB', slot: 'RB', points: 24.2, isLive: true, inRedZone: false },
+      { name: 'Amon-Ra St. Brown', nflTeam: 'DET', position: 'WR', slot: 'WR', points: 16.8, isLive: false, inRedZone: false },
+      { name: 'CeeDee Lamb', nflTeam: 'DAL', position: 'WR', slot: 'WR', points: 18.2, isLive: true, inRedZone: true }
     ]
   }
 ];
 
 export default function App() {
-  const [view, setView] = useState('matchups'); // Default to Battleboard
+  const [view, setView] = useState('matchups');
+  const [sortMode, setSortMode] = useState('exposure'); // 'exposure', 'live', 'redzone', 'conflict'
   const [leagues, setLeagues] = useState(INITIAL_LEAGUES);
   const [games, setGames] = useState(initialGames || []);
   const [selectedPlayer, setSelectedPlayer] = useState(null);
@@ -91,7 +92,6 @@ export default function App() {
   const rightCardRefs = useRef({});
   const [connectors, setConnectors] = useState([]);
 
-  // Fetch live ESPN scores on mount and every 60s
   const refreshLiveSlate = async () => {
     try {
       const live = await fetchLiveNFLSlate();
@@ -116,24 +116,29 @@ export default function App() {
   const playerMasterIndex = useMemo(() => {
     const map = new Map();
 
-    const getOrCreate = (name, nflTeam, position) => {
+    const getOrCreate = (name, nflTeam, position, isLive = false, inRedZone = false) => {
       if (!map.has(name)) {
         map.set(name, {
           name,
           nflTeam,
           position,
+          isLive,
+          inRedZone,
           myShares: 0,
           myLeagues: [],
           oppShares: 0,
           oppLeagues: []
         });
       }
-      return map.get(name);
+      const item = map.get(name);
+      if (isLive) item.isLive = true;
+      if (inRedZone) item.inRedZone = true;
+      return item;
     };
 
     leagues.forEach(lg => {
       (lg.starters || []).forEach(p => {
-        const item = getOrCreate(p.name, p.nflTeam, p.position);
+        const item = getOrCreate(p.name, p.nflTeam, p.position, p.isLive, p.inRedZone);
         item.myShares += 1;
         item.myLeagues.push({ league: lg.name, opponent: lg.opponent });
       });
@@ -141,7 +146,7 @@ export default function App() {
 
     leagues.forEach(lg => {
       (lg.opponentStarters || []).forEach(p => {
-        const item = getOrCreate(p.name, p.nflTeam, p.position);
+        const item = getOrCreate(p.name, p.nflTeam, p.position, p.isLive, p.inRedZone);
         item.oppShares += 1;
         item.oppLeagues.push({ league: lg.name, opponent: lg.opponent });
       });
@@ -150,19 +155,38 @@ export default function App() {
     return map;
   }, [leagues]);
 
+  // Dynamic sorting comparison function
+  const sortComparator = (a, b, isLeftColumn) => {
+    if (sortMode === 'live') {
+      if (a.isLive !== b.isLive) return a.isLive ? -1 : 1;
+    }
+    if (sortMode === 'redzone') {
+      if (a.inRedZone !== b.inRedZone) return a.inRedZone ? -1 : 1;
+      if (a.isLive !== b.isLive) return a.isLive ? -1 : 1;
+    }
+    if (sortMode === 'conflict') {
+      const aConflict = (a.myShares > 0 && a.oppShares > 0) ? 1 : 0;
+      const bConflict = (b.myShares > 0 && b.oppShares > 0) ? 1 : 0;
+      if (aConflict !== bConflict) return bConflict - aConflict;
+    }
+    // Fallback to primary share weight
+    const aShares = isLeftColumn ? a.myShares : a.oppShares;
+    const bShares = isLeftColumn ? b.myShares : b.oppShares;
+    return bShares - aShares;
+  };
+
   const myPortfolio = useMemo(() => {
     return Array.from(playerMasterIndex.values())
       .filter(p => p.myShares > 0)
-      .sort((a, b) => b.myShares - a.myShares);
-  }, [playerMasterIndex]);
+      .sort((a, b) => sortComparator(a, b, true));
+  }, [playerMasterIndex, sortMode]);
 
   const oppThreats = useMemo(() => {
     return Array.from(playerMasterIndex.values())
       .filter(p => p.oppShares > 0)
-      .sort((a, b) => b.oppShares - a.oppShares);
-  }, [playerMasterIndex]);
+      .sort((a, b) => sortComparator(a, b, false));
+  }, [playerMasterIndex, sortMode]);
 
-  // Dynamic SVG wire computation
   const updateConnectors = () => {
     if (!containerRef.current) return;
     const containerRect = containerRef.current.getBoundingClientRect();
@@ -199,14 +223,14 @@ export default function App() {
   useLayoutEffect(() => {
     if (view === 'matchups') {
       updateConnectors();
-      const timer = setTimeout(updateConnectors, 80);
+      const timer = setTimeout(updateConnectors, 60);
       window.addEventListener('resize', updateConnectors);
       return () => {
         clearTimeout(timer);
         window.removeEventListener('resize', updateConnectors);
       };
     }
-  }, [view, myPortfolio, oppThreats]);
+  }, [view, sortMode, myPortfolio, oppThreats]);
 
   const getGamePlayers = (game) => {
     if (!game) return [];
@@ -235,15 +259,62 @@ export default function App() {
 
       {/* Main Container */}
       <main className="max-w-md mx-auto p-3 space-y-3">
-        {/* VIEW 1: MATCHUPS (BATTLEBOARD REPLACING BLENDED H2H) */}
+        {/* VIEW 1: MATCHUPS */}
         {view === 'matchups' && (
           <div className="space-y-3">
-            <div className="flex justify-between items-center px-1">
-              <div className="text-xs font-black uppercase tracking-wider text-slate-300">
-                Week 7 Portfolio Grid
+            {/* Title & Stacking Controls Strip */}
+            <div className="space-y-2">
+              <div className="flex justify-between items-center px-1">
+                <div className="text-xs font-black uppercase tracking-wider text-slate-300">
+                  Week 7 Portfolio Grid
+                </div>
+                <div className="text-[11px] font-mono font-bold text-slate-400">
+                  {myPortfolio.length} Active • {oppThreats.length} Threats
+                </div>
               </div>
-              <div className="text-[11px] font-mono font-bold text-slate-400">
-                {myPortfolio.length} Active • {oppThreats.length} Threats
+
+              {/* Dynamic Sort Filter Bar */}
+              <div className="flex gap-1.5 overflow-x-auto pb-1 scrollbar-none text-[11px] font-bold">
+                <button
+                  onClick={() => setSortMode('exposure')}
+                  className={`px-2.5 py-1 rounded-lg border whitespace-nowrap transition ${
+                    sortMode === 'exposure'
+                      ? 'bg-slate-800 text-white border-slate-600 shadow-sm'
+                      : 'bg-slate-900/60 text-slate-400 border-slate-800 hover:text-slate-200'
+                  }`}
+                >
+                  ⚡ Exposure
+                </button>
+                <button
+                  onClick={() => setSortMode('live')}
+                  className={`px-2.5 py-1 rounded-lg border whitespace-nowrap transition ${
+                    sortMode === 'live'
+                      ? 'bg-emerald-950 text-emerald-400 border-emerald-700 shadow-sm'
+                      : 'bg-slate-900/60 text-slate-400 border-slate-800 hover:text-slate-200'
+                  }`}
+                >
+                  🔴 Live On Field
+                </button>
+                <button
+                  onClick={() => setSortMode('redzone')}
+                  className={`px-2.5 py-1 rounded-lg border whitespace-nowrap transition ${
+                    sortMode === 'redzone'
+                      ? 'bg-rose-950 text-rose-400 border-rose-700 shadow-sm'
+                      : 'bg-slate-900/60 text-slate-400 border-slate-800 hover:text-slate-200'
+                  }`}
+                >
+                  🔥 Red Zone
+                </button>
+                <button
+                  onClick={() => setSortMode('conflict')}
+                  className={`px-2.5 py-1 rounded-lg border whitespace-nowrap transition ${
+                    sortMode === 'conflict'
+                      ? 'bg-amber-950 text-amber-400 border-amber-700 shadow-sm'
+                      : 'bg-slate-900/60 text-slate-400 border-slate-800 hover:text-slate-200'
+                  }`}
+                >
+                  🔀 Conflicted First
+                </button>
               </div>
             </div>
 
@@ -319,12 +390,20 @@ export default function App() {
                             : 'bg-emerald-950/20 border-emerald-500/40 hover:bg-emerald-950/30'
                         }`}
                       >
-                        {isConflict && (
-                          <span className="absolute -top-1 -right-1 flex h-3 w-3">
-                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
-                            <span className="relative inline-flex rounded-full h-3 w-3 bg-amber-500"></span>
-                          </span>
-                        )}
+                        {/* Status Badges */}
+                        <div className="absolute -top-1 -right-1 flex gap-1 items-center">
+                          {player.inRedZone && (
+                            <span className="px-1.5 py-0.2 rounded-full text-[8px] font-black uppercase bg-rose-600 text-white animate-pulse">
+                              RZ
+                            </span>
+                          )}
+                          {player.isLive && (
+                            <span className="h-2 w-2 rounded-full bg-emerald-400 animate-ping" />
+                          )}
+                          {isConflict && (
+                            <span className="h-2.5 w-2.5 rounded-full bg-amber-400" />
+                          )}
+                        </div>
 
                         <div className="flex items-center justify-between gap-1 mb-1.5">
                           <div className="truncate">
@@ -379,12 +458,19 @@ export default function App() {
                             : 'bg-rose-950/20 border-rose-500/40 hover:bg-rose-950/30'
                         }`}
                       >
-                        {isConflict && (
-                          <span className="absolute -top-1 -left-1 flex h-3 w-3">
-                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
-                            <span className="relative inline-flex rounded-full h-3 w-3 bg-amber-500"></span>
-                          </span>
-                        )}
+                        <div className="absolute -top-1 -left-1 flex gap-1 items-center">
+                          {threat.inRedZone && (
+                            <span className="px-1.5 py-0.2 rounded-full text-[8px] font-black uppercase bg-rose-600 text-white animate-pulse">
+                              RZ
+                            </span>
+                          )}
+                          {threat.isLive && (
+                            <span className="h-2 w-2 rounded-full bg-rose-400 animate-ping" />
+                          )}
+                          {isConflict && (
+                            <span className="h-2.5 w-2.5 rounded-full bg-amber-400" />
+                          )}
+                        </div>
 
                         <div className="flex items-center justify-between gap-1 mb-1.5">
                           <div className="truncate">
@@ -423,7 +509,7 @@ export default function App() {
           </div>
         )}
 
-        {/* VIEW 2: GAME SLATE (RESTORED WITH LIVE ESPN SCORES & CLOCKS) */}
+        {/* VIEW 2: GAME SLATE */}
         {view === 'game-slate' && (
           <div className="space-y-3">
             <div className="bg-slate-900 rounded-2xl p-3 border border-slate-800 flex justify-between items-center">
@@ -446,7 +532,6 @@ export default function App() {
               const activeMatchPlayers = getGamePlayers(game);
               return (
                 <div key={game.id} className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-sm">
-                  {/* Game Status Banner */}
                   <div className="bg-slate-950 px-3.5 py-2.5 border-b border-slate-800 flex justify-between items-center text-xs">
                     <div className="flex items-center gap-2">
                       <span className="font-bold text-white">{game.away} @ {game.home}</span>
@@ -459,7 +544,6 @@ export default function App() {
                     </span>
                   </div>
 
-                  {/* Active Roster Players in this Game */}
                   <div className="divide-y divide-slate-800/60 p-1">
                     {activeMatchPlayers.length === 0 ? (
                       <div className="p-3 text-center text-xs text-slate-500 italic">
@@ -534,7 +618,7 @@ export default function App() {
         )}
       </main>
 
-      {/* Persistent Bottom Navigation: Matchups | Game Slate | All Leagues */}
+      {/* Persistent Bottom Navigation */}
       <nav className="fixed bottom-0 left-0 right-0 z-40 bg-slate-950/95 backdrop-blur-lg border-t border-slate-800 max-w-md mx-auto">
         <div className="grid grid-cols-3 py-2 px-3 gap-1">
           <button
