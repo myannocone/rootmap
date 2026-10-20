@@ -9,18 +9,18 @@
     if (!clientId) {
       res.statusCode = 500;
       res.setHeader('Content-Type', 'application/json');
-      return res.end(JSON.stringify({ error: 'Missing YAHOO_CLIENT_ID in Vercel environment variables' }));
+      return res.end(JSON.stringify({ error: 'Missing YAHOO_CLIENT_ID' }));
     }
 
     const redirectUri = `${appUrl}/api/auth/yahoo/callback`;
 
-    // Initialize clean OAuth handoff explicitly calling the Fantasy Sports Scope (fspt-r)
     const authUrl = new URL('https://api.login.yahoo.com/oauth2/request_auth');
     authUrl.searchParams.set('client_id', clientId);
     authUrl.searchParams.set('redirect_uri', redirectUri);
     authUrl.searchParams.set('response_type', 'code');
-    authUrl.searchParams.set('scope', 'fspt-r'); // Explicitly authorize read-only access to rosters/scores
-    authUrl.searchParams.set('language', 'en-us');
+    // Request combined identity and fantasy scopes
+    authUrl.searchParams.set('scope', 'openid fspt-r');
+    authUrl.searchParams.set('prompt', 'consent'); // Force Yahoo to re-prompt for permissions
 
     const cleanLocation = authUrl.toString().trim();
 
@@ -29,6 +29,6 @@
   } catch (err) {
     res.statusCode = 500;
     res.setHeader('Content-Type', 'application/json');
-    return res.end(JSON.stringify({ error: 'OAuth initialization error', details: err.message }));
+    return res.end(JSON.stringify({ error: 'OAuth init error', message: err.message }));
   }
 }
