@@ -3,7 +3,6 @@
     const rawClientId = process.env.YAHOO_CLIENT_ID || '';
     const rawAppUrl = process.env.APP_URL || 'https://rootmap-wine.vercel.app';
 
-    // Strip any accidental trailing whitespace or newline characters
     const clientId = rawClientId.trim();
     const appUrl = rawAppUrl.trim().replace(/\/+$/, '');
 
@@ -15,11 +14,12 @@
 
     const redirectUri = `${appUrl}/api/auth/yahoo/callback`;
 
-    // Construct the OAuth URL safely using the standard URL API
+    // Initialize clean OAuth handoff explicitly calling the Fantasy Sports Scope (fspt-r)
     const authUrl = new URL('https://api.login.yahoo.com/oauth2/request_auth');
     authUrl.searchParams.set('client_id', clientId);
     authUrl.searchParams.set('redirect_uri', redirectUri);
     authUrl.searchParams.set('response_type', 'code');
+    authUrl.searchParams.set('scope', 'fspt-r'); // Explicitly authorize read-only access to rosters/scores
     authUrl.searchParams.set('language', 'en-us');
 
     const cleanLocation = authUrl.toString().trim();

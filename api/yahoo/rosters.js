@@ -9,8 +9,8 @@
   const token = authHeader.split(' ')[1];
 
   try {
-    // Primary query to get user teams and active fantasy leagues
-    const targetUrl = 'https://fantasysports.yahooapis.com/fantasy/v2/users;use_login=1/games;game_keys=nfl/teams?format=json';
+    // Top-level, low-privilege API fetch to see user's roster game permissions
+    const targetUrl = 'https://fantasysports.yahooapis.com/fantasy/v2/users;use_login=1/games?format=json';
     
     const response = await fetch(targetUrl, {
       headers: {
@@ -23,6 +23,35 @@
     const contentType = response.headers.get('content-type') || 'unknown';
     const rawText = await response.text();
 
+    // Check if permissions succeeded and extract user's fantasy games list
+    let leagues = [];
+    if (response.ok) {
+      try {
+        const data = JSON.parse(rawText);
+        const userObj = data?.fantasy_content?.users?.[0]?.user;
+        const gamesBlock = userObj?.find(item => item?.games)?.games;
+        
+        if (gamesBlock && typeof gamesBlock === 'object') {
+          const count = gamesBlock.count || 0;
+          for (let i = 0; i < count; i++) {
+            const g = gamesBlock[i]?.game?.[0];
+            if (g) {
+              leagues.push({
+                id: g.game_key,
+                name: `Yahoo Season ${g.season} (${g.code.toUpperCase()})`,
+                season: String(g.season),
+                numTeams: 12,
+                platform: 'Yahoo',
+                starters: [] // placeholder for custom lineup maps
+              });
+            }
+          }
+        }
+      } catch (e) {
+        // Continue with diagnostic transmission if parsing fails
+      }
+    }
+
     res.statusCode = 200;
     res.setHeader('Content-Type', 'application/json');
     return res.end(JSON.stringify({
@@ -31,7 +60,8 @@
       contentType: contentType,
       targetUrl: targetUrl,
       rawLength: rawText.length,
-      rawPayload: rawText
+      rawPayload: rawText,
+      leagues: leagues // populate directly if permission was success
     }));
   } catch (err) {
     res.statusCode = 500;
