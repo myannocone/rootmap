@@ -4,216 +4,6 @@ import PlayerAvatar from './components/PlayerAvatar';
 import RootMapLogo from './components/Logo';
 import { fetchLiveNFLSlate } from './services/espnScoreboard';
 
-const defaultLeagues = [
-  {
-    id: 'lg_1',
-    name: 'Yannocone/Scheir',
-    opponent: 'Gelardi',
-    platform: 'Yahoo',
-    season: '2026',
-    myScore: 126.28,
-    oppScore: 126.44,
-    starters: [
-      { name: 'Justin Herbert', nflTeam: 'LAC', position: 'QB', slot: 'QB', isStarter: true },
-      { name: 'Saquon Barkley', nflTeam: 'PHI', position: 'RB', slot: 'RB', isStarter: true },
-      { name: 'Amon-Ra St. Brown', nflTeam: 'DET', position: 'WR', slot: 'WR', isStarter: true },
-      { name: 'Nico Collins', nflTeam: 'HOU', position: 'WR', slot: 'WR', isStarter: true },
-      { name: 'Trey McBride', nflTeam: 'ARI', position: 'TE', slot: 'TE', isStarter: true },
-      { name: 'Zay Flowers', nflTeam: 'BAL', position: 'WR', slot: 'FLEX', isStarter: true },
-      { name: 'Roquan Smith', nflTeam: 'BAL', position: 'LB', slot: 'IDP', isStarter: true },
-      { name: 'Bobby Wagner', nflTeam: 'WAS', position: 'LB', slot: 'IDP', isStarter: true },
-      { name: 'Brian Thomas Jr.', nflTeam: 'JAX', position: 'WR', slot: 'BN', isStarter: false }
-    ]
-  },
-  {
-    id: 'lg_2',
-    name: 'Westchester Main H2H',
-    opponent: 'Cisco/Bloom',
-    platform: 'Yahoo',
-    season: '2026',
-    myScore: 114.60,
-    oppScore: 108.20,
-    starters: [
-      { name: 'Lamar Jackson', nflTeam: 'BAL', position: 'QB', slot: 'QB', isStarter: true },
-      { name: 'Bijan Robinson', nflTeam: 'ATL', position: 'RB', slot: 'RB', isStarter: true },
-      { name: 'Saquon Barkley', nflTeam: 'PHI', position: 'RB', slot: 'RB', isStarter: true },
-      { name: 'CeeDee Lamb', nflTeam: 'DAL', position: 'WR', slot: 'WR', isStarter: true },
-      { name: 'George Kittle', nflTeam: 'SF', position: 'TE', slot: 'TE', isStarter: true },
-      { name: 'Fred Warner', nflTeam: 'SF', position: 'LB', slot: 'IDP', isStarter: true },
-      { name: 'Foyesade Oluokun', nflTeam: 'JAX', position: 'LB', slot: 'IDP', isStarter: true }
-    ]
-  },
-  {
-    id: 'lg_3',
-    name: 'High Stakes Dynasty',
-    opponent: 'Stern/Bloom',
-    platform: 'Yahoo',
-    season: '2026',
-    myScore: 98.40,
-    oppScore: 112.50,
-    starters: [
-      { name: 'Josh Allen', nflTeam: 'BUF', position: 'QB', slot: 'QB', isStarter: true },
-      { name: 'James Cook', nflTeam: 'BUF', position: 'RB', slot: 'RB', isStarter: true },
-      { name: 'Justin Jefferson', nflTeam: 'MIN', position: 'WR', slot: 'WR', isStarter: true },
-      { name: 'Davante Adams', nflTeam: 'NYJ', position: 'WR', slot: 'WR', isStarter: true },
-      { name: 'Brock Bowers', nflTeam: 'LV', position: 'TE', slot: 'TE', isStarter: true }
-    ]
-  }
-];
-
-export default function App() {
-  const [view, setView] = useState('all-leagues');
-  const [selectedPlayerId, setSelectedPlayerId] = useState(null);
-  const [drawerPlayer, setDrawerPlayer] = useState(null);
-  const [activeLeagueDrawer, setActiveLeagueDrawer] = useState(null);
-  const [showAddModal, setShowAddModal] = useState(false);
-  const [customLeagueName, setCustomLeagueName] = useState('');
-  const [customOpponent, setCustomOpponent] = useState('');
-
-  // Auto-fallback: if local storage is missing or empty array, load real leagues immediately
-  const [leagues, setLeagues] = useState(() => {
-    try {
-      const saved = localStorage.getItem('rootmap_active_leagues');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-      }
-    } catch (e) {}
-    return defaultLeagues;
-  });
-
-  const [games, setGames] = useState(initialGames || []);
-
-  const refreshLiveSlate = async () => {
-    try {
-      const live = await fetchLiveNFLSlate();
-      if (Array.isArray(live) && live.length > 0) {
-        setGames(live);
-      }
-    } catch (err) {}
-  };
-
-  useEffect(() => {
-    refreshLiveSlate();
-    const interval = setInterval(refreshLiveSlate, 60000);
-    return () => clearInterval(interval);
-  }, []);
-
-  // Save changes to local storage
-  useEffect(() => {
-    try {
-      localStorage.setItem('rootmap_active_leagues', JSON.stringify(leagues));
-    } catch (e) {}
-  }, [leagues]);
-
-  // Aggregate multi-league exposure
-  const rosterAggregations = useMemo(() => {
-    const map = new Map();
-
-    leagues.forEach(lg => {
-      (lg.starters || []).forEach(player => {
-        if (!map.has(player.name)) {
-          map.set(player.name, {
-            id: `${player.name}_${player.nflTeam}`,
-            name: player.name,
-            position: player.position,
-            nflTeam: player.nflTeam,
-            isStarter: player.isStarter,
-            leagues: []
-          });
-        }
-        const item = map.get(player.name);
-        item.leagues.push({
-          leagueName: lg.name,
-          type: player.isStarter ? 'ROSTERED' : 'BENCH',
-          opponent: lg.opponent
-        });
-      });
-    });
-
-    return Array.from(map.values()).map(p => {
-      const rosteredCount = p.leagues.filter(l => l.type === 'ROSTERED').length;
-      return {
-        ...p,
-        shares: rosteredCount,
-        netLeverage: rosteredCount * 1.0
-      };
-    });
-  }, [leagues]);
-
-  const handleForceReset = () => {
-    try {
-      localStorage.removeItem('rootmap_leagues');
-      localStorage.removeItem('rootmap_h2h');
-      localStorage.removeItem('rootmap_active_leagues');
-    } catch (e) {}
-    setLeagues(defaultLeagues);
-    alert('Restored active leagues and rosters.');
-  };
-
-  const handleAddLeague = (e) => {
-    e.preventDefault();
-    if (!customLeagueName.trim()) return;
-
-    const newLg = {
-      id: `lg_${Date.now()}`,
-      name: customLeagueName.trim(),
-      opponent: customOpponent.trim() || 'Opponent',
-      platform: 'Yahoo',
-      season: '2026',
-      myScore: 0.0,
-      oppScore: 0.0,
-      starters: []
-    };
-
-    setLeagues(prev => [newLg, ...prev]);
-    setCustomLeagueName('');
-    setCustomOpponent('');
-    setShowAddModal(false);
-  };
-
-  const getGamePlayers = (game) => {
-    if (!game) return [];
-    const matching = rosterAggregations.filter(
-      p => p.nflTeam === game.away || p.nflTeam === game.home
-    );
-    return matching.length > 0 ? matching : (Array.isArray(game.players) ? game.players : []);
-  };
-
-  return (
-    <div className="min-h-screen bg-slate-900 text-slate-100 pb-28">
-      {/* Top Header */}
-      <header className="sticky top-0 z-40 bg-slate-950/90 backdrop-blur-md border-b border-slate-800 px-4 py-3 flex justify-between items-center max-w-md mx-auto">
-        <div className="flex items-center gap-2">
-          {RootMapLogo ? (
-            <RootMapLogo className="w-8 h-8" showWordmark={true} />
-          ) : (
-            <div className="w-8 h-8 rounded-lg bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center font-black text-emerald-400 text-sm">
-              RM
-            </div>
-          )}
-        </div>
-        <div className="flex items-center gap-2">
-          <button 
-            onClick={() => setShowAddModal(true)}
-            className="px-2.5 py-1 text-xs font-semibold rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white transition"
-          >
-            + League
-          </button>
-          <button 
-            onClick={handleForceReset}
-            className="px-2 py-1 text-xs font-semibold rounded-lg bg-slate-800 hover:bg-slate-700 text-slate
-npm run build
-git add src/App.jsx
-git commit -m "Auto-clear stale empty storage and populate active leagues and H2H views"
-git push origin main
-@'
-import React, { useState, useEffect, useMemo } from 'react';
-import { mockGames as initialGames } from './data/mockSlate';
-import PlayerAvatar from './components/PlayerAvatar';
-import RootMapLogo from './components/Logo';
-import { fetchLiveNFLSlate } from './services/espnScoreboard';
-
 const INITIAL_LEAGUES = [
   {
     id: 'lg_1',
@@ -280,7 +70,6 @@ export default function App() {
   const [customLeagueName, setCustomLeagueName] = useState('');
   const [customOpponent, setCustomOpponent] = useState('');
 
-  // Explicit state initialization directly from constants
   const [leagues, setLeagues] = useState(INITIAL_LEAGUES);
   const [games, setGames] = useState(initialGames || []);
 
@@ -301,7 +90,6 @@ export default function App() {
     return () => clearInterval(interval);
   }, []);
 
-  // Aggregate multi-league exposure
   const rosterAggregations = useMemo(() => {
     const map = new Map();
 
@@ -341,7 +129,7 @@ export default function App() {
       localStorage.clear();
     } catch (e) {}
     setLeagues(INITIAL_LEAGUES);
-    alert('Cleared all browser cache and reloaded default leagues.');
+    alert('Cleared cache and reloaded default leagues.');
   };
 
   const handleAddLeague = (e) => {
@@ -375,7 +163,6 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-900 text-slate-100 pb-28">
-      {/* Top Header */}
       <header className="sticky top-0 z-40 bg-slate-950/90 backdrop-blur-md border-b border-slate-800 px-4 py-3 flex justify-between items-center max-w-md mx-auto">
         <div className="flex items-center gap-2">
           {RootMapLogo ? (
@@ -397,14 +184,12 @@ export default function App() {
             onClick={handleForcePurgeAndReset}
             className="px-2 py-1 text-xs font-semibold rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition"
           >
-            Purge &amp; Reset
+            Reset
           </button>
         </div>
       </header>
 
-      {/* Main Container */}
       <main className="max-w-md mx-auto p-4 space-y-4">
-        {/* TAB 1: ALL LEAGUES */}
         {view === 'all-leagues' && (
           <div className="space-y-3">
             <div className="flex justify-between items-center mb-1">
@@ -457,7 +242,6 @@ export default function App() {
           </div>
         )}
 
-        {/* TAB 2: GAME SLATE */}
         {view === 'per-game' && (
           <div className="space-y-3">
             <div className="bg-slate-950/80 rounded-2xl p-3 border border-emerald-500/30 flex justify-between items-center">
@@ -545,7 +329,6 @@ export default function App() {
           </div>
         )}
 
-        {/* TAB 3: BLENDED H2H */}
         {view === 'blended' && (
           <div className="space-y-3">
             <div className="bg-slate-800/80 rounded-2xl border border-slate-700/80 p-4 space-y-3">
@@ -587,7 +370,6 @@ export default function App() {
         )}
       </main>
 
-      {/* Bottom Navigation */}
       <nav className="fixed bottom-0 left-0 right-0 z-40 bg-slate-950/95 backdrop-blur-lg border-t border-slate-800 max-w-md mx-auto">
         <div className="grid grid-cols-3 py-2 px-3 gap-1">
           <button
@@ -617,7 +399,6 @@ export default function App() {
         </div>
       </nav>
 
-      {/* Roster Drilldown Drawer */}
       {activeLeagueDrawer && (
         <div
           onClick={() => setActiveLeagueDrawer(null)}
@@ -663,7 +444,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Player Detail Drawer */}
       {drawerPlayer && (
         <div
           onClick={() => setDrawerPlayer(null)}
@@ -704,7 +484,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Add Custom League Modal */}
       {showAddModal && (
         <div
           onClick={() => setShowAddModal(false)}
