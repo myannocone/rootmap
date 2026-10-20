@@ -9,46 +9,33 @@
   const token = authHeader.split(' ')[1];
 
   try {
-    // Top-level, low-privilege API fetch to see user's roster game permissions
-    const targetUrl = 'https://fantasysports.yahooapis.com/fantasy/v2/users;use_login=1/games?format=json';
+    // Primary: fetch leagues directly via game_keys=nfl
+    const targetUrl = 'https://fantasysports.yahooapis.com/fantasy/v2/users;use_login=1/games;game_keys=nfl/leagues?format=json';
     
-    const response = await fetch(targetUrl, {
+    let response = await fetch(targetUrl, {
       headers: {
         'Authorization': `Bearer ${token}`,
         'Accept': 'application/json'
       }
     });
 
-    const status = response.status;
-    const contentType = response.headers.get('content-type') || 'unknown';
-    const rawText = await response.text();
+    let rawText = await response.text();
+    let status = response.status;
+    let usedUrl = targetUrl;
 
-    // Check if permissions succeeded and extract user's fantasy games list
-    let leagues = [];
-    if (response.ok) {
-      try {
-        const data = JSON.parse(rawText);
-        const userObj = data?.fantasy_content?.users?.[0]?.user;
-        const gamesBlock = userObj?.find(item => item?.games)?.games;
-        
-        if (gamesBlock && typeof gamesBlock === 'object') {
-          const count = gamesBlock.count || 0;
-          for (let i = 0; i < count; i++) {
-            const g = gamesBlock[i]?.game?.[0];
-            if (g) {
-              leagues.push({
-                id: g.game_key,
-                name: `Yahoo Season ${g.season} (${g.code.toUpperCase()})`,
-                season: String(g.season),
-                numTeams: 12,
-                platform: 'Yahoo',
-                starters: [] // placeholder for custom lineup maps
-              });
-            }
-          }
+    // Fallback if use_login=1 games returned 403: query teams directly
+    if (status === 403) {
+      const fallbackUrl = 'https://fantasysports.yahooapis.com/fantasy/v2/users;use_login=1/teams?format=json';
+      const fallbackRes = await fetch(fallbackUrl, {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Accept': 'application/json'
         }
-      } catch (e) {
-        // Continue with diagnostic transmission if parsing fails
+      });
+      if (fallbackRes.ok) {
+        status = fallbackRes.status;
+        rawText = await fallbackRes.text();
+        usedUrl = fallbackUrl;
       }
     }
 
@@ -57,11 +44,9 @@
     return res.end(JSON.stringify({
       debug: true,
       httpStatus: status,
-      contentType: contentType,
-      targetUrl: targetUrl,
+      targetUrl: usedUrl,
       rawLength: rawText.length,
-      rawPayload: rawText,
-      leagues: leagues // populate directly if permission was success
+      rawPayload: rawText
     }));
   } catch (err) {
     res.statusCode = 500;
