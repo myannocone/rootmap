@@ -1,6 +1,8 @@
 ﻿export default function handler(req, res) {
-  const clientId = process.env.YAHOO_CLIENT_ID;
-  const redirectUri = process.env.YAHOO_REDIRECT_URI || 'https://rootmap-wine.vercel.app/api/auth/callback';
+  const rawClientId = process.env.YAHOO_CLIENT_ID || '';
+  const clientId = rawClientId.trim();
+  const rawRedirectUri = process.env.YAHOO_REDIRECT_URI || '';
+  const redirectUri = rawRedirectUri.trim() || 'https://rootmap-wine.vercel.app/api/auth/callback';
 
   if (!clientId) {
     return res.status(500).json({ error: 'YAHOO_CLIENT_ID environment variable not set' });
