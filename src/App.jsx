@@ -1,6 +1,7 @@
 ﻿import React, { useState, useEffect, useMemo, useRef, useLayoutEffect } from 'react';
 import PlayerAvatar from './components/PlayerAvatar';
 import RootMapLogo from './components/Logo';
+import SyncInspector from './components/SyncInspector';
 import { mockGames as initialGames } from './data/mockSlate';
 import { fetchLiveNFLSlate } from './services/espnScoreboard';
 
@@ -30,51 +31,6 @@ const INITIAL_LEAGUES = [
       { name: 'George Kittle', nflTeam: 'SF', position: 'TE', slot: 'TE', points: 13.8, isLive: true, inRedZone: false, gameClock: '3rd 8:20', bigPlay: null },
       { name: 'Fred Warner', nflTeam: 'SF', position: 'LB', slot: 'IDP', points: 9.5, isLive: true, inRedZone: false, gameClock: '3rd 8:20', bigPlay: null }
     ]
-  },
-  {
-    id: 'lg_2',
-    name: 'Westchester Main H2H',
-    opponent: 'Cisco/Bloom',
-    platform: 'Yahoo',
-    season: '2026',
-    myScore: 114.60,
-    oppScore: 108.20,
-    starters: [
-      { name: 'Lamar Jackson', nflTeam: 'BAL', position: 'QB', slot: 'QB', points: 26.4, isLive: false, inRedZone: false, gameClock: 'Final', bigPlay: null },
-      { name: 'Bijan Robinson', nflTeam: 'ATL', position: 'RB', slot: 'RB', points: 17.5, isLive: false, inRedZone: false, gameClock: 'Final', bigPlay: null },
-      { name: 'Saquon Barkley', nflTeam: 'PHI', position: 'RB', slot: 'RB', points: 24.2, isLive: true, inRedZone: false, gameClock: '4th 2:45', bigPlay: '42yd TD' },
-      { name: 'CeeDee Lamb', nflTeam: 'DAL', position: 'WR', slot: 'WR', points: 18.2, isLive: true, inRedZone: true, gameClock: '4th 0:30', bigPlay: '28yd REC' },
-      { name: 'George Kittle', nflTeam: 'SF', position: 'TE', slot: 'TE', points: 13.8, isLive: true, inRedZone: false, gameClock: '3rd 8:20', bigPlay: null },
-      { name: 'Fred Warner', nflTeam: 'SF', position: 'LB', slot: 'IDP', points: 9.5, isLive: true, inRedZone: false, gameClock: '3rd 8:20', bigPlay: null }
-    ],
-    opponentStarters: [
-      { name: 'Josh Allen', nflTeam: 'BUF', position: 'QB', slot: 'QB', points: 24.8, isLive: false, inRedZone: false, gameClock: 'Final', bigPlay: null },
-      { name: 'Justin Jefferson', nflTeam: 'MIN', position: 'WR', slot: 'WR', points: 20.1, isLive: false, inRedZone: false, gameClock: 'Final', bigPlay: null },
-      { name: 'Travis Kelce', nflTeam: 'KC', position: 'TE', slot: 'TE', points: 11.2, isLive: true, inRedZone: true, gameClock: '4th 1:15', bigPlay: null },
-      { name: 'Roquan Smith', nflTeam: 'BAL', position: 'LB', slot: 'IDP', points: 12.0, isLive: false, inRedZone: false, gameClock: 'Final', bigPlay: null }
-    ]
-  },
-  {
-    id: 'lg_3',
-    name: 'High Stakes Dynasty',
-    opponent: 'Stern/Bloom',
-    platform: 'Yahoo',
-    season: '2026',
-    myScore: 98.40,
-    oppScore: 112.50,
-    starters: [
-      { name: 'Josh Allen', nflTeam: 'BUF', position: 'QB', slot: 'QB', points: 24.8, isLive: false, inRedZone: false, gameClock: 'Final', bigPlay: null },
-      { name: 'James Cook', nflTeam: 'BUF', position: 'RB', slot: 'RB', points: 16.3, isLive: false, inRedZone: false, gameClock: 'Final', bigPlay: null },
-      { name: 'Justin Jefferson', nflTeam: 'MIN', position: 'WR', slot: 'WR', points: 20.1, isLive: false, inRedZone: false, gameClock: 'Final', bigPlay: null },
-      { name: 'Davante Adams', nflTeam: 'NYJ', position: 'WR', slot: 'WR', points: 12.4, isLive: false, inRedZone: false, gameClock: 'Final', bigPlay: null },
-      { name: 'Brock Bowers', nflTeam: 'LV', position: 'TE', slot: 'TE', points: 14.5, isLive: true, inRedZone: false, gameClock: '2nd 3:10', bigPlay: null }
-    ],
-    opponentStarters: [
-      { name: 'Patrick Mahomes', nflTeam: 'KC', position: 'QB', slot: 'QB', points: 21.6, isLive: true, inRedZone: true, gameClock: '4th 1:15', bigPlay: '35yd PASS' },
-      { name: 'Saquon Barkley', nflTeam: 'PHI', position: 'RB', slot: 'RB', points: 24.2, isLive: true, inRedZone: false, gameClock: '4th 2:45', bigPlay: '42yd TD' },
-      { name: 'Amon-Ra St. Brown', nflTeam: 'DET', position: 'WR', slot: 'WR', points: 16.8, isLive: false, inRedZone: false, gameClock: 'Final', bigPlay: null },
-      { name: 'CeeDee Lamb', nflTeam: 'DAL', position: 'WR', slot: 'WR', points: 18.2, isLive: true, inRedZone: true, gameClock: '4th 0:30', bigPlay: '28yd REC' }
-    ]
   }
 ];
 
@@ -89,6 +45,7 @@ export default function App() {
   const [activeLeagueDrawer, setActiveLeagueDrawer] = useState(null);
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncStatus, setSyncStatus] = useState('');
+  const [rawYahooDebug, setRawYahooDebug] = useState(null);
 
   const containerRef = useRef(null);
   const leftCardRefs = useRef({});
@@ -97,25 +54,23 @@ export default function App() {
 
   const isLight = theme === 'light';
 
-  // Listen for OAuth success message from auth popup window
   useEffect(() => {
     const handleAuthMessage = async (event) => {
       if (event.data?.type === 'YAHOO_AUTH_SUCCESS') {
         const { accessToken } = event.data;
         setIsSyncing(true);
-        setSyncStatus('Authenticated! Pulling live rosters from Yahoo...');
+        setSyncStatus('Authenticated! Inspecting Yahoo response...');
 
         try {
           const res = await fetch('/api/sync', {
             headers: { Authorization: `Bearer ${accessToken}` }
           });
-          const data = await res.json();
-          console.log('Yahoo Sync Data:', data);
-          setSyncStatus('Yahoo Sync Complete!');
-          setTimeout(() => setSyncStatus(''), 4000);
+          const json = await res.json();
+          setRawYahooDebug(json);
+          setSyncStatus('Sync data received! Check debug payload below.');
         } catch (err) {
           console.error('Sync failed:', err);
-          setSyncStatus('Error parsing rosters.');
+          setSyncStatus('Error communicating with Yahoo API.');
         } finally {
           setIsSyncing(false);
         }
@@ -157,7 +112,7 @@ export default function App() {
   }, []);
 
   const totalNetDelta = useMemo(() => {
-    return leagues.reduce((acc, lg) => acc + (lg.myScore - lg.oppScore), 0);
+    return leagues.reduce((acc, lg) => acc + ((lg.myScore || 0) - (lg.oppScore || 0)), 0);
   }, [leagues]);
 
   const playerMasterIndex = useMemo(() => {
@@ -257,13 +212,7 @@ export default function App() {
           const x2 = rRect.left - containerRect.left;
           const y2 = rRect.top + rRect.height / 2 - containerRect.top;
 
-          lines.push({
-            name: player.name,
-            x1,
-            y1,
-            x2,
-            y2
-          });
+          lines.push({ name: player.name, x1, y1, x2, y2 });
         }
       }
     });
@@ -326,25 +275,27 @@ export default function App() {
       {/* Main Container */}
       <main className="max-w-md mx-auto p-3 space-y-3">
         {syncStatus && (
-          <div className="bg-purple-950/90 text-purple-200 border border-purple-700 px-3 py-2 rounded-xl text-xs font-mono font-bold text-center">
+          <div className="bg-purple-950/90 text-purple-200 border border-purple-700 px-3 py-2.5 rounded-xl text-xs font-mono font-bold text-center shadow-lg">
             {syncStatus}
           </div>
         )}
 
-        {/* VIEW 1: MATCHUPS (DUEL BATTLEBOARD) */}
+        {/* Diagnostic Inspector */}
+        <SyncInspector data={rawYahooDebug} onClose={() => setRawYahooDebug(null)} />
+
+        {/* VIEW 1: MATCHUPS */}
         {view === 'matchups' && (
           <div className="space-y-3">
             <div className="space-y-2">
               <div className="flex justify-between items-center px-1">
                 <div className={`text-xs font-black uppercase tracking-wider ${isLight ? 'text-slate-700' : 'text-slate-300'}`}>
-                  Week 7 Portfolio Grid
+                  Portfolio Grid
                 </div>
                 <div className={`text-[11px] font-mono font-bold ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
                   {myPortfolio.length} Active • {oppThreats.length} Threats
                 </div>
               </div>
 
-              {/* Dynamic Filter Strip */}
               <div className="flex gap-1.5 overflow-x-auto pb-1 scrollbar-none text-[11px] font-bold">
                 <button
                   onClick={() => setSortMode('exposure')}
@@ -389,7 +340,6 @@ export default function App() {
               </div>
             </div>
 
-            {/* Split Column Headers */}
             <div className="grid grid-cols-2 gap-4 text-center text-xs font-black tracking-wider uppercase">
               <div className={`rounded-xl py-2 px-1 flex flex-col items-center justify-center border shadow-sm transition ${
                 isLight ? 'bg-emerald-50 border-emerald-200 text-emerald-800' : 'bg-slate-900 border-emerald-500/30 text-emerald-400'
@@ -409,7 +359,6 @@ export default function App() {
               </div>
             </div>
 
-            {/* Duel Grid Relative Container for SVG Overlay */}
             <div ref={containerRef} className="relative">
               <svg className="pointer-events-none absolute inset-0 w-full h-full z-20 overflow-visible">
                 <defs>
@@ -447,7 +396,6 @@ export default function App() {
               </svg>
 
               <div className="grid grid-cols-2 gap-4 relative z-10">
-                {/* LEFT COLUMN: YOUR PORTFOLIO */}
                 <div className="space-y-2">
                   {myPortfolio.map((player) => {
                     const isConflict = player.oppShares > 0;
@@ -503,7 +451,7 @@ export default function App() {
 
                           <div className="text-right shrink-0">
                             <span className={`font-mono font-black text-xs ${isLight ? 'text-emerald-700' : 'text-emerald-400'}`}>
-                              {player.points.toFixed(1)}
+                              {(player.points || 0).toFixed(1)}
                             </span>
                             <span className={`text-[9px] font-bold ml-0.5 ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>pts</span>
                           </div>
@@ -536,7 +484,6 @@ export default function App() {
                   })}
                 </div>
 
-                {/* RIGHT COLUMN: OPPOSITION THREATS */}
                 <div className="space-y-2">
                   {oppThreats.map((threat) => {
                     const isConflict = threat.myShares > 0;
@@ -592,7 +539,7 @@ export default function App() {
 
                           <div className="text-right shrink-0">
                             <span className={`font-mono font-black text-xs ${isLight ? 'text-rose-700' : 'text-rose-400'}`}>
-                              {threat.points.toFixed(1)}
+                              {(threat.points || 0).toFixed(1)}
                             </span>
                             <span className={`text-[9px] font-bold ml-0.5 ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>pts</span>
                           </div>
@@ -701,7 +648,7 @@ export default function App() {
                           </div>
                           <div className="text-right font-mono">
                             <div className={`text-xs font-black ${isLight ? 'text-emerald-700' : 'text-emerald-400'}`}>
-                              {player.points.toFixed(1)} pts
+                              {(player.points || 0).toFixed(1)} pts
                             </div>
                             <div className={`text-[10px] ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
                               {player.myShares} {player.myShares === 1 ? 'League' : 'Leagues'}
@@ -717,10 +664,9 @@ export default function App() {
           </div>
         )}
 
-        {/* VIEW 3: ALL LEAGUES & YAHOO SYNC CONTROL */}
+        {/* VIEW 3: ALL LEAGUES */}
         {view === 'all-leagues' && (
           <div className="space-y-3">
-            {/* Sync Header Bar */}
             <div className={`p-4 rounded-2xl border flex flex-col gap-3 shadow-sm ${
               isLight ? 'bg-white border-slate-200' : 'bg-slate-900 border-slate-800'
             }`}>
@@ -772,9 +718,9 @@ export default function App() {
                 <div className={`flex justify-between items-center pt-2 border-t text-xs ${
                   isLight ? 'border-slate-100 text-slate-500' : 'border-slate-800 text-slate-400'
                 }`}>
-                  <span>{lg.starters.length} Starters Synced</span>
+                  <span>{(lg.starters || []).length} Starters Synced</span>
                   <span className={`font-mono font-bold ${isLight ? 'text-slate-800' : 'text-slate-200'}`}>
-                    {lg.myScore.toFixed(2)} - {lg.oppScore.toFixed(2)}
+                    {(lg.myScore || 0).toFixed(2)} - {(lg.oppScore || 0).toFixed(2)}
                   </span>
                 </div>
               </div>
@@ -851,7 +797,7 @@ export default function App() {
                   <span>{selectedPlayer.position} • {selectedPlayer.nflTeam}</span>
                   <span>•</span>
                   <span className={`font-mono font-bold ${isLight ? 'text-emerald-700' : 'text-emerald-400'}`}>
-                    {selectedPlayer.points.toFixed(1)} PTS
+                    {(selectedPlayer.points || 0).toFixed(1)} PTS
                   </span>
                   <span>•</span>
                   <span className="font-mono">{selectedPlayer.gameClock}</span>
@@ -975,7 +921,7 @@ export default function App() {
               </button>
             </div>
             <div className="overflow-y-auto space-y-2 py-3">
-              {activeLeagueDrawer.starters.map((p, idx) => (
+              {(activeLeagueDrawer.starters || []).map((p, idx) => (
                 <div key={idx} className={`rounded-xl p-2.5 flex justify-between items-center text-xs border ${
                   isLight ? 'bg-slate-50 border-slate-200' : 'bg-slate-800/60 border-slate-700/40'
                 }`}>
@@ -988,7 +934,7 @@ export default function App() {
                     <span className={`font-bold ${isLight ? 'text-slate-900' : 'text-white'}`}>{p.name}</span>
                     <span className={`text-[11px] ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>{p.nflTeam}</span>
                   </div>
-                  <span className={`font-mono font-bold ${isLight ? 'text-emerald-700' : 'text-emerald-400'}`}>{p.points} pts</span>
+                  <span className={`font-mono font-bold ${isLight ? 'text-emerald-700' : 'text-emerald-400'}`}>{(p.points || 0).toFixed(1)} pts</span>
                 </div>
               ))}
             </div>
