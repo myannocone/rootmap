@@ -79,7 +79,7 @@ const INITIAL_LEAGUES = [
 ];
 
 export default function App() {
-  const [theme, setTheme] = useState('dark'); // 'dark' | 'light'
+  const [theme, setTheme] = useState('dark');
   const [view, setView] = useState('matchups');
   const [sortMode, setSortMode] = useState('exposure');
   const [leagues, setLeagues] = useState(INITIAL_LEAGUES);
@@ -87,6 +87,8 @@ export default function App() {
   const [selectedPlayer, setSelectedPlayer] = useState(null);
   const [hoveredConflictPlayer, setHoveredConflictPlayer] = useState(null);
   const [activeLeagueDrawer, setActiveLeagueDrawer] = useState(null);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncStatus, setSyncStatus] = useState('');
 
   const containerRef = useRef(null);
   const leftCardRefs = useRef({});
@@ -94,6 +96,48 @@ export default function App() {
   const [connectors, setConnectors] = useState([]);
 
   const isLight = theme === 'light';
+
+  // Listen for OAuth success message from auth popup window
+  useEffect(() => {
+    const handleAuthMessage = async (event) => {
+      if (event.data?.type === 'YAHOO_AUTH_SUCCESS') {
+        const { accessToken } = event.data;
+        setIsSyncing(true);
+        setSyncStatus('Authenticated! Pulling live rosters from Yahoo...');
+
+        try {
+          const res = await fetch('/api/sync', {
+            headers: { Authorization: `Bearer ${accessToken}` }
+          });
+          const data = await res.json();
+          console.log('Yahoo Sync Data:', data);
+          setSyncStatus('Yahoo Sync Complete!');
+          setTimeout(() => setSyncStatus(''), 4000);
+        } catch (err) {
+          console.error('Sync failed:', err);
+          setSyncStatus('Error parsing rosters.');
+        } finally {
+          setIsSyncing(false);
+        }
+      }
+    };
+
+    window.addEventListener('message', handleAuthMessage);
+    return () => window.removeEventListener('message', handleAuthMessage);
+  }, []);
+
+  const handleConnectYahoo = () => {
+    const w = 600;
+    const h = 700;
+    const left = window.screen.width / 2 - w / 2;
+    const top = window.screen.height / 2 - h / 2;
+
+    window.open(
+      '/api/auth/yahoo',
+      'YahooAuthPopup',
+      `width=${w},height=${h},top=${top},left=${left},scrollbars=yes,status=1`
+    );
+  };
 
   const refreshLiveSlate = async () => {
     try {
@@ -258,7 +302,6 @@ export default function App() {
           <RootMapLogo className="w-8 h-8" showWordmark={true} />
         </div>
         <div className="flex items-center gap-2">
-          {/* Light/Dark Toggle */}
           <button
             onClick={() => setTheme(prev => prev === 'dark' ? 'light' : 'dark')}
             className={`px-2 py-1 rounded-lg text-xs font-bold border transition ${
@@ -270,7 +313,6 @@ export default function App() {
             {isLight ? '🌙 Dark' : '☀️ Light'}
           </button>
 
-          {/* Net Stance Badge */}
           <div className={`px-2.5 py-1 rounded-full text-xs font-black font-mono border ${
             totalNetDelta >= 0 
               ? isLight ? 'bg-emerald-50 text-emerald-700 border-emerald-300' : 'bg-emerald-950/80 text-emerald-400 border-emerald-700/60'
@@ -283,6 +325,12 @@ export default function App() {
 
       {/* Main Container */}
       <main className="max-w-md mx-auto p-3 space-y-3">
+        {syncStatus && (
+          <div className="bg-purple-950/90 text-purple-200 border border-purple-700 px-3 py-2 rounded-xl text-xs font-mono font-bold text-center">
+            {syncStatus}
+          </div>
+        )}
+
         {/* VIEW 1: MATCHUPS (DUEL BATTLEBOARD) */}
         {view === 'matchups' && (
           <div className="space-y-3">
@@ -363,9 +411,7 @@ export default function App() {
 
             {/* Duel Grid Relative Container for SVG Overlay */}
             <div ref={containerRef} className="relative">
-              <svg 
-                className="pointer-events-none absolute inset-0 w-full h-full z-20 overflow-visible"
-              >
+              <svg className="pointer-events-none absolute inset-0 w-full h-full z-20 overflow-visible">
                 <defs>
                   <linearGradient id="conflictWireGrad" x1="0%" y1="0%" x2="100%" y2="0%">
                     <stop offset="0%" stopColor="#10b981" stopOpacity="0.8" />
@@ -671,12 +717,37 @@ export default function App() {
           </div>
         )}
 
-        {/* VIEW 3: ALL LEAGUES */}
+        {/* VIEW 3: ALL LEAGUES & YAHOO SYNC CONTROL */}
         {view === 'all-leagues' && (
           <div className="space-y-3">
+            {/* Sync Header Bar */}
+            <div className={`p-4 rounded-2xl border flex flex-col gap-3 shadow-sm ${
+              isLight ? 'bg-white border-slate-200' : 'bg-slate-900 border-slate-800'
+            }`}>
+              <div className="flex justify-between items-center">
+                <div>
+                  <div className={`font-black text-sm ${isLight ? 'text-slate-900' : 'text-white'}`}>
+                    Platform Integration
+                  </div>
+                  <div className={`text-xs ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+                    Sync all your Yahoo fantasy rosters automatically
+                  </div>
+                </div>
+                <button
+                  onClick={handleConnectYahoo}
+                  disabled={isSyncing}
+                  className="px-3.5 py-2 rounded-xl bg-purple-600 hover:bg-purple-500 active:scale-95 text-white text-xs font-black shadow-lg transition flex items-center gap-1.5"
+                >
+                  <span>⚡</span>
+                  <span>{isSyncing ? 'Connecting...' : 'Connect Yahoo'}</span>
+                </button>
+              </div>
+            </div>
+
             <div className={`text-xs font-black uppercase tracking-wider ${isLight ? 'text-slate-700' : 'text-slate-300'}`}>
               Connected Leagues ({leagues.length})
             </div>
+
             {leagues.map((lg) => (
               <div
                 key={lg.id}
