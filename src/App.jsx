@@ -54,26 +54,40 @@ export default function App() {
 
   const isLight = theme === 'light';
 
-  useEffect(() => {
-    const handleAuthMessage = async (event) => {
-      if (event.data?.type === 'YAHOO_AUTH_SUCCESS') {
-        const { accessToken } = event.data;
-        setIsSyncing(true);
-        setSyncStatus('Authenticated! Inspecting Yahoo response...');
+  const triggerSyncWithToken = async (accessToken) => {
+    setIsSyncing(true);
+    setSyncStatus('Authenticated! Querying Yahoo Fantasy API...');
 
-        try {
-          const res = await fetch('/api/sync', {
-            headers: { Authorization: `Bearer ${accessToken}` }
-          });
-          const json = await res.json();
-          setRawYahooDebug(json);
-          setSyncStatus('Sync data received! Check debug payload below.');
-        } catch (err) {
-          console.error('Sync failed:', err);
-          setSyncStatus('Error communicating with Yahoo API.');
-        } finally {
-          setIsSyncing(false);
-        }
+    try {
+      const res = await fetch('/api/sync', {
+        headers: { Authorization: `Bearer ${accessToken}` }
+      });
+      const json = await res.json();
+      setRawYahooDebug(json);
+      setSyncStatus('Sync data received! Check diagnostic payload below.');
+    } catch (err) {
+      console.error('Sync failed:', err);
+      setSyncStatus('Error communicating with Yahoo API.');
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+  useEffect(() => {
+    // 1. Check if token was saved via direct redirect
+    const savedToken = localStorage.getItem('yahoo_access_token');
+    const urlParams = new URLSearchParams(window.location.search);
+    if (urlParams.get('auth') === 'yahoo_success' && savedToken) {
+      triggerSyncWithToken(savedToken);
+      // Clean query string
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }
+
+    // 2. Check if token arrived via popup message
+    const handleAuthMessage = async (event) => {
+      if (event.data?.type === 'YAHOO_AUTH_SUCCESS' && event.data?.accessToken) {
+        localStorage.setItem('yahoo_access_token', event.data.accessToken);
+        triggerSyncWithToken(event.data.accessToken);
       }
     };
 
@@ -82,16 +96,7 @@ export default function App() {
   }, []);
 
   const handleConnectYahoo = () => {
-    const w = 600;
-    const h = 700;
-    const left = window.screen.width / 2 - w / 2;
-    const top = window.screen.height / 2 - h / 2;
-
-    window.open(
-      '/api/auth/yahoo',
-      'YahooAuthPopup',
-      `width=${w},height=${h},top=${top},left=${left},scrollbars=yes,status=1`
-    );
+    window.location.href = '/api/auth/yahoo';
   };
 
   const refreshLiveSlate = async () => {

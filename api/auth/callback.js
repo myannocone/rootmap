@@ -40,15 +40,22 @@ export default async function handler(req, res) {
       <html>
         <head><title>RootMap Yahoo Auth Complete</title></head>
         <body style="background:#020617;color:#f8fafc;font-family:sans-serif;text-align:center;padding:50px;">
-          <h2>Syncing Yahoo Leagues...</h2>
+          <h2>Authentication Successful! Redirecting...</h2>
           <script>
+            // Persist token for direct-tab redirects
+            localStorage.setItem('yahoo_access_token', "${data.access_token}");
+            
+            // Notify parent window if launched inside a popup
             if (window.opener) {
-              window.opener.postMessage({
-                type: 'YAHOO_AUTH_SUCCESS',
-                accessToken: "${data.access_token}",
-                refreshToken: "${data.refresh_token}",
-                expiresIn: ${data.expires_in}
-              }, window.location.origin);
+              try {
+                window.opener.postMessage({
+                  type: 'YAHOO_AUTH_SUCCESS',
+                  accessToken: "${data.access_token}"
+                }, window.location.origin);
+                window.close();
+              } catch (e) {
+                console.error(e);
+              }
             }
             window.location.href = '/?auth=yahoo_success';
           </script>
