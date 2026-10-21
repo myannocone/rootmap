@@ -1,19 +1,20 @@
-﻿export default async function handler(req, res) {
+﻿const REDIRECT_URI = 'https://rootmap-wine.vercel.app/api/auth/callback';
+
+export default async function handler(req, res) {
   const { code } = req.query;
 
   if (!code) {
     return res.status(400).send('Authorization code missing from Yahoo callback.');
   }
 
-  const clientId = process.env.YAHOO_CLIENT_ID;
-  const clientSecret = process.env.YAHOO_CLIENT_SECRET;
-  const redirectUri = process.env.YAHOO_REDIRECT_URI || 'https://rootmap-wine.vercel.app/api/auth/callback';
+  const clientId = (process.env.YAHOO_CLIENT_ID || '').trim();
+  const clientSecret = (process.env.YAHOO_CLIENT_SECRET || '').trim();
 
   const basicAuth = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
 
   const params = new URLSearchParams({
     grant_type: 'authorization_code',
-    redirect_uri: redirectUri,
+    redirect_uri: REDIRECT_URI,
     code: code
   });
 
@@ -41,13 +42,15 @@
         <body style="background:#020617;color:#f8fafc;font-family:sans-serif;text-align:center;padding:50px;">
           <h2>Syncing Yahoo Leagues...</h2>
           <script>
-            window.opener.postMessage({
-              type: 'YAHOO_AUTH_SUCCESS',
-              accessToken: "${data.access_token}",
-              refreshToken: "${data.refresh_token}",
-              expiresIn: ${data.expires_in}
-            }, window.location.origin);
-            window.close();
+            if (window.opener) {
+              window.opener.postMessage({
+                type: 'YAHOO_AUTH_SUCCESS',
+                accessToken: "${data.access_token}",
+                refreshToken: "${data.refresh_token}",
+                expiresIn: ${data.expires_in}
+              }, window.location.origin);
+            }
+            window.location.href = '/?auth=yahoo_success';
           </script>
         </body>
       </html>
