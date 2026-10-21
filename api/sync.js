@@ -6,9 +6,9 @@
   }
 
   try {
-    // Query fantasy leagues for current logged-in user
-    const response = await fetch(
-      'https://fantasysports.yahooapis.com/fantasy/v2/users;use_login=1/games;game_keys=nfl/leagues?format=json',
+    // Query root user games to avoid strict subresource authorization blocks
+    const gamesResponse = await fetch(
+      'https://fantasysports.yahooapis.com/fantasy/v2/users;use_login=1/games?format=json',
       {
         headers: {
           'Authorization': authHeader,
@@ -17,23 +17,45 @@
       }
     );
 
-    const text = await response.text();
-    let data;
+    const gamesText = await gamesResponse.text();
+    let gamesData;
     try {
-      data = JSON.parse(text);
+      gamesData = JSON.parse(gamesText);
     } catch {
-      data = { rawText: text };
+      gamesData = { rawText: gamesText };
     }
 
-    if (!response.ok) {
-      return res.status(response.status).json({
-        error: 'Yahoo Leagues Fetch Error',
-        status: response.status,
-        details: data
+    if (!gamesResponse.ok) {
+      return res.status(gamesResponse.status).json({
+        error: 'Yahoo Games Fetch Error',
+        status: gamesResponse.status,
+        details: gamesData
       });
     }
 
-    return res.status(200).json({ raw: data });
+    // Query active user leagues
+    const leaguesResponse = await fetch(
+      'https://fantasysports.yahooapis.com/fantasy/v2/users;use_login=1/games/leagues?format=json',
+      {
+        headers: {
+          'Authorization': authHeader,
+          'Accept': 'application/json'
+        }
+      }
+    );
+
+    const leaguesText = await leaguesResponse.text();
+    let leaguesData;
+    try {
+      leaguesData = JSON.parse(leaguesText);
+    } catch {
+      leaguesData = { rawText: leaguesText };
+    }
+
+    return res.status(200).json({
+      games: gamesData,
+      leagues: leaguesData
+    });
   } catch (err) {
     console.error('Sync failure:', err);
     return res.status(500).json({ error: 'Internal sync failure', details: err.message });
