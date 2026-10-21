@@ -9,7 +9,6 @@ export default async function handler(req, res) {
 
   const clientId = (process.env.YAHOO_CLIENT_ID || '').trim();
   const clientSecret = (process.env.YAHOO_CLIENT_SECRET || '').trim();
-
   const basicAuth = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
 
   const params = new URLSearchParams({
@@ -42,22 +41,9 @@ export default async function handler(req, res) {
         <body style="background:#020617;color:#f8fafc;font-family:sans-serif;text-align:center;padding:50px;">
           <h2>Authentication Successful! Redirecting...</h2>
           <script>
-            // Persist token for direct-tab redirects
+            // Overwrite stale local token
             localStorage.setItem('yahoo_access_token', "${data.access_token}");
-            
-            // Notify parent window if launched inside a popup
-            if (window.opener) {
-              try {
-                window.opener.postMessage({
-                  type: 'YAHOO_AUTH_SUCCESS',
-                  accessToken: "${data.access_token}"
-                }, window.location.origin);
-                window.close();
-              } catch (e) {
-                console.error(e);
-              }
-            }
-            window.location.href = '/?auth=yahoo_success';
+            window.location.href = '/?auth=yahoo_success&ts=' + Date.now();
           </script>
         </body>
       </html>
