@@ -34,11 +34,257 @@ const INITIAL_LEAGUES = [
   }
 ];
 
+const LEAGUES_STORAGE_KEY = 'rootmap_leagues';
+const YAHOO_OPPONENT_NAME = 'Crab Cakes and Football';
+
+const SLOT_TOKEN_RE = /^(QB|RB|WR|TE|W\/R\/T|FLEX|K|DEF|D|DB|DL|LB)$/i;
+const STOP_SLOT_RE = /^(BN|IR|BENCH|IL|NA)$/i;
+const TEAM_POS_RE = /^([A-Za-z]{2,3})\s*[-–]\s*([A-Za-z/]+)$/;
+const DASH_RE = /^[-–—]$/;
+const FLOAT_RE = /^\d+\.\d{1,2}$/;
+const NAME_NOISE_SUFFIX_RE = /(?:No new player Notes|Video Forecast|New Player Note|Player Note|PUP|SUSP|IR|[QO])$/i;
+
+function loadStoredLeagues() {
+  try {
+    const raw = localStorage.getItem(LEAGUES_STORAGE_KEY);
+    if (!raw) return INITIAL_LEAGUES;
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+  } catch {
+    // fall through to defaults
+  }
+  return INITIAL_LEAGUES;
+}
+
+function normalizePosition(pos) {
+  const p = String(pos || '').toUpperCase();
+  if (p === 'D/ST' || p === 'DST') return 'DEF';
+  if (p === 'PK') return 'K';
+  return p;
+}
+
+function normalizeSlot(slot) {
+  const s = String(slot || '').toUpperCase();
+  if (s === 'W/R/T' || s === 'WR/TE' || s === 'W/R') return 'FLEX';
+  if (s === 'D/ST' || s === 'DST') return 'DEF';
+  if (s === 'D') return 'IDP';
+  return s;
+}
+
+function isDash(line) {
+  return DASH_RE.test(String(line || '').trim());
+}
+
+function isFloatLine(line) {
+  return FLOAT_RE.test(String(line || '').trim());
+}
+
+function isGameLine(line) {
+  return /^(Sun|Mon|Tue|Wed|Thu|Fri|Sat|Final|Bye)\b/i.test(String(line || '').trim());
+}
+
+function isStatLine(line) {
+  return /\b(Yds|TD|Rec|Rush|INT|Sack|Tackles?|Fum|Pass)\b/i.test(String(line || '').trim());
+}
+
+function isTeamPosLine(line) {
+  return TEAM_POS_RE.test(String(line || '').trim());
+}
+
+function stripNameNoise(raw) {
+  let s = String(raw || '').trim();
+  let prev = '';
+  while (s && s !== prev) {
+    prev = s;
+    s = s.replace(NAME_NOISE_SUFFIX_RE, '').trim();
+  }
+  return s.replace(/\s+/g, ' ').trim();
+}
+
+function isNameLine(line) {
+  const s = String(line || '').trim();
+  if (!s || isDash(s) || isFloatLine(s) || SLOT_TOKEN_RE.test(s) || STOP_SLOT_RE.test(s) || isTeamPosLine(s)) return false;
+  if (isGameLine(s) || isStatLine(s)) return false;
+  const cleaned = stripNameNoise(s);
+  if (cleaned.length < 2 || cleaned.length > 48) return false;
+  return /[A-Za-z]/.test(cleaned);
+}
+
+function parseTeamPos(line) {
+  const match = String(line || '').trim().match(TEAM_POS_RE);
+  if (!match) return { nflTeam: '', position: '' };
+  return {
+    nflTeam: match[1].toUpperCase(),
+    position: normalizePosition(match[2])
+  };
+}
+
+function toStarterRecord(player, side) {
+  const isMine = side === 'mine';
+  const gameClock = player.gameClock || 'Scheduled';
+  return {
+    name: player.name,
+    nflTeam: player.nflTeam,
+    position: player.position,
+    slot: player.slot || player.position,
+    points: player.points || 0,
+    projPoints: player.points || 0,
+    actualPoints: player.actualPoints ?? null,
+    isLive: /^(1st|2nd|3rd|4th|OT|Q)/i.test(gameClock),
+    inRedZone: false,
+    gameClock,
+    bigPlay: null,
+    isStarter: isMine,
+    ownership: isMine ? 1.0 : 0,
+    isThreat: !isMine,
+    opponent: isMine ? null : YAHOO_OPPONENT_NAME
+  };
+}
+
+function parseMySlotBlock(linesBeforeSlot, slotToken) {
+  const lines = (linesBeforeSlot || []).map((l) => String(l).trim()).filter(Boolean);
+  let idx = lines.length - 1;
+  while (idx >= 0 && isDash(lines[idx])) idx -= 1;
+
+  let points = 0;
+  if (idx >= 0 && isFloatLine(lines[idx])) {
+    points = parseFloat(lines[idx]);
+    idx -= 1;
+  }
+  while (idx >= 0 && isDash(lines[idx])) idx -= 1;
+
+  let gameClock = 'Scheduled';
+  if (idx >= 0 && isGameLine(lines[idx])) {
+    gameClock = lines[idx];
+    idx -= 1;
+  }
+
+  let nflTeam = '';
+  let position = normalizeSlot(slotToken);
+  if (idx >= 0 && isTeamPosLine(lines[idx])) {
+    const parsed = parseTeamPos(lines[idx]);
+    nflTeam = parsed.nflTeam;
+    position = parsed.position || position;
+    idx -= 1;
+  }
+
+  let name = '';
+  while (idx >= 0) {
+    if (isNameLine(lines[idx])) {
+      name = stripNameNoise(lines[idx]);
+      break;
+    }
+    idx -= 1;
+  }
+
+  return {
+    name,
+    nflTeam,
+    position,
+    slot: normalizeSlot(slotToken),
+    points,
+    gameClock
+  };
+}
+
+function parseOppSlotBlock(lines, startIndex, slotToken) {
+  let i = startIndex;
+  while (i < lines.length && isDash(lines[i])) i += 1;
+
+  const nums = [];
+  while (i < lines.length && (isFloatLine(lines[i]) || isDash(lines[i]))) {
+    if (isFloatLine(lines[i])) nums.push(parseFloat(lines[i]));
+    i += 1;
+  }
+
+  let actualPoints = null;
+  let points = 0;
+  if (nums.length >= 2) {
+    actualPoints = nums[0];
+    points = nums[1];
+  } else if (nums.length === 1) {
+    points = nums[0];
+  }
+
+  let name = '';
+  if (i < lines.length && isNameLine(lines[i])) {
+    name = stripNameNoise(lines[i]);
+    i += 1;
+  }
+
+  let nflTeam = '';
+  let position = normalizeSlot(slotToken);
+  if (i < lines.length && isTeamPosLine(lines[i])) {
+    const parsed = parseTeamPos(lines[i]);
+    nflTeam = parsed.nflTeam;
+    position = parsed.position || position;
+    i += 1;
+  }
+
+  let gameClock = 'Scheduled';
+  if (i < lines.length && isGameLine(lines[i])) {
+    gameClock = lines[i];
+    i += 1;
+  }
+  while (i < lines.length && isStatLine(lines[i])) i += 1;
+
+  return {
+    player: {
+      name,
+      nflTeam,
+      position,
+      slot: normalizeSlot(slotToken),
+      points,
+      actualPoints,
+      gameClock
+    },
+    nextIndex: i
+  };
+}
+
+function parseYahooMatchupText(raw) {
+  const lines = String(raw || '')
+    .replace(/\r/g, '')
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean);
+
+  const myStarters = [];
+  const oppStarters = [];
+  let cursor = 0;
+
+  while (cursor < lines.length) {
+    if (STOP_SLOT_RE.test(lines[cursor])) break;
+
+    const slotIdx = lines.findIndex((line, idx) => idx >= cursor && SLOT_TOKEN_RE.test(line));
+    if (slotIdx === -1) break;
+
+    const slotToken = lines[slotIdx];
+    const mine = parseMySlotBlock(lines.slice(cursor, slotIdx), slotToken);
+    const { player: opp, nextIndex } = parseOppSlotBlock(lines, slotIdx + 1, slotToken);
+
+    if (mine.name) myStarters.push(toStarterRecord(mine, 'mine'));
+    if (opp.name) oppStarters.push(toStarterRecord(opp, 'opp'));
+
+    cursor = Math.max(nextIndex, slotIdx + 1);
+    if (cursor <= slotIdx) cursor = slotIdx + 1;
+  }
+
+  return {
+    myTeamName: 'My Team',
+    oppTeamName: YAHOO_OPPONENT_NAME,
+    myScore: undefined,
+    oppScore: undefined,
+    myStarters,
+    oppStarters
+  };
+}
+
 export default function App() {
   const [theme, setTheme] = useState('dark');
   const [view, setView] = useState('matchups');
   const [sortMode, setSortMode] = useState('exposure');
-  const [leagues, setLeagues] = useState(INITIAL_LEAGUES);
+  const [leagues, setLeagues] = useState(loadStoredLeagues);
   const [games, setGames] = useState(initialGames || []);
   const [selectedPlayer, setSelectedPlayer] = useState(null);
   const [hoveredConflictPlayer, setHoveredConflictPlayer] = useState(null);
@@ -46,6 +292,9 @@ export default function App() {
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncStatus, setSyncStatus] = useState('');
   const [rawYahooDebug, setRawYahooDebug] = useState(null);
+  const [showYahooIngest, setShowYahooIngest] = useState(false);
+  const [yahooPaste, setYahooPaste] = useState('');
+  const [yahooIngestError, setYahooIngestError] = useState('');
 
   const containerRef = useRef(null);
   const leftCardRefs = useRef({});
@@ -116,6 +365,52 @@ export default function App() {
     return () => clearInterval(interval);
   }, []);
 
+  useEffect(() => {
+    try {
+      localStorage.setItem(LEAGUES_STORAGE_KEY, JSON.stringify(leagues));
+    } catch {
+      // ignore quota / private-mode failures
+    }
+  }, [leagues]);
+
+  const applyYahooMatchupIngest = (parsed) => {
+    setLeagues((prev) => {
+      const base = prev[0] || {
+        id: 'yahoo_ingest',
+        platform: 'Yahoo',
+        season: '2026'
+      };
+
+      const imported = {
+        ...base,
+        id: base.id || 'yahoo_ingest',
+        name: parsed.myTeamName || base.name || 'My Team',
+        opponent: parsed.oppTeamName || YAHOO_OPPONENT_NAME,
+        platform: 'Yahoo',
+        myScore: parsed.myScore ?? base.myScore ?? 0,
+        oppScore: parsed.oppScore ?? base.oppScore ?? 0,
+        starters: parsed.myStarters,
+        opponentStarters: parsed.oppStarters
+      };
+
+      if (!prev.length) return [imported];
+      return [imported, ...prev.slice(1)];
+    });
+  };
+
+  const handleImportYahooMatchup = () => {
+    const parsed = parseYahooMatchupText(yahooPaste);
+    if (!parsed.myStarters.length && !parsed.oppStarters.length) {
+      setYahooIngestError('No players found. Copy the full Yahoo Matchup page (Ctrl+A, Ctrl+C) and paste again.');
+      return;
+    }
+    applyYahooMatchupIngest(parsed);
+    setYahooIngestError('');
+    setYahooPaste('');
+    setShowYahooIngest(false);
+    setSyncStatus(`Imported ${parsed.myStarters.length} starters and ${parsed.oppStarters.length} opponent threats from Yahoo.`);
+  };
+
   const totalNetDelta = useMemo(() => {
     return leagues.reduce((acc, lg) => acc + ((lg.myScore || 0) - (lg.oppScore || 0)), 0);
   }, [leagues]);
@@ -154,6 +449,9 @@ export default function App() {
         const item = getOrCreate(p.name, p.nflTeam, p.position, p.points, p.isLive, p.inRedZone, p.gameClock, p.bigPlay);
         item.myShares += 1;
         item.myLeagues.push({ league: lg.name, opponent: lg.opponent });
+        item.isStarter = true;
+        item.ownership = p.ownership ?? 1.0;
+        if (p.actualPoints != null) item.actualPoints = p.actualPoints;
       });
     });
 
@@ -161,7 +459,9 @@ export default function App() {
       (lg.opponentStarters || []).forEach(p => {
         const item = getOrCreate(p.name, p.nflTeam, p.position, p.points, p.isLive, p.inRedZone, p.gameClock, p.bigPlay);
         item.oppShares += 1;
-        item.oppLeagues.push({ league: lg.name, opponent: lg.opponent });
+        item.oppLeagues.push({ league: lg.name, opponent: lg.opponent || p.opponent || YAHOO_OPPONENT_NAME });
+        item.isThreat = true;
+        if (p.actualPoints != null) item.actualPoints = p.actualPoints;
       });
     });
 
@@ -256,6 +556,19 @@ export default function App() {
           <RootMapLogo className="w-8 h-8" showWordmark={true} />
         </div>
         <div className="flex items-center gap-2">
+          <button
+            onClick={() => {
+              setYahooIngestError('');
+              setShowYahooIngest(true);
+            }}
+            className={`px-2 py-1 rounded-lg text-[10px] font-black border whitespace-nowrap transition ${
+              isLight
+                ? 'bg-purple-50 text-purple-700 border-purple-300 hover:bg-purple-100'
+                : 'bg-purple-950/70 text-purple-300 border-purple-700 hover:bg-purple-900/80'
+            }`}
+          >
+            Import Yahoo Matchup
+          </button>
           <button
             onClick={() => setTheme(prev => prev === 'dark' ? 'light' : 'dark')}
             className={`px-2 py-1 rounded-lg text-xs font-bold border transition ${
@@ -893,6 +1206,79 @@ export default function App() {
                   </div>
                 )}
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showYahooIngest && (
+        <div
+          onClick={() => setShowYahooIngest(false)}
+          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className={`rounded-3xl p-5 max-w-md w-full space-y-4 shadow-2xl border ${
+              isLight ? 'bg-white border-slate-200' : 'bg-slate-900 border-slate-800'
+            }`}
+          >
+            <div className="flex justify-between items-start gap-3">
+              <div>
+                <h3 className={`text-base font-black ${isLight ? 'text-slate-900' : 'text-white'}`}>
+                  Import Yahoo Matchup
+                </h3>
+                <p className={`text-xs mt-1 leading-relaxed ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+                  On your Yahoo Fantasy Matchup page, press Ctrl+A, Ctrl+C, and paste here.
+                </p>
+              </div>
+              <button
+                onClick={() => setShowYahooIngest(false)}
+                className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm shrink-0 ${
+                  isLight ? 'bg-slate-100 text-slate-500 hover:bg-slate-200' : 'bg-slate-800 text-slate-400'
+                }`}
+              >
+                ✕
+              </button>
+            </div>
+
+            <textarea
+              value={yahooPaste}
+              onChange={(e) => {
+                setYahooPaste(e.target.value);
+                if (yahooIngestError) setYahooIngestError('');
+              }}
+              placeholder="Paste the full Yahoo Matchup page here…"
+              className={`w-full h-48 rounded-2xl p-3 text-xs font-mono leading-relaxed resize-y select-text focus:outline-none ${
+                isLight
+                  ? 'bg-slate-50 border border-slate-200 text-slate-800 placeholder-slate-400 focus:border-purple-400'
+                  : 'bg-slate-950 border border-slate-700 text-slate-200 placeholder-slate-500 focus:border-purple-500'
+              }`}
+            />
+
+            {yahooIngestError && (
+              <div className={`text-xs font-bold rounded-xl px-3 py-2 border ${
+                isLight ? 'bg-rose-50 text-rose-700 border-rose-200' : 'bg-rose-950/70 text-rose-300 border-rose-800'
+              }`}>
+                {yahooIngestError}
+              </div>
+            )}
+
+            <div className="flex gap-2">
+              <button
+                onClick={() => setShowYahooIngest(false)}
+                className={`flex-1 py-2.5 rounded-xl text-xs font-bold border transition ${
+                  isLight ? 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50' : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'
+                }`}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleImportYahooMatchup}
+                disabled={!yahooPaste.trim()}
+                className="flex-1 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 disabled:opacity-40 disabled:hover:bg-purple-600 text-white text-xs font-black shadow-lg transition"
+              >
+                Import Matchup
+              </button>
             </div>
           </div>
         </div>
