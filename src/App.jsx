@@ -1,5 +1,4 @@
 ﻿import React, { useState, useEffect, useMemo, useRef, useLayoutEffect } from 'react';
-import PlayerAvatar from './components/PlayerAvatar';
 import RootMapLogo from './components/Logo';
 import SyncInspector from './components/SyncInspector';
 import { mockGames as initialGames } from './data/mockSlate';
@@ -280,6 +279,219 @@ function parseYahooMatchupText(raw) {
   };
 }
 
+const HEADSHOT_INDEX_KEY = 'rootmap_sleeper_headshot_index_v1';
+const HEADSHOT_INDEX_AT_KEY = 'rootmap_sleeper_headshot_index_at';
+const HEADSHOT_INDEX_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const SLEEPER_PLAYERS_URL = 'https://api.sleeper.app/v1/players/nfl';
+
+const NFL_TEAM_SECONDARY = {
+  ARI: { bg: '#A5ACAF', fg: '#111111' },
+  ATL: { bg: '#A71930', fg: '#FFFFFF' },
+  BAL: { bg: '#9E7C0C', fg: '#FFFFFF' },
+  BUF: { bg: '#C60C30', fg: '#FFFFFF' },
+  CAR: { bg: '#BFC0BF', fg: '#0085CA' },
+  CHI: { bg: '#C83803', fg: '#FFFFFF' },
+  CIN: { bg: '#FB4F14', fg: '#111111' },
+  CLE: { bg: '#FF3C00', fg: '#FFFFFF' },
+  DAL: { bg: '#869397', fg: '#041E42' },
+  DEN: { bg: '#FB4F14', fg: '#FFFFFF' },
+  DET: { bg: '#B0B7BC', fg: '#0076B6' },
+  GB: { bg: '#FFB612', fg: '#203731' },
+  HOU: { bg: '#A71930', fg: '#FFFFFF' },
+  IND: { bg: '#A2AAAD', fg: '#002C5F' },
+  JAX: { bg: '#D7A22A', fg: '#111111' },
+  KC: { bg: '#FFB81C', fg: '#E31837' },
+  LAC: { bg: '#FFC20E', fg: '#0080C6' },
+  LAR: { bg: '#FFA300', fg: '#003594' },
+  LV: { bg: '#A5ACAF', fg: '#111111' },
+  MIA: { bg: '#FC4C02', fg: '#FFFFFF' },
+  MIN: { bg: '#FFC62F', fg: '#4F2683' },
+  NE: { bg: '#C60C30', fg: '#FFFFFF' },
+  NO: { bg: '#D3BC8D', fg: '#101820' },
+  NYG: { bg: '#A71930', fg: '#FFFFFF' },
+  NYJ: { bg: '#FFFFFF', fg: '#125740' },
+  PHI: { bg: '#A5ACAF', fg: '#004C54' },
+  PIT: { bg: '#FFB612', fg: '#101820' },
+  SEA: { bg: '#69BE28', fg: '#002244' },
+  SF: { bg: '#B3995D', fg: '#AA0000' },
+  TB: { bg: '#34302B', fg: '#FF7900' },
+  TEN: { bg: '#4B92DB', fg: '#0C2340' },
+  WAS: { bg: '#FFB612', fg: '#5A1414' },
+  WSH: { bg: '#FFB612', fg: '#5A1414' }
+};
+
+let headshotIndexMemory = null;
+
+function normalizePlayerName(name) {
+  return String(name || '')
+    .toLowerCase()
+    .replace(/['’.]/g, '')
+    .replace(/\b(jr|sr|ii|iii|iv|v)\b/g, '')
+    .replace(/[^a-z0-9\s-]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function getPlayerInitials(playerName) {
+  const parts = String(playerName || '')
+    .replace(/\b(Jr|Sr|II|III|IV)\.?/g, '')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  if (!parts.length) return '?';
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
+}
+
+function getTeamAccent(team) {
+  const key = String(team || '').toUpperCase();
+  return NFL_TEAM_SECONDARY[key] || { bg: '#334155', fg: '#E2E8F0' };
+}
+
+function readCachedHeadshotIndex() {
+  if (headshotIndexMemory) return headshotIndexMemory;
+  try {
+    const storedAt = Number(localStorage.getItem(HEADSHOT_INDEX_AT_KEY) || 0);
+    if (storedAt && Date.now() - storedAt < HEADSHOT_INDEX_TTL_MS) {
+      const raw = localStorage.getItem(HEADSHOT_INDEX_KEY);
+      if (raw) {
+        headshotIndexMemory = JSON.parse(raw);
+        return headshotIndexMemory;
+      }
+    }
+  } catch {
+    // ignore cache read errors
+  }
+  return null;
+}
+
+function buildHeadshotIndex(directory) {
+  const index = {};
+  Object.entries(directory || {}).forEach(([id, player]) => {
+    if (!player || player.sport && player.sport !== 'nfl') return;
+    const fullName = player.full_name || `${player.first_name || ''} ${player.last_name || ''}`.trim();
+    if (!fullName) return;
+    const nameKey = normalizePlayerName(fullName);
+    if (!nameKey) return;
+    const team = String(player.team || '').toUpperCase();
+    const rank = Number(player.search_rank) || 99999;
+    const entry = { id, espn: player.espn_id || null, rank };
+
+    const nameHit = index[nameKey];
+    if (!nameHit || rank < nameHit.rank) index[nameKey] = entry;
+    if (team) {
+      const teamKey = `${nameKey}|${team}`;
+      const teamHit = index[teamKey];
+      if (!teamHit || rank < teamHit.rank) index[teamKey] = entry;
+    }
+  });
+  return index;
+}
+
+async function ensureHeadshotIndex() {
+  const cached = readCachedHeadshotIndex();
+  if (cached) return cached;
+  const res = await fetch(SLEEPER_PLAYERS_URL);
+  if (!res.ok) throw new Error('Sleeper player directory unavailable');
+  const directory = await res.json();
+  const index = buildHeadshotIndex(directory);
+  headshotIndexMemory = index;
+  try {
+    localStorage.setItem(HEADSHOT_INDEX_KEY, JSON.stringify(index));
+    localStorage.setItem(HEADSHOT_INDEX_AT_KEY, String(Date.now()));
+  } catch {
+    // quota — memory cache still works this session
+  }
+  return index;
+}
+
+function lookupHeadshotRecord(playerName, team) {
+  const index = headshotIndexMemory || readCachedHeadshotIndex();
+  if (!index) return null;
+  const nameKey = normalizePlayerName(playerName);
+  if (!nameKey) return null;
+  const teamKey = String(team || '').toUpperCase();
+  return (teamKey && index[`${nameKey}|${teamKey}`]) || index[nameKey] || null;
+}
+
+function getPlayerHeadshot(playerName, team) {
+  const hit = lookupHeadshotRecord(playerName, team);
+  if (!hit?.id) return null;
+  if (/^[A-Z]{2,3}$/.test(hit.id)) {
+    return `https://sleepercdn.com/images/team_logos/nfl/${hit.id.toLowerCase()}.png`;
+  }
+  return `https://sleepercdn.com/content/nfl/players/thumb/${hit.id}.jpg`;
+}
+
+function getPlayerHeadshotCandidates(playerName, team) {
+  const hit = lookupHeadshotRecord(playerName, team);
+  const urls = [];
+  const primary = getPlayerHeadshot(playerName, team);
+  if (primary) urls.push(primary);
+  if (hit?.id && !/^[A-Z]{2,3}$/.test(hit.id)) {
+    urls.push(`https://sleepercdn.com/content/nfl/players/${hit.id}.jpg`);
+  }
+  if (hit?.espn) {
+    urls.push(`https://a.espncdn.com/combiner/i?img=/i/headshots/nfl/players/full/${hit.espn}.png&w=96&h=96`);
+  }
+  return [...new Set(urls)];
+}
+
+function PlayerHeadshot({ name, team, size = 40 }) {
+  const candidates = getPlayerHeadshotCandidates(name, team);
+  const [urlIndex, setUrlIndex] = useState(0);
+  const [failed, setFailed] = useState(false);
+  const src = !failed ? candidates[urlIndex] : null;
+  const initials = getPlayerInitials(name);
+  const accent = getTeamAccent(team);
+  const px = `${size}px`;
+
+  useEffect(() => {
+    setUrlIndex(0);
+    setFailed(false);
+  }, [name, team, candidates[0]]);
+
+  if (!src || failed) {
+    return (
+      <div
+        className="rounded-full shrink-0 flex items-center justify-center font-black select-none ring-1 ring-black/10"
+        style={{
+          width: px,
+          height: px,
+          backgroundColor: accent.bg,
+          color: accent.fg,
+          fontSize: size <= 40 ? 11 : 12,
+          letterSpacing: '-0.02em'
+        }}
+        aria-hidden="true"
+      >
+        {initials}
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="rounded-full shrink-0 overflow-hidden bg-slate-800 ring-1 ring-black/15"
+      style={{ width: px, height: px }}
+    >
+      <img
+        src={src}
+        alt=""
+        width={size}
+        height={size}
+        loading="lazy"
+        decoding="async"
+        onError={() => {
+          if (urlIndex < candidates.length - 1) setUrlIndex((n) => n + 1);
+          else setFailed(true);
+        }}
+        className="w-full h-full object-cover object-top"
+      />
+    </div>
+  );
+}
+
 export default function App() {
   const [theme, setTheme] = useState('dark');
   const [view, setView] = useState('matchups');
@@ -295,6 +507,7 @@ export default function App() {
   const [showYahooIngest, setShowYahooIngest] = useState(false);
   const [yahooPaste, setYahooPaste] = useState('');
   const [yahooIngestError, setYahooIngestError] = useState('');
+  const [headshotTick, setHeadshotTick] = useState(0);
 
   const containerRef = useRef(null);
   const leftCardRefs = useRef({});
@@ -363,6 +576,20 @@ export default function App() {
     refreshLiveSlate();
     const interval = setInterval(refreshLiveSlate, 60000);
     return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    ensureHeadshotIndex()
+      .then(() => {
+        if (!cancelled) setHeadshotTick((n) => n + 1);
+      })
+      .catch(() => {
+        // Initials fallback remains if the directory cannot load
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -750,14 +977,23 @@ export default function App() {
                           )}
                         </div>
 
-                        <div className="flex items-start justify-between gap-1 mb-1">
-                          <div className="truncate">
-                            <div className={`font-black text-xs truncate leading-tight ${isLight ? 'text-slate-900' : 'text-white'}`}>
-                              {player.name}
+                        <div className="flex items-center gap-2 mb-1">
+                          <PlayerHeadshot key={`${player.name}-${headshotTick}`} name={player.name} team={player.nflTeam} size={40} />
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-start justify-between gap-1">
+                              <div className={`font-black text-xs truncate leading-tight ${isLight ? 'text-slate-900' : 'text-white'}`}>
+                                {player.name}
+                              </div>
+                              <div className="text-right shrink-0">
+                                <span className={`font-mono font-black text-xs ${isLight ? 'text-emerald-700' : 'text-emerald-400'}`}>
+                                  {(player.points || 0).toFixed(1)}
+                                </span>
+                                <span className={`text-[9px] font-bold ml-0.5 ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>pts</span>
+                              </div>
                             </div>
                             <div className={`text-[10px] font-bold flex items-center gap-1 mt-0.5 ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
                               <span>{player.position} • {player.nflTeam}</span>
-                              <span className={`font-mono text-[9px] px-1 py-0.2 rounded ${
+                              <span className={`font-mono text-[9px] px-1 py-0.2 rounded truncate ${
                                 player.isLive 
                                   ? isLight ? 'bg-emerald-100 text-emerald-800 font-bold' : 'bg-emerald-950/80 text-emerald-300' 
                                   : isLight ? 'text-slate-400' : 'text-slate-500'
@@ -765,13 +1001,6 @@ export default function App() {
                                 {player.gameClock}
                               </span>
                             </div>
-                          </div>
-
-                          <div className="text-right shrink-0">
-                            <span className={`font-mono font-black text-xs ${isLight ? 'text-emerald-700' : 'text-emerald-400'}`}>
-                              {(player.points || 0).toFixed(1)}
-                            </span>
-                            <span className={`text-[9px] font-bold ml-0.5 ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>pts</span>
                           </div>
                         </div>
 
@@ -838,14 +1067,23 @@ export default function App() {
                           )}
                         </div>
 
-                        <div className="flex items-start justify-between gap-1 mb-1">
-                          <div className="truncate">
-                            <div className={`font-black text-xs truncate leading-tight ${isLight ? 'text-slate-900' : 'text-white'}`}>
-                              {threat.name}
+                        <div className="flex items-center gap-2 mb-1">
+                          <PlayerHeadshot key={`${threat.name}-${headshotTick}`} name={threat.name} team={threat.nflTeam} size={40} />
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-start justify-between gap-1">
+                              <div className={`font-black text-xs truncate leading-tight ${isLight ? 'text-slate-900' : 'text-white'}`}>
+                                {threat.name}
+                              </div>
+                              <div className="text-right shrink-0">
+                                <span className={`font-mono font-black text-xs ${isLight ? 'text-rose-700' : 'text-rose-400'}`}>
+                                  {(threat.points || 0).toFixed(1)}
+                                </span>
+                                <span className={`text-[9px] font-bold ml-0.5 ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>pts</span>
+                              </div>
                             </div>
                             <div className={`text-[10px] font-bold flex items-center gap-1 mt-0.5 ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
                               <span>{threat.position} • {threat.nflTeam}</span>
-                              <span className={`font-mono text-[9px] px-1 py-0.2 rounded ${
+                              <span className={`font-mono text-[9px] px-1 py-0.2 rounded truncate ${
                                 threat.isLive 
                                   ? isLight ? 'bg-rose-100 text-rose-800 font-bold' : 'bg-rose-950/80 text-rose-300' 
                                   : isLight ? 'text-slate-400' : 'text-slate-500'
@@ -853,13 +1091,6 @@ export default function App() {
                                 {threat.gameClock}
                               </span>
                             </div>
-                          </div>
-
-                          <div className="text-right shrink-0">
-                            <span className={`font-mono font-black text-xs ${isLight ? 'text-rose-700' : 'text-rose-400'}`}>
-                              {(threat.points || 0).toFixed(1)}
-                            </span>
-                            <span className={`text-[9px] font-bold ml-0.5 ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>pts</span>
                           </div>
                         </div>
 
@@ -956,9 +1187,7 @@ export default function App() {
                           }`}
                         >
                           <div className="flex items-center gap-2.5">
-                            {PlayerAvatar && (
-                              <PlayerAvatar name={player.name} position={player.position} className="w-8 h-8" />
-                            )}
+                            <PlayerHeadshot key={`${player.name}-${headshotTick}`} name={player.name} team={player.nflTeam} size={40} />
                             <div>
                               <div className={`font-bold text-xs ${isLight ? 'text-slate-900' : 'text-white'}`}>{player.name}</div>
                               <div className={`text-[10px] ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>{player.position} • {player.nflTeam}</div>
