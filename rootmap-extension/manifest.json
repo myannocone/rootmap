@@ -1,12 +1,13 @@
 ﻿{
   "manifest_version": 3,
   "name": "RootMap Sync",
-  "version": "1.0.0",
-  "description": "One-click fantasy matchup sync for RootMap.",
+  "version": "1.2.0",
+  "description": "One-click fantasy matchup sync for RootMap (Yahoo & ESPN).",
   "permissions": ["activeTab", "scripting"],
   "host_permissions": [
     "*://sports.yahoo.com/*",
-    "*://football.fantasysports.yahoo.com/*"
+    "*://football.fantasysports.yahoo.com/*",
+    "*://fantasy.espn.com/*"
   ],
   "action": {
     "default_popup": "popup.html",

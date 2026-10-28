@@ -4,6 +4,7 @@ import RootMapLogo from './components/Logo';
 import SyncInspector from './components/SyncInspector';
 import { fetchLiveNFLSlate } from './services/espnScoreboard';
 import { getActiveSlate } from './data/nflSchedule';
+import { isEspnMatchupText, parseEspnMatchupText } from './utils/leagueParser';
 
 const LEAGUES_STORAGE_KEY = 'rootmap_leagues';
 
@@ -52,20 +53,30 @@ const DASH_RE = /^[-–—]$/;
 const FLOAT_RE = /^\d+\.\d{1,2}$/;
 const NAME_NOISE_SUFFIX_RE = /(?:No new player Notes|Video Forecast|New Player Note|Player Note|PUP|SUSP|IR|[QO])$/i;
 
+function firstPlayerList(...candidates) {
+  for (const list of candidates) {
+    if (Array.isArray(list) && list.length) return list;
+  }
+  for (const list of candidates) {
+    if (Array.isArray(list)) return list;
+  }
+  return [];
+}
+
 function getLeaguePortfolio(lg) {
-  return lg?.portfolio || lg?.starters || [];
+  return firstPlayerList(lg?.portfolio, lg?.starters, lg?.userTeam?.starters);
 }
 
 function getLeagueThreats(lg) {
-  return lg?.threats || lg?.opponentStarters || [];
+  return firstPlayerList(lg?.threats, lg?.opponentStarters, lg?.oppTeam?.starters);
 }
 
 function getLeagueDisplayName(lg) {
-  return lg?.name || lg?.myTeamName || 'My Team';
+  return lg?.name || lg?.myTeamName || lg?.userTeam?.name || 'My Team';
 }
 
 function getLeagueOppName(lg) {
-  return lg?.oppTeamName || lg?.opponent || YAHOO_OPPONENT_NAME;
+  return lg?.oppTeamName || lg?.opponent || lg?.oppTeam?.name || YAHOO_OPPONENT_NAME;
 }
 
 function normalizeLeague(lg, index = 0) {
@@ -742,7 +753,7 @@ function PlayerHeadshot({ name, team, size = 40 }) {
 }
 
 export default function App() {
-  const [theme, setTheme] = useState('dark');
+  const [theme] = useState('dark');
   const [view, setView] = useState('matchups');
   const [sortMode, setSortMode] = useState('exposure');
   const [leagues, setLeagues] = useState(loadStoredLeagues);
@@ -762,7 +773,6 @@ export default function App() {
   const [yahooPaste, setYahooPaste] = useState('');
   const [yahooIngestError, setYahooIngestError] = useState('');
   const [yahooLeagueName, setYahooLeagueName] = useState('');
-  const [activeLeagueTab, setActiveLeagueTab] = useState('combined');
   const [headshotTick, setHeadshotTick] = useState(0);
   const [showLegend, setShowLegend] = useState(false);
   const [showLeagueFilter, setShowLeagueFilter] = useState(false);
@@ -892,7 +902,6 @@ export default function App() {
       next.delete(id);
       return next;
     });
-    if (activeLeagueTab === id) setActiveLeagueTab('combined');
     if (activeLeagueDrawer?.id === id) setActiveLeagueDrawer(null);
     setLeaguePendingDelete(null);
   };
@@ -945,36 +954,50 @@ export default function App() {
   };
 
   const handleImportYahooMatchup = () => {
-    const parsed = parseYahooMatchupText(yahooPaste);
-    if (!parsed.myStarters.length && !parsed.oppStarters.length) {
-      setYahooIngestError('No players found. Copy the full Yahoo Matchup page (Ctrl+A, Ctrl+C) and paste again.');
+    const espnPaste = isEspnMatchupText(yahooPaste);
+    const parsed = espnPaste ? parseEspnMatchupText(yahooPaste) : parseYahooMatchupText(yahooPaste);
+    const myStarters = parsed.userTeam?.starters || parsed.myStarters || [];
+    const oppStarters = parsed.oppTeam?.starters || parsed.oppStarters || [];
+    if (!myStarters.length && !oppStarters.length) {
+      setYahooIngestError(espnPaste
+        ? 'No starters found. Paste the ESPN matchup through the bench, including the STARTERS table.'
+        : 'No players found. Copy the full Yahoo or ESPN Matchup page (Ctrl+A, Ctrl+C) and paste again.');
       return;
     }
 
-    const fallbackName = parsed.myTeamName && parsed.myTeamName !== 'My Team'
-      ? parsed.myTeamName
-      : `League ${leagues.length + 1}`;
-    const leagueName = yahooLeagueName.trim() || fallbackName;
+    const typedName = yahooLeagueName.trim();
+    const autoName = `League ${leagues.length + 1}`;
+    const espnTeamName = parsed.userTeam?.name && parsed.userTeam.name !== 'My Team' ? parsed.userTeam.name : '';
+    const detectedLeague = parsed.leagueName || '';
+    const fallbackName = espnPaste
+      ? (detectedLeague || espnTeamName || 'ESPN League')
+      : (parsed.myTeamName && parsed.myTeamName !== 'My Team' ? parsed.myTeamName : autoName);
+    const leagueName = typedName && typedName !== autoName ? typedName : fallbackName;
+    const oppTeamName = parsed.oppTeam?.name || parsed.oppTeamName || YAHOO_OPPONENT_NAME;
     const imported = normalizeLeague({
-      id: `lg_${Date.now()}`,
+      id: espnPaste ? (parsed.id || `espn-${Date.now()}`) : `lg_${Date.now()}`,
       name: leagueName,
-      myTeamName: leagueName,
-      oppTeamName: parsed.oppTeamName || YAHOO_OPPONENT_NAME,
-      platform: 'Yahoo',
-      myScore: parsed.myScore || 0,
-      oppScore: parsed.oppScore || 0,
-      portfolio: parsed.myStarters,
-      threats: parsed.oppStarters
+      myTeamName: espnPaste ? (espnTeamName || leagueName) : leagueName,
+      oppTeamName,
+      opponent: oppTeamName,
+      platform: espnPaste ? 'ESPN' : 'Yahoo',
+      myScore: parsed.myScore ?? parsed.userTeam?.score ?? 0,
+      oppScore: parsed.oppScore ?? parsed.oppTeam?.score ?? 0,
+      ...(espnPaste ? {
+        userTeam: { ...parsed.userTeam, name: espnTeamName || leagueName, starters: myStarters },
+        oppTeam: { ...parsed.oppTeam, name: oppTeamName, starters: oppStarters }
+      } : {}),
+      portfolio: myStarters,
+      threats: oppStarters
     }, leagues.length);
 
     setLeagues((prev) => [...prev, imported]);
-    setActiveLeagueTab(imported.id);
     setView('matchups');
     setYahooIngestError('');
     setYahooPaste('');
     setYahooLeagueName('');
     setShowYahooIngest(false);
-    setSyncStatus(`Imported ${parsed.myStarters.length} starters and ${parsed.oppStarters.length} threats into ${leagueName}.`);
+    setSyncStatus(`Imported ${myStarters.length} starters and ${oppStarters.length} threats into ${leagueName}.`);
   };
 
   const visibleLeagues = useMemo(
@@ -984,30 +1007,7 @@ export default function App() {
 
   const hiddenCount = leagues.length - visibleLeagues.length;
 
-  const totalNetDelta = useMemo(() => {
-    return visibleLeagues.reduce((acc, lg) => acc + ((lg.myScore || 0) - (lg.oppScore || 0)), 0);
-  }, [visibleLeagues]);
-
-  const isCombinedTab = activeLeagueTab === 'combined';
-
-  const scopedLeagues = useMemo(() => {
-    if (isCombinedTab) return visibleLeagues;
-    const one = leagues.find((lg) => lg.id === activeLeagueTab);
-    return one ? [one] : visibleLeagues;
-  }, [leagues, activeLeagueTab, isCombinedTab, visibleLeagues]);
-
-  const defenseLeagues = useMemo(() => {
-    if (isCombinedTab) return visibleLeagues;
-    const byId = new Map(visibleLeagues.map((lg) => [lg.id, lg]));
-    scopedLeagues.forEach((lg) => byId.set(lg.id, lg));
-    return Array.from(byId.values());
-  }, [isCombinedTab, visibleLeagues, scopedLeagues]);
-
   const playerMasterIndex = useMemo(
-    () => buildPlayerMasterIndex(scopedLeagues, games, defenseLeagues),
-    [scopedLeagues, games, defenseLeagues]
-  );
-  const combinedPlayerIndex = useMemo(
     () => buildPlayerMasterIndex(visibleLeagues, games),
     [visibleLeagues, games]
   );
@@ -1082,13 +1082,13 @@ export default function App() {
         window.removeEventListener('resize', updateConnectors);
       };
     }
-  }, [view, sortMode, theme, myPortfolio, oppThreats, activeLeagueTab]);
+  }, [view, sortMode, theme, myPortfolio, oppThreats]);
 
   const getGamePlayers = (game) => {
     if (!game) return [];
     const home = canonTeam(game.home);
     const away = canonTeam(game.away);
-    return Array.from(combinedPlayerIndex.values()).filter(
+    return Array.from(playerMasterIndex.values()).filter(
       (p) => p.myShares > 0 && (canonTeam(p.nflTeam) === away || canonTeam(p.nflTeam) === home)
     );
   };
@@ -1126,12 +1126,28 @@ export default function App() {
       isLight ? 'bg-slate-100 text-slate-800' : 'bg-slate-950 text-slate-100'
     }`}>
       <div className={`sticky top-0 z-40 max-w-md mx-auto ${isLight ? 'bg-white/95' : 'bg-slate-950/95'} backdrop-blur-md`}>
-      {/* Top Header */}
-      <header className={`border-b px-3 py-2.5 flex flex-wrap items-center justify-between gap-2 transition-colors ${
+      <header className={`border-b px-3 py-2 space-y-1.5 transition-colors ${
         isLight ? 'border-slate-200 shadow-sm' : 'border-slate-800/80'
       }`}>
-        <div className="flex items-center gap-2 min-w-0">
-          <RootMapLogo className="w-8 h-8 shrink-0" showWordmark={true} />
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-1.5 min-w-0">
+            <RootMapLogo className="w-6 h-6 shrink-0" showWordmark={false} />
+            <span className={`font-black text-sm tracking-tight ${isLight ? 'text-slate-900' : 'text-white'}`}>
+              Root<span className="text-emerald-400">Map</span>
+            </span>
+          </div>
+          <button
+            onClick={() => setView(view === 'game-slate' ? 'matchups' : 'game-slate')}
+            className={`shrink-0 px-2 py-1 rounded-lg text-[10px] font-black border whitespace-nowrap transition ${
+              view === 'game-slate'
+                ? isLight ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-emerald-950 text-emerald-300 border-emerald-600'
+                : isLight ? 'bg-slate-100 text-slate-700 border-slate-300 hover:bg-slate-200' : 'bg-slate-900 text-slate-200 border-slate-700 hover:bg-slate-800'
+            }`}
+          >
+            Week {slateMeta.week}
+          </button>
+        </div>
+        <div className="flex items-center gap-1.5">
           <button
             onClick={() => setShowLegend(true)}
             className={`px-2 py-1 rounded-lg text-[10px] font-black border whitespace-nowrap transition ${
@@ -1143,8 +1159,6 @@ export default function App() {
           >
             ⓘ Legend
           </button>
-        </div>
-        <div className="flex items-center gap-2">
           <button
             onClick={openYahooIngest}
             className={`px-2 py-1 rounded-lg text-[10px] font-black border whitespace-nowrap transition ${
@@ -1153,39 +1167,14 @@ export default function App() {
                 : 'bg-purple-950/70 text-purple-300 border-purple-700 hover:bg-purple-900/80'
             }`}
           >
-            Import Yahoo Matchup
+            + Import League
           </button>
-          <button
-            onClick={() => setTheme(prev => prev === 'dark' ? 'light' : 'dark')}
-            className={`px-2 py-1 rounded-lg text-xs font-bold border transition ${
-              isLight 
-                ? 'bg-slate-100 text-slate-700 border-slate-300 hover:bg-slate-200' 
-                : 'bg-slate-900 text-slate-300 border-slate-700 hover:bg-slate-800'
-            }`}
-          >
-            {isLight ? '🌙 Dark' : '☀️ Light'}
-          </button>
-
-          <div className={`px-2.5 py-1 rounded-full text-xs font-black font-mono border ${
-            totalNetDelta >= 0 
-              ? isLight ? 'bg-emerald-50 text-emerald-700 border-emerald-300' : 'bg-emerald-950/80 text-emerald-400 border-emerald-700/60'
-              : isLight ? 'bg-rose-50 text-rose-700 border-rose-300' : 'bg-rose-950/80 text-rose-400 border-rose-700/60'
-          }`}>
-            {totalNetDelta >= 0 ? `+${totalNetDelta.toFixed(1)}` : totalNetDelta.toFixed(1)}
-          </div>
-        </div>
-      </header>
-
-      <div className={`border-b ${
-        isLight ? 'border-slate-200' : 'border-slate-800'
-      }`}>
-        <div className="flex items-center gap-1.5 px-3 py-2">
           <button
             ref={filterButtonRef}
             onClick={toggleLeagueFilter}
             aria-expanded={showLeagueFilter}
             aria-haspopup="dialog"
-            className={`shrink-0 inline-flex items-center gap-1 px-2.5 py-1.5 rounded-full text-[10px] font-black whitespace-nowrap border transition ${
+            className={`ml-auto inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-black whitespace-nowrap border transition ${
               showLeagueFilter || hiddenCount > 0
                 ? isLight ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-emerald-950 text-emerald-300 border-emerald-600'
                 : isLight ? 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50' : 'bg-slate-900 text-slate-200 border-slate-600 hover:bg-slate-800'
@@ -1201,72 +1190,8 @@ export default function App() {
               </span>
             )}
           </button>
-          <div className="flex items-center gap-1.5 overflow-x-auto scrollbar-none min-w-0">
-          <button
-            onClick={() => setActiveLeagueTab('combined')}
-            className={`px-2.5 py-1.5 rounded-full text-[10px] font-black whitespace-nowrap border transition ${
-              isCombinedTab
-                ? isLight ? 'bg-slate-900 text-white border-slate-900' : 'bg-emerald-950 text-emerald-300 border-emerald-600'
-                : isLight ? 'bg-slate-50 text-slate-600 border-slate-200' : 'bg-slate-900 text-slate-400 border-slate-700'
-            }`}
-          >
-            {hiddenCount > 0
-              ? `Combined Rooting (${visibleLeagues.length}/${leagues.length})`
-              : 'Combined Rooting (All Leagues)'}
-          </button>
-          {leagues.map((lg) => {
-            const selected = activeLeagueTab === lg.id;
-            const hidden = hiddenLeagueIds.has(lg.id);
-            const leagueName = getLeagueDisplayName(lg);
-            return (
-              <div
-                key={lg.id}
-                className={`inline-flex items-center shrink-0 rounded-full border overflow-hidden ${
-                  hidden ? 'opacity-45' : ''
-                } ${
-                  selected
-                    ? isLight ? 'border-purple-600' : 'border-purple-500'
-                    : isLight ? 'border-slate-200' : 'border-slate-700'
-                }`}
-              >
-                <button
-                  onClick={() => setActiveLeagueTab(lg.id)}
-                  title={hidden ? 'Off the combined board' : leagueName}
-                  className={`px-2.5 py-1.5 text-[10px] font-black whitespace-nowrap transition ${
-                    selected
-                      ? isLight ? 'bg-purple-600 text-white' : 'bg-purple-950 text-purple-200'
-                      : isLight ? 'bg-white text-slate-600' : 'bg-slate-900 text-slate-400'
-                  }`}
-                >
-                  {leagueName}
-                </button>
-                <button
-                  type="button"
-                  aria-label={`Remove ${leagueName}`}
-                  title={`Remove ${leagueName}`}
-                  onClick={() => setLeaguePendingDelete(lg)}
-                  className={`px-1.5 py-1.5 border-l transition ${
-                    selected
-                      ? isLight ? 'border-purple-500 text-white hover:bg-purple-700' : 'border-purple-700 text-rose-200 hover:bg-rose-950/80'
-                      : isLight ? 'border-slate-200 text-rose-600 hover:bg-rose-50' : 'border-slate-700 text-rose-400 hover:bg-rose-950/60'
-                  }`}
-                >
-                  <TrashIcon />
-                </button>
-              </div>
-            );
-          })}
-          <button
-            onClick={openYahooIngest}
-            className={`px-2.5 py-1.5 rounded-full text-[10px] font-black whitespace-nowrap border transition ${
-              isLight ? 'bg-purple-50 text-purple-700 border-purple-300 hover:bg-purple-100' : 'bg-purple-950/50 text-purple-300 border-purple-700 hover:bg-purple-900/70'
-            }`}
-          >
-            + Import Another League
-          </button>
-          </div>
         </div>
-      </div>
+      </header>
       </div>
 
       {/* Main Container */}
@@ -1289,13 +1214,13 @@ export default function App() {
               Sync your first league via the extension or import tool
             </div>
             <p className={`text-xs leading-relaxed ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
-              RootMap starts empty. Import a Yahoo matchup here, or sync from the RootMap extension on your Yahoo Fantasy matchup page.
+              RootMap starts empty. Paste a Yahoo or ESPN matchup here, or sync from the RootMap extension.
             </p>
             <button
               onClick={openYahooIngest}
               className="px-3.5 py-2 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-xs font-black shadow-lg transition"
             >
-              Import Yahoo Matchup
+              Import League
             </button>
           </div>
         )}
@@ -1304,7 +1229,7 @@ export default function App() {
             <div className="space-y-2">
               <div className="flex justify-between items-center px-1">
                 <div className={`text-xs font-black uppercase tracking-wider ${isLight ? 'text-slate-700' : 'text-slate-300'}`}>
-                  {isCombinedTab ? 'Combined Rooting' : getLeagueDisplayName(scopedLeagues[0])}
+                  Combined Rooting
                 </div>
                 <div className={`text-[11px] font-mono font-bold ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
                   {myPortfolio.length} Active • {oppThreats.length} Threats
@@ -1378,7 +1303,7 @@ export default function App() {
               <div className={`rounded-2xl px-3 py-4 text-center text-xs font-semibold border ${
                 isLight ? 'bg-white border-slate-200 text-slate-500' : 'bg-slate-900 border-slate-800 text-slate-400'
               }`}>
-                {isCombinedTab && visibleLeagues.length === 0
+                {visibleLeagues.length === 0
                   ? 'Every league is filtered out. Turn one back on in Filter Leagues. Saved rosters stay on this device.'
                   : 'No starters in this view.'}
               </div>
@@ -1738,7 +1663,7 @@ export default function App() {
                   onClick={openYahooIngest}
                   className="px-3.5 py-2 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-xs font-black shadow-lg transition"
                 >
-                  Import Yahoo Matchup
+                  Import League
                 </button>
               </div>
             )}
@@ -2083,15 +2008,29 @@ export default function App() {
                 ✕
               </button>
             </div>
-            {hiddenCount > 0 && (
-              <button
-                onClick={() => setHiddenLeagueIds(new Set())}
-                className={`mb-2 w-full py-1.5 rounded-xl text-[11px] font-black border ${
-                  isLight ? 'bg-emerald-50 text-emerald-800 border-emerald-200' : 'bg-emerald-950 text-emerald-300 border-emerald-800'
-                }`}
-              >
-                Show all leagues
-              </button>
+            {leagues.length > 1 && (
+              <div className="grid grid-cols-2 gap-1.5 mb-2">
+                <button
+                  type="button"
+                  onClick={() => setHiddenLeagueIds(new Set())}
+                  disabled={hiddenCount === 0}
+                  className={`py-1.5 rounded-xl text-[11px] font-black border disabled:opacity-40 ${
+                    isLight ? 'bg-emerald-50 text-emerald-800 border-emerald-200' : 'bg-emerald-950 text-emerald-300 border-emerald-800'
+                  }`}
+                >
+                  Select All
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setHiddenLeagueIds(new Set(leagues.map((lg) => lg.id)))}
+                  disabled={hiddenCount === leagues.length}
+                  className={`py-1.5 rounded-xl text-[11px] font-black border disabled:opacity-40 ${
+                    isLight ? 'bg-slate-50 text-slate-700 border-slate-200' : 'bg-slate-950 text-slate-300 border-slate-700'
+                  }`}
+                >
+                  Deselect All
+                </button>
+              </div>
             )}
             <div className="space-y-1">
               {leagues.length === 0 && (
@@ -2159,10 +2098,10 @@ export default function App() {
             <div className="flex justify-between items-start gap-3">
               <div>
                 <h3 className={`text-base font-black ${isLight ? 'text-slate-900' : 'text-white'}`}>
-                  Import Yahoo Matchup
+                  Import League
                 </h3>
                 <p className={`text-xs mt-1 leading-relaxed ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
-                  On your Yahoo Fantasy Matchup page, press Ctrl+A, Ctrl+C, and paste here.
+                  On a Yahoo or ESPN Fantasy matchup page, press Ctrl+A, Ctrl+C, and paste here. ESPN starter tables are read up to the bench.
                 </p>
               </div>
               <button
@@ -2198,7 +2137,7 @@ export default function App() {
                 setYahooPaste(e.target.value);
                 if (yahooIngestError) setYahooIngestError('');
               }}
-              placeholder="Paste the full Yahoo Matchup page here…"
+              placeholder="Paste a Yahoo or ESPN matchup here…"
               className={`w-full h-48 rounded-2xl p-3 text-xs font-mono leading-relaxed resize-y select-text focus:outline-none ${
                 isLight
                   ? 'bg-slate-50 border border-slate-200 text-slate-800 placeholder-slate-400 focus:border-purple-400'
