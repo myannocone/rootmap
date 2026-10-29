@@ -7,6 +7,7 @@ import { getActiveSlate } from './data/nflSchedule';
 import { isEspnMatchupText, parseEspnMatchupText } from './utils/leagueParser';
 
 const LEAGUES_STORAGE_KEY = 'rootmap_leagues';
+const THEME_STORAGE_KEY = 'rootmap_theme';
 
 const STALE_MOCK_LEAGUE_IDS = new Set(['lg_1', 'l1', 'l2', 'l3', 'l4']);
 const STALE_MOCK_LEAGUE_NAMES = new Set([
@@ -20,12 +21,12 @@ const STALE_MOCK_LEAGUE_NAMES = new Set([
 const YAHOO_OPPONENT_NAME = 'Crab Cakes and Football';
 
 const ROOTING_LEGEND = [
-  { icon: '🟢', title: 'Pure Root', detail: 'Solo offensive starter across your leagues.' },
-  { icon: '🟢', title: 'Double Down (+2 or more)', detail: 'Started on multiple rosters.' },
-  { icon: '🔴', title: 'Major Threat (-1 or more)', detail: 'Started by opponent(s) against you.' },
-  { icon: '⚖️', title: 'Hedged / Wash', detail: 'Roster conflict (started in 1 league, opposed in another).' },
+  { icon: '🟢', title: 'Root For', detail: 'Started only on your rosters.' },
+  { icon: '🟢', title: 'Double Down (+2 or more)', detail: 'Started on multiple of your rosters.' },
+  { icon: '🔴', title: 'Root Against', detail: 'Started only by an opponent.' },
+  { icon: '⚡', title: 'Cross Fire', detail: 'The same player is in your starters and an opponent’s starters.' },
   { icon: '⚔️', title: 'Friendly Fire', detail: 'Offense playing directly against your active DEF.' },
-  { icon: '⚡', title: 'Crossfire', detail: 'High-impact head-to-head game slot.' }
+  { icon: '○', title: 'Neutral / Free Agent', detail: 'Not started by you or an opponent in the leagues on the board.' }
 ];
 
 const TEAM_ALIASES = {
@@ -199,14 +200,16 @@ function buildPlayerMasterIndex(leagueList, games = [], defenseLeagues = null) {
   return map;
 }
 
-function getCombinedStance(player, column) {
-  const mine = player.myShares || 0;
-  const opp = player.oppShares || 0;
-  if (mine > 0 && opp > 0) return { label: 'Hedged / Wash', tone: 'hedge' };
-  if (column === 'mine' && mine >= 2) return { label: `Double Down (+${mine})`, tone: 'down' };
-  if (column === 'mine' && mine === 1 && isOffensiveStarter(player)) return { label: 'Pure Root', tone: 'pure' };
-  if (column === 'opp' && opp >= 1) return { label: `Major Threat (-${opp})`, tone: 'threat' };
-  return null;
+function getCombinedStance(player) {
+  const mine = player?.myShares || 0;
+  const opp = player?.oppShares || 0;
+  if (mine > 0 && opp > 0) return { label: 'Cross Fire', tone: 'cross' };
+  if (mine > 0 && opp === 0) {
+    if (mine >= 2) return { label: `Double Down (+${mine})`, tone: 'down' };
+    return { label: 'Root For', tone: 'pure' };
+  }
+  if (opp > 0 && mine === 0) return { label: 'Root Against', tone: 'threat' };
+  return { label: 'Neutral / Free Agent', tone: 'neutral' };
 }
 
 function canonTeam(team) {
@@ -252,27 +255,6 @@ function markExposureTags(playerMap, leagueList, games) {
     });
   });
 
-  const teamHasMine = new Set();
-  const teamHasOpp = new Set();
-  playerMap.forEach((player) => {
-    const team = canonTeam(player.nflTeam);
-    if (!team) return;
-    if (player.myShares > 0) teamHasMine.add(team);
-    if (player.oppShares > 0) teamHasOpp.add(team);
-  });
-
-  const crossfireTeams = new Set();
-  (games || []).forEach((game) => {
-    const home = canonTeam(game.home);
-    const away = canonTeam(game.away);
-    const homeExposed = teamHasMine.has(home) || teamHasOpp.has(home);
-    const awayExposed = teamHasMine.has(away) || teamHasOpp.has(away);
-    if (homeExposed && awayExposed) {
-      crossfireTeams.add(home);
-      crossfireTeams.add(away);
-    }
-  });
-
   playerMap.forEach((player) => {
     const team = canonTeam(player.nflTeam);
     const defs = isOffensiveStarter(player) && player.myShares > 0
@@ -280,7 +262,7 @@ function markExposureTags(playerMap, leagueList, games) {
       : [];
     player.friendlyFire = defs.length > 0;
     player.friendlyFireDefs = defs;
-    player.crossfire = Boolean(team) && crossfireTeams.has(team) && ((player.myShares || 0) > 0 || (player.oppShares || 0) > 0);
+    player.crossfire = (player.myShares || 0) > 0 && (player.oppShares || 0) > 0;
   });
 }
 
@@ -307,7 +289,7 @@ function ExposureFlags({ player, isLight }) {
           <span className={`${pill} ${
             isLight ? 'bg-violet-50 text-violet-800 border-violet-300' : 'bg-violet-950/70 text-violet-300 border-violet-700'
           }`}>
-            ⚡ Crossfire
+            Cross Fire
           </span>
         )}
       </div>
@@ -702,19 +684,30 @@ function getPlayerHeadshotCandidates(playerName, team) {
   return [...new Set(urls)];
 }
 
-function PlayerHeadshot({ name, team, size = 40 }) {
-  const candidates = getPlayerHeadshotCandidates(name, team);
+function espnDefenseLogoUrls(team) {
+  const raw = String(team || '').trim().toLowerCase();
+  const canon = canonTeam(team).toLowerCase();
+  const urls = [];
+  if (raw) urls.push(`https://a.espncdn.com/i/teamlogos/nfl/500/${raw}.png`);
+  if (canon && canon !== raw) urls.push(`https://a.espncdn.com/i/teamlogos/nfl/500/${canon}.png`);
+  if (raw === 'was' || canon === 'was') urls.push('https://a.espncdn.com/i/teamlogos/nfl/500/wsh.png');
+  return [...new Set(urls)];
+}
+
+function PlayerHeadshot({ name, team, size = 40, defense = false }) {
+  const candidates = defense ? espnDefenseLogoUrls(team) : getPlayerHeadshotCandidates(name, team);
   const [urlIndex, setUrlIndex] = useState(0);
   const [failed, setFailed] = useState(false);
   const src = !failed ? candidates[urlIndex] : null;
   const initials = getPlayerInitials(name);
   const accent = getTeamAccent(team);
   const px = `${size}px`;
+  const teamAbbr = canonTeam(team) || String(team || '').toUpperCase() || 'DEF';
 
   useEffect(() => {
     setUrlIndex(0);
     setFailed(false);
-  }, [name, team, candidates[0]]);
+  }, [name, team, defense, candidates[0]]);
 
   if (!src || failed) {
     return (
@@ -730,14 +723,16 @@ function PlayerHeadshot({ name, team, size = 40 }) {
         }}
         aria-hidden="true"
       >
-        {initials}
+        {defense ? teamAbbr : initials}
       </div>
     );
   }
 
   return (
     <div
-      className="rounded-full shrink-0 overflow-hidden bg-slate-800 ring-1 ring-black/15"
+      className={`rounded-full shrink-0 overflow-hidden ring-1 ring-black/15 flex items-center justify-center ${
+        defense ? 'bg-transparent' : 'bg-slate-800'
+      }`}
       style={{ width: px, height: px }}
     >
       <img
@@ -751,14 +746,22 @@ function PlayerHeadshot({ name, team, size = 40 }) {
           if (urlIndex < candidates.length - 1) setUrlIndex((n) => n + 1);
           else setFailed(true);
         }}
-        className="w-full h-full object-cover object-top"
+        className={defense ? 'w-[86%] h-[86%] object-contain' : 'w-full h-full object-cover object-top'}
       />
     </div>
   );
 }
 
 export default function App() {
-  const [theme] = useState('dark');
+  const [theme, setTheme] = useState(() => {
+    try {
+      const saved = localStorage.getItem(THEME_STORAGE_KEY);
+      if (saved === 'light' || saved === 'dark') return saved;
+    } catch {
+      // keep the default theme
+    }
+    return 'dark';
+  });
   const [view, setView] = useState('matchups');
   const [sortMode, setSortMode] = useState('exposure');
   const [leagues, setLeagues] = useState(loadStoredLeagues);
@@ -795,6 +798,20 @@ export default function App() {
   const [connectors, setConnectors] = useState([]);
 
   const isLight = theme === 'light';
+
+  useEffect(() => {
+    const nodes = [document.documentElement, document.body];
+    nodes.forEach((node) => {
+      node.classList.remove('light', 'dark');
+      node.classList.add(theme);
+    });
+    document.documentElement.style.colorScheme = theme;
+    try {
+      localStorage.setItem(THEME_STORAGE_KEY, theme);
+    } catch {
+      // private mode can block storage
+    }
+  }, [theme]);
 
   const triggerSyncWithToken = async (accessToken) => {
     setIsSyncing(true);
@@ -1174,41 +1191,35 @@ export default function App() {
     const home = canonTeam(game.home);
     const away = canonTeam(game.away);
     return Array.from(playerMasterIndex.values()).filter(
-      (p) => p.myShares > 0 && (canonTeam(p.nflTeam) === away || canonTeam(p.nflTeam) === home)
+      (p) => (p.myShares > 0 || p.oppShares > 0) && (canonTeam(p.nflTeam) === away || canonTeam(p.nflTeam) === home)
     );
   };
 
-  const renderStance = (player, column, isConflict) => {
-    const stance = getCombinedStance(player, column);
-    if (stance?.tone === 'hedge') {
-      return <span className="text-amber-500 font-black uppercase tracking-wide text-right leading-tight">Hedged / Wash</span>;
+  const renderStance = (player) => {
+    const stance = getCombinedStance(player);
+    if (stance.tone === 'cross') {
+      return <span className="text-violet-500 font-black uppercase tracking-wide text-right leading-tight">Cross Fire</span>;
     }
-    if (stance?.tone === 'down' || stance?.tone === 'pure') {
+    if (stance.tone === 'down' || stance.tone === 'pure') {
       return (
-        <span className={`font-black text-right leading-tight ${isLight ? 'text-emerald-700' : 'text-emerald-300'}`}>
+        <span className={`font-black text-right leading-tight ${isLight ? 'text-green-600' : 'text-emerald-300'}`}>
           {stance.label}
         </span>
       );
     }
-    if (stance?.tone === 'threat') {
+    if (stance.tone === 'threat') {
       return (
-        <span className={`font-black text-right leading-tight ${isLight ? 'text-rose-700' : 'text-rose-300'}`}>
+        <span className={`font-black text-right leading-tight ${isLight ? 'text-red-600' : 'text-rose-300'}`}>
           {stance.label}
         </span>
       );
     }
-    if (isConflict && column === 'mine') {
-      return <span className="text-amber-600 font-bold">v {player.oppShares} Opp</span>;
-    }
-    if (isConflict) {
-      return <span className="text-amber-600 font-bold">CONFLICTED ({player.myShares}x)</span>;
-    }
-    return null;
+    return <span className={`font-bold text-right leading-tight ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>Neutral / Free Agent</span>;
   };
 
   return (
     <div className={`min-h-screen pb-28 font-sans select-none transition-colors duration-200 ${
-      isLight ? 'bg-slate-100 text-slate-800' : 'bg-slate-950 text-slate-100'
+      isLight ? 'bg-slate-50 text-slate-900' : 'bg-slate-950 text-slate-100'
     }`}>
       <div className={`sticky top-0 z-40 max-w-md mx-auto ${isLight ? 'bg-white/95' : 'bg-slate-950/95'} backdrop-blur-md`}>
       <header className={`border-b px-3 py-2 space-y-1.5 transition-colors ${
@@ -1221,7 +1232,29 @@ export default function App() {
               Root<span className="text-emerald-400">Map</span>
             </span>
           </div>
-          <button
+          <div className="flex items-center gap-1.5 shrink-0">
+            <button
+              type="button"
+              onClick={() => setTheme(isLight ? 'dark' : 'light')}
+              aria-label={isLight ? 'Switch to dark mode' : 'Switch to light mode'}
+              title={isLight ? 'Dark mode' : 'Light mode'}
+              className={`w-8 h-8 rounded-lg border flex items-center justify-center transition ${
+                isLight
+                  ? 'bg-white text-slate-900 border-slate-200 hover:bg-slate-50'
+                  : 'bg-slate-900 text-amber-300 border-slate-700 hover:bg-slate-800'
+              }`}
+            >
+              {isLight ? (
+                <svg viewBox="0 0 16 16" className="w-4 h-4" aria-hidden="true">
+                  <path fill="currentColor" d="M8 1.2a.7.7 0 0 1 .7.7V3a.7.7 0 1 1-1.4 0V1.9A.7.7 0 0 1 8 1.2Zm0 10.2A3.4 3.4 0 1 0 8 4.6a3.4 3.4 0 0 0 0 6.8Zm6.1-4.1a.7.7 0 0 1-.7.7H12a.7.7 0 1 1 0-1.4h1.4a.7.7 0 0 1 .7.7ZM4.7 8a.7.7 0 0 1-.7.7H2.6a.7.7 0 1 1 0-1.4H4a.7.7 0 0 1 .7.7Zm7.9-4.6a.7.7 0 0 1 0 1L11.6 5.4a.7.7 0 1 1-1-1l1-1a.7.7 0 0 1 1 0ZM5.4 10.6a.7.7 0 0 1 0 1l-1 1a.7.7 0 1 1-1-1l1-1a.7.7 0 0 1 1 0Zm6.2 0a.7.7 0 0 1 1 1l-1 1a.7.7 0 1 1-1-1l1-1Zm-6.2-6.2a.7.7 0 0 1 0 1l-1 1a.7.7 0 1 1-1-1l1-1a.7.7 0 0 1 1 0ZM8 13a.7.7 0 0 1 .7.7v1.1a.7.7 0 1 1-1.4 0V13.7A.7.7 0 0 1 8 13Z" />
+                </svg>
+              ) : (
+                <svg viewBox="0 0 16 16" className="w-4 h-4" aria-hidden="true">
+                  <path fill="currentColor" d="M8.4 1.4a.7.7 0 0 1 .2.8 4.6 4.6 0 0 0 5.2 6.3.7.7 0 0 1 .8.9A6.6 6.6 0 1 1 7.6 1.2a.7.7 0 0 1 .8.2Z" />
+                </svg>
+              )}
+            </button>
+            <button
             onClick={() => setView(view === 'game-slate' ? 'matchups' : 'game-slate')}
             className={`shrink-0 px-2 py-1 rounded-lg text-[10px] font-black border whitespace-nowrap transition ${
               view === 'game-slate'
@@ -1231,6 +1264,7 @@ export default function App() {
           >
             Week {slateMeta.week}
           </button>
+          </div>
         </div>
         <div className="flex items-center gap-1.5">
           <button
@@ -1367,18 +1401,18 @@ export default function App() {
 
             <div className="grid grid-cols-2 gap-4 text-center text-xs font-black tracking-wider uppercase">
               <div className={`rounded-xl py-2 px-1 flex flex-col items-center justify-center border shadow-sm transition ${
-                isLight ? 'bg-emerald-50 border-emerald-200 text-emerald-800' : 'bg-slate-900 border-emerald-500/30 text-emerald-400'
+                isLight ? 'bg-white border-slate-200 text-green-600' : 'bg-slate-900 border-emerald-500/30 text-emerald-400'
               }`}>
-                <span>Your Portfolio</span>
-                <span className={`text-[10px] font-normal ${isLight ? 'text-emerald-700' : 'text-slate-400'}`}>
+                <span className="leading-tight">Root For (Your Portfolio)</span>
+                <span className={`text-[10px] font-normal normal-case tracking-normal ${isLight ? 'text-green-700' : 'text-slate-400'}`}>
                   ({myPortfolio.length} Active)
                 </span>
               </div>
               <div className={`rounded-xl py-2 px-1 flex flex-col items-center justify-center border shadow-sm transition ${
-                isLight ? 'bg-rose-50 border-rose-200 text-rose-800' : 'bg-slate-900 border-rose-500/30 text-rose-400'
+                isLight ? 'bg-white border-slate-200 text-red-600' : 'bg-slate-900 border-rose-500/30 text-rose-400'
               }`}>
-                <span>Opposition Threats</span>
-                <span className={`text-[10px] font-normal ${isLight ? 'text-rose-700' : 'text-slate-400'}`}>
+                <span className="leading-tight">Root Against (Opposition Threats)</span>
+                <span className={`text-[10px] font-normal normal-case tracking-normal ${isLight ? 'text-red-700' : 'text-slate-400'}`}>
                   ({oppThreats.length} Total)
                 </span>
               </div>
@@ -1450,7 +1484,7 @@ export default function App() {
                               ? isHovered
                                 ? 'bg-amber-50 border-amber-400 ring-2 ring-amber-300'
                                 : 'bg-white border-amber-300 hover:bg-amber-50/50'
-                              : 'bg-white border-emerald-200 hover:border-emerald-300 hover:shadow'
+                              : 'bg-white border-slate-200 hover:border-slate-300 hover:shadow'
                             : isConflict
                             ? isHovered
                               ? 'bg-amber-950/40 border-amber-400 ring-1 ring-amber-400'
@@ -1470,14 +1504,14 @@ export default function App() {
                         </div>
 
                         <div className="flex items-center gap-2 mb-1">
-                          <PlayerHeadshot key={`${player.name}-${headshotTick}`} name={player.name} team={player.nflTeam} size={40} />
+                          <PlayerHeadshot key={`${player.name}-${headshotTick}`} name={player.name} team={player.nflTeam} defense={isTeamDefense(player)} size={40} />
                           <div className="min-w-0 flex-1">
                             <div className="flex items-start justify-between gap-1">
                               <div className={`font-black text-xs truncate leading-tight ${isLight ? 'text-slate-900' : 'text-white'}`}>
                                 {player.name}
                               </div>
                               <div className="text-right shrink-0">
-                                <span className={`font-mono font-black text-xs ${isLight ? 'text-emerald-700' : 'text-emerald-400'}`}>
+                                <span className={`font-mono font-black text-xs ${isLight ? 'text-green-600' : 'text-emerald-400'}`}>
                                   {(player.points || 0).toFixed(1)}
                                 </span>
                                 <span className={`text-[9px] font-bold ml-0.5 ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>pts</span>
@@ -1511,10 +1545,10 @@ export default function App() {
                         <div className={`flex justify-between items-center gap-1 text-[10px] pt-1.5 border-t font-mono ${
                           isLight ? 'border-slate-100' : 'border-slate-800/80'
                         }`}>
-                          <span className={`font-bold shrink-0 ${isLight ? 'text-emerald-700' : 'text-emerald-400'}`}>
+                          <span className={`font-bold shrink-0 ${isLight ? 'text-green-600' : 'text-emerald-400'}`}>
                             {player.myShares} {player.myShares === 1 ? 'LEAGUE' : 'LEAGUES'}
                           </span>
-                          {renderStance(player, 'mine', isConflict)}
+                          {renderStance(player)}
                         </div>
                       </div>
                     );
@@ -1538,7 +1572,7 @@ export default function App() {
                               ? isHovered
                                 ? 'bg-amber-50 border-amber-400 ring-2 ring-amber-300'
                                 : 'bg-white border-amber-300 hover:bg-amber-50/50'
-                              : 'bg-white border-rose-200 hover:border-rose-300 hover:shadow'
+                              : 'bg-white border-slate-200 hover:border-slate-300 hover:shadow'
                             : isConflict
                             ? isHovered
                               ? 'bg-amber-950/40 border-amber-400 ring-1 ring-amber-400'
@@ -1558,14 +1592,14 @@ export default function App() {
                         </div>
 
                         <div className="flex items-center gap-2 mb-1">
-                          <PlayerHeadshot key={`${threat.name}-${headshotTick}`} name={threat.name} team={threat.nflTeam} size={40} />
+                          <PlayerHeadshot key={`${threat.name}-${headshotTick}`} name={threat.name} team={threat.nflTeam} defense={isTeamDefense(threat)} size={40} />
                           <div className="min-w-0 flex-1">
                             <div className="flex items-start justify-between gap-1">
                               <div className={`font-black text-xs truncate leading-tight ${isLight ? 'text-slate-900' : 'text-white'}`}>
                                 {threat.name}
                               </div>
                               <div className="text-right shrink-0">
-                                <span className={`font-mono font-black text-xs ${isLight ? 'text-rose-700' : 'text-rose-400'}`}>
+                                <span className={`font-mono font-black text-xs ${isLight ? 'text-red-600' : 'text-rose-400'}`}>
                                   {(threat.points || 0).toFixed(1)}
                                 </span>
                                 <span className={`text-[9px] font-bold ml-0.5 ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>pts</span>
@@ -1599,10 +1633,10 @@ export default function App() {
                         <div className={`flex justify-between items-center gap-1 text-[10px] pt-1.5 border-t font-mono ${
                           isLight ? 'border-slate-100' : 'border-slate-800/80'
                         }`}>
-                          <span className={`font-bold shrink-0 ${isLight ? 'text-rose-700' : 'text-rose-400'}`}>
+                          <span className={`font-bold shrink-0 ${isLight ? 'text-red-600' : 'text-rose-400'}`}>
                             {threat.oppShares} {threat.oppShares === 1 ? 'LEAGUE' : 'LEAGUES'}
                           </span>
-                          {renderStance(threat, 'opp', isConflict)}
+                          {renderStance(threat)}
                         </div>
                       </div>
                     );
@@ -1681,18 +1715,27 @@ export default function App() {
                         >
                           <div className="flex items-center justify-between gap-2">
                             <div className="flex items-center gap-2.5 min-w-0">
-                              <PlayerHeadshot key={`${player.name}-${headshotTick}`} name={player.name} team={player.nflTeam} size={40} />
+                              <PlayerHeadshot key={`${player.name}-${headshotTick}`} name={player.name} team={player.nflTeam} defense={isTeamDefense(player)} size={40} />
                               <div className="min-w-0">
                                 <div className={`font-bold text-xs truncate ${isLight ? 'text-slate-900' : 'text-white'}`}>{player.name}</div>
                                 <div className={`text-[10px] ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>{player.position} • {player.nflTeam}</div>
+                              <div className="mt-0.5">{renderStance(player)}</div>
                               </div>
                             </div>
                             <div className="text-right font-mono shrink-0">
-                              <div className={`text-xs font-black ${isLight ? 'text-emerald-700' : 'text-emerald-400'}`}>
+                              <div className={`text-xs font-black ${
+                                getCombinedStance(player).tone === 'threat'
+                                  ? isLight ? 'text-red-600' : 'text-rose-400'
+                                  : getCombinedStance(player).tone === 'cross'
+                                    ? 'text-violet-500'
+                                    : isLight ? 'text-green-600' : 'text-emerald-400'
+                              }`}>
                                 {(player.points || 0).toFixed(1)} pts
                               </div>
                               <div className={`text-[10px] ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
-                                {player.myShares} {player.myShares === 1 ? 'League' : 'Leagues'}
+                                {player.myShares > 0
+                                  ? `${player.myShares} ${player.myShares === 1 ? 'League' : 'Leagues'}`
+                                  : `${player.oppShares} ${player.oppShares === 1 ? 'Opponent' : 'Opponents'}`}
                               </div>
                             </div>
                           </div>
@@ -1800,36 +1843,30 @@ export default function App() {
         isLight ? 'bg-white/95 border-slate-200' : 'bg-slate-950/95 border-slate-800'
       }`}>
         <div className="grid grid-cols-3 py-2 px-3 gap-1">
-          <button
-            onClick={() => setView('matchups')}
-            className={`py-2 flex flex-col items-center justify-center rounded-xl text-xs font-bold transition ${
-              view === 'matchups' 
-                ? isLight ? 'bg-emerald-50 text-emerald-700 shadow-sm' : 'bg-slate-800 text-emerald-400' 
-                : isLight ? 'text-slate-500 hover:text-slate-800' : 'text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            <span>⚔️ Matchups</span>
-          </button>
-          <button
-            onClick={() => setView('game-slate')}
-            className={`py-2 flex flex-col items-center justify-center rounded-xl text-xs font-bold transition ${
-              view === 'game-slate' 
-                ? isLight ? 'bg-emerald-50 text-emerald-700 shadow-sm' : 'bg-slate-800 text-emerald-400' 
-                : isLight ? 'text-slate-500 hover:text-slate-800' : 'text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            <span>🎮 Game Slate</span>
-          </button>
-          <button
-            onClick={() => setView('all-leagues')}
-            className={`py-2 flex flex-col items-center justify-center rounded-xl text-xs font-bold transition ${
-              view === 'all-leagues' 
-                ? isLight ? 'bg-emerald-50 text-emerald-700 shadow-sm' : 'bg-slate-800 text-emerald-400' 
-                : isLight ? 'text-slate-500 hover:text-slate-800' : 'text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            <span>🏆 All Leagues</span>
-          </button>
+          {[
+            { id: 'matchups', label: 'RootMap' },
+            { id: 'game-slate', label: 'Game Slate' },
+            { id: 'all-leagues', label: 'All Leagues' }
+          ].map((tab) => {
+            const active = view === tab.id;
+            return (
+              <button
+                key={tab.id}
+                onClick={() => setView(tab.id)}
+                className={`py-2 flex items-center justify-center rounded-xl text-xs tracking-tight transition ${
+                  active
+                    ? isLight
+                      ? 'bg-emerald-600 text-white font-black shadow-md ring-2 ring-emerald-300'
+                      : 'bg-emerald-500 text-slate-950 font-black shadow-md ring-2 ring-emerald-300'
+                    : isLight
+                      ? 'text-slate-500 font-bold hover:text-slate-900'
+                      : 'text-slate-500 font-bold hover:text-slate-200'
+                }`}
+              >
+                {tab.label}
+              </button>
+            );
+          })}
         </div>
       </nav>
 
