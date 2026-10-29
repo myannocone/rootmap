@@ -138,6 +138,26 @@ function loadStoredLeagues() {
   }
 }
 
+function parseSetupCode(raw) {
+  const text = String(raw || '').trim();
+  if (!text) return null;
+  const attempts = [text];
+  try {
+    attempts.push(atob(text.replace(/\s/g, '')));
+  } catch {
+    // plain JSON is the other accepted form
+  }
+  for (const attempt of attempts) {
+    try {
+      const leagues = leaguesFromJson(attempt);
+      if (Array.isArray(leagues)) return leagues;
+    } catch {
+      // try the next encoding
+    }
+  }
+  return null;
+}
+
 function TrashIcon() {
   return (
     <svg viewBox="0 0 16 16" className="w-3 h-3" aria-hidden="true">
@@ -786,7 +806,7 @@ export default function App() {
   const [showLeagueFilter, setShowLeagueFilter] = useState(false);
   const [hiddenLeagueIds, setHiddenLeagueIds] = useState(() => new Set());
   const [filterPos, setFilterPos] = useState({ top: 96, left: 12 });
-  const [showLeagueBackupImport, setShowLeagueBackupImport] = useState(false);
+  const [showSetupImport, setShowSetupImport] = useState(false);
   const [leagueBackupPaste, setLeagueBackupPaste] = useState('');
   const [leagueBackupMessage, setLeagueBackupMessage] = useState('');
   const [leagueBackupError, setLeagueBackupError] = useState(false);
@@ -904,9 +924,16 @@ export default function App() {
   }, [leagues]);
 
   useEffect(() => {
-    if (!showLegend && !showLeagueFilter && !leaguePendingDelete) return undefined;
+    if (!showLegend && !showLeagueFilter && !leaguePendingDelete && !showSetupImport) return undefined;
     const onKey = (event) => {
       if (event.key !== 'Escape') return;
+      if (showSetupImport) {
+        setShowSetupImport(false);
+        setLeagueBackupPaste('');
+        setLeagueBackupMessage('');
+        setLeagueBackupError(false);
+        return;
+      }
       if (leaguePendingDelete) {
         setLeaguePendingDelete(null);
         return;
@@ -916,7 +943,7 @@ export default function App() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [showLegend, showLeagueFilter, leaguePendingDelete]);
+  }, [showLegend, showLeagueFilter, leaguePendingDelete, showSetupImport]);
 
   const confirmRemoveLeague = () => {
     if (!leaguePendingDelete) return;
@@ -973,15 +1000,14 @@ export default function App() {
     });
   };
 
-  const exportAllLeagues = async () => {
-    const payload = JSON.stringify(leagues);
+  const exportSetup = async () => {
+    let payload = '';
     try {
-      localStorage.setItem(LEAGUES_STORAGE_KEY, payload);
+      payload = localStorage.getItem(LEAGUES_STORAGE_KEY) || '';
     } catch {
-      setLeagueBackupMessage('Could not save the leagues on this device.');
-      setLeagueBackupError(true);
-      return;
+      payload = '';
     }
+    if (!payload) payload = JSON.stringify(leagues);
 
     const copyNow = () => {
       try {
@@ -1002,40 +1028,50 @@ export default function App() {
       }
     };
 
-    if (copyNow()) {
-      setLeagueBackupMessage(leagues.length ? `Copied ${leagues.length} league${leagues.length === 1 ? '' : 's'}.` : 'Copied an empty league list.');
-      setLeagueBackupError(false);
-      return;
-    }
-
     try {
       await navigator.clipboard.writeText(payload);
-      setLeagueBackupMessage(leagues.length ? `Copied ${leagues.length} league${leagues.length === 1 ? '' : 's'}.` : 'Copied an empty league list.');
+      setLeagueBackupMessage('Setup code copied to clipboard!');
       setLeagueBackupError(false);
+      return;
     } catch {
-      setShowLeagueBackupImport(true);
-      setLeagueBackupPaste(payload);
-      setLeagueBackupMessage('Clipboard was blocked. The JSON is in the box below — select it and copy.');
-      setLeagueBackupError(true);
+      if (copyNow()) {
+        setLeagueBackupMessage('Setup code copied to clipboard!');
+        setLeagueBackupError(false);
+        return;
+      }
     }
+
+    setLeagueBackupPaste(payload);
+    setShowSetupImport(true);
+    setLeagueBackupMessage('Clipboard was blocked. The setup code is in the box — select it and copy.');
+    setLeagueBackupError(true);
   };
 
-  const importAllLeagues = () => {
-    let next = null;
-    try {
-      next = leaguesFromJson(leagueBackupPaste);
-    } catch {
-      next = null;
-    }
+  const closeSetupImport = () => {
+    setShowSetupImport(false);
+    setLeagueBackupPaste('');
+    setLeagueBackupMessage('');
+    setLeagueBackupError(false);
+  };
+
+  const openSetupImport = () => {
+    setLeagueBackupPaste('');
+    setLeagueBackupMessage('');
+    setLeagueBackupError(false);
+    setShowSetupImport(true);
+  };
+
+  const saveImportedSetup = () => {
+    const next = parseSetupCode(leagueBackupPaste);
     if (!next) {
-      setLeagueBackupMessage('Paste a JSON array of leagues.');
+      setLeagueBackupMessage('Paste a setup code.');
       setLeagueBackupError(true);
       return;
     }
     try {
       localStorage.setItem(LEAGUES_STORAGE_KEY, JSON.stringify(next));
     } catch {
-      setLeagueBackupMessage('Could not save this backup on this device.');
+      setLeagueBackupMessage('Could not save this setup on this device.');
       setLeagueBackupError(true);
       return;
     }
@@ -1044,9 +1080,10 @@ export default function App() {
     setActiveLeagueDrawer(null);
     setLeaguePendingDelete(null);
     setLeagueBackupPaste('');
-    setShowLeagueBackupImport(false);
-    setLeagueBackupMessage(next.length ? `Loaded ${next.length} league${next.length === 1 ? '' : 's'}.` : 'Loaded an empty league list.');
+    setShowSetupImport(false);
     setLeagueBackupError(false);
+    setLeagueBackupMessage(`Setup imported. ${next.length} league${next.length === 1 ? '' : 's'} on the board.`);
+    setSyncStatus(`Imported setup with ${next.length} league${next.length === 1 ? '' : 's'}.`);
   };
 
   const openYahooIngest = () => {
@@ -2203,65 +2240,30 @@ export default function App() {
             </div>
             <div className={`mt-3 pt-3 border-t ${isLight ? 'border-slate-200' : 'border-slate-800'}`}>
               <div className={`text-[10px] font-black uppercase tracking-wider mb-1.5 ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
-                Backup / Transfer Data
+                Sync Setup
               </div>
               <div className="grid grid-cols-2 gap-1.5">
                 <button
                   type="button"
-                  onClick={exportAllLeagues}
+                  onClick={exportSetup}
                   className={`py-1.5 rounded-xl text-[11px] font-black border ${
                     isLight ? 'bg-slate-50 text-slate-800 border-slate-200 hover:bg-slate-100' : 'bg-slate-950 text-slate-200 border-slate-700 hover:bg-slate-800'
                   }`}
                 >
-                  Export All Leagues
+                  Export Setup
                 </button>
                 <button
                   type="button"
-                  onClick={() => {
-                    setShowLeagueBackupImport((open) => !open);
-                    setLeagueBackupMessage('');
-                    setLeagueBackupError(false);
-                  }}
-                  aria-expanded={showLeagueBackupImport}
+                  onClick={openSetupImport}
                   className={`py-1.5 rounded-xl text-[11px] font-black border ${
-                    showLeagueBackupImport
-                      ? isLight ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-emerald-950 text-emerald-300 border-emerald-600'
-                      : isLight ? 'bg-slate-50 text-slate-800 border-slate-200 hover:bg-slate-100' : 'bg-slate-950 text-slate-200 border-slate-700 hover:bg-slate-800'
+                    isLight ? 'bg-slate-50 text-slate-800 border-slate-200 hover:bg-slate-100' : 'bg-slate-950 text-slate-200 border-slate-700 hover:bg-slate-800'
                   }`}
                 >
-                  Import All Leagues
+                  Import Setup
                 </button>
               </div>
-              {showLeagueBackupImport && (
-                <div className="mt-2 space-y-1.5">
-                  <textarea
-                    value={leagueBackupPaste}
-                    onChange={(e) => {
-                      setLeagueBackupPaste(e.target.value);
-                      if (leagueBackupMessage) {
-                        setLeagueBackupMessage('');
-                        setLeagueBackupError(false);
-                      }
-                    }}
-                    placeholder="Paste the leagues JSON here"
-                    className={`w-full h-20 rounded-xl p-2 text-[10px] font-mono leading-relaxed resize-y select-text focus:outline-none ${
-                      isLight
-                        ? 'bg-slate-50 border border-slate-200 text-slate-800 placeholder-slate-400 focus:border-emerald-400'
-                        : 'bg-slate-950 border border-slate-700 text-slate-200 placeholder-slate-500 focus:border-emerald-500'
-                    }`}
-                  />
-                  <button
-                    type="button"
-                    onClick={importAllLeagues}
-                    disabled={!leagueBackupPaste.trim()}
-                    className="w-full py-1.5 rounded-xl text-[11px] font-black bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white"
-                  >
-                    Load backup
-                  </button>
-                </div>
-              )}
-              {leagueBackupMessage && (
-                <p className={`mt-1.5 text-[10px] font-bold leading-snug ${
+              {leagueBackupMessage && !showSetupImport && (
+                <p className={`mt-1.5 text-[11px] font-black leading-snug ${
                   leagueBackupError
                     ? isLight ? 'text-rose-700' : 'text-rose-300'
                     : isLight ? 'text-emerald-700' : 'text-emerald-300'
@@ -2269,6 +2271,88 @@ export default function App() {
                   {leagueBackupMessage}
                 </p>
               )}
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {showSetupImport && createPortal(
+        <div
+          onClick={closeSetupImport}
+          className="fixed inset-0 z-[80] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
+          role="presentation"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="setup-import-title"
+            className={`rounded-3xl p-5 max-w-md w-full space-y-3 shadow-2xl border ${
+              isLight ? 'bg-white border-slate-200' : 'bg-slate-900 border-slate-800'
+            }`}
+          >
+            <div className="flex justify-between items-start gap-3">
+              <div>
+                <h3 id="setup-import-title" className={`text-base font-black ${isLight ? 'text-slate-900' : 'text-white'}`}>
+                  Import Setup
+                </h3>
+                <p className={`text-xs mt-1 leading-snug ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+                  Paste a setup code from another device. Saving replaces the leagues on this device.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={closeSetupImport}
+                className={`text-xl leading-none ${isLight ? 'text-slate-400 hover:text-slate-700' : 'text-slate-500 hover:text-white'}`}
+                aria-label="Close import setup"
+              >
+                ✕
+              </button>
+            </div>
+            <textarea
+              value={leagueBackupPaste}
+              onChange={(e) => {
+                setLeagueBackupPaste(e.target.value);
+                if (leagueBackupMessage) {
+                  setLeagueBackupMessage('');
+                  setLeagueBackupError(false);
+                }
+              }}
+              placeholder="Paste the setup code here"
+              className={`w-full h-36 rounded-xl p-3 text-xs font-mono leading-relaxed resize-y select-text focus:outline-none ${
+                isLight
+                  ? 'bg-slate-50 border border-slate-200 text-slate-900 placeholder-slate-400 focus:border-emerald-400'
+                  : 'bg-slate-950 border border-slate-700 text-slate-100 placeholder-slate-500 focus:border-emerald-500'
+              }`}
+            />
+            {leagueBackupMessage && (
+              <p className={`text-xs font-bold leading-snug ${
+                leagueBackupError
+                  ? isLight ? 'text-rose-700' : 'text-rose-300'
+                  : isLight ? 'text-emerald-700' : 'text-emerald-300'
+              }`}>
+                {leagueBackupMessage}
+              </p>
+            )}
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={closeSetupImport}
+                className={`flex-1 py-2.5 rounded-xl text-xs font-black border ${
+                  isLight ? 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50' : 'bg-slate-800 text-slate-200 border-slate-700 hover:bg-slate-700'
+                }`}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={saveImportedSetup}
+                disabled={!leagueBackupPaste.trim()}
+                className="flex-1 py-2.5 rounded-xl text-xs font-black bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white"
+              >
+                Save
+              </button>
             </div>
           </div>
         </div>,
