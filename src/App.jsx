@@ -117,16 +117,21 @@ function isStaleMockLeague(lg) {
   return STALE_MOCK_LEAGUE_NAMES.has(leagueNameKey(lg));
 }
 
+function leaguesFromJson(raw) {
+  const parsed = JSON.parse(raw);
+  const list = Array.isArray(parsed) ? parsed : (parsed && typeof parsed === 'object' ? [parsed] : null);
+  if (!list) return null;
+  return list
+    .filter((lg) => !isStaleMockLeague(lg))
+    .map((lg, i) => normalizeLeague(lg, i))
+    .filter(Boolean);
+}
+
 function loadStoredLeagues() {
   try {
     const raw = localStorage.getItem(LEAGUES_STORAGE_KEY);
     if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    const list = Array.isArray(parsed) ? parsed : (parsed && typeof parsed === 'object' ? [parsed] : []);
-    return list
-      .filter((lg) => !isStaleMockLeague(lg))
-      .map((lg, i) => normalizeLeague(lg, i))
-      .filter(Boolean);
+    return leaguesFromJson(raw) || [];
   } catch {
     return [];
   }
@@ -778,6 +783,10 @@ export default function App() {
   const [showLeagueFilter, setShowLeagueFilter] = useState(false);
   const [hiddenLeagueIds, setHiddenLeagueIds] = useState(() => new Set());
   const [filterPos, setFilterPos] = useState({ top: 96, left: 12 });
+  const [showLeagueBackupImport, setShowLeagueBackupImport] = useState(false);
+  const [leagueBackupPaste, setLeagueBackupPaste] = useState('');
+  const [leagueBackupMessage, setLeagueBackupMessage] = useState('');
+  const [leagueBackupError, setLeagueBackupError] = useState(false);
 
   const containerRef = useRef(null);
   const filterButtonRef = useRef(null);
@@ -945,6 +954,82 @@ export default function App() {
       else next.add(leagueId);
       return next;
     });
+  };
+
+  const exportAllLeagues = async () => {
+    const payload = JSON.stringify(leagues);
+    try {
+      localStorage.setItem(LEAGUES_STORAGE_KEY, payload);
+    } catch {
+      setLeagueBackupMessage('Could not save the leagues on this device.');
+      setLeagueBackupError(true);
+      return;
+    }
+
+    const copyNow = () => {
+      try {
+        const area = document.createElement('textarea');
+        area.value = payload;
+        area.setAttribute('readonly', '');
+        area.style.position = 'fixed';
+        area.style.left = '0';
+        area.style.top = '0';
+        document.body.appendChild(area);
+        area.focus();
+        area.select();
+        const copied = document.execCommand('copy');
+        document.body.removeChild(area);
+        return copied;
+      } catch {
+        return false;
+      }
+    };
+
+    if (copyNow()) {
+      setLeagueBackupMessage(leagues.length ? `Copied ${leagues.length} league${leagues.length === 1 ? '' : 's'}.` : 'Copied an empty league list.');
+      setLeagueBackupError(false);
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(payload);
+      setLeagueBackupMessage(leagues.length ? `Copied ${leagues.length} league${leagues.length === 1 ? '' : 's'}.` : 'Copied an empty league list.');
+      setLeagueBackupError(false);
+    } catch {
+      setShowLeagueBackupImport(true);
+      setLeagueBackupPaste(payload);
+      setLeagueBackupMessage('Clipboard was blocked. The JSON is in the box below — select it and copy.');
+      setLeagueBackupError(true);
+    }
+  };
+
+  const importAllLeagues = () => {
+    let next = null;
+    try {
+      next = leaguesFromJson(leagueBackupPaste);
+    } catch {
+      next = null;
+    }
+    if (!next) {
+      setLeagueBackupMessage('Paste a JSON array of leagues.');
+      setLeagueBackupError(true);
+      return;
+    }
+    try {
+      localStorage.setItem(LEAGUES_STORAGE_KEY, JSON.stringify(next));
+    } catch {
+      setLeagueBackupMessage('Could not save this backup on this device.');
+      setLeagueBackupError(true);
+      return;
+    }
+    setLeagues(next);
+    setHiddenLeagueIds(new Set());
+    setActiveLeagueDrawer(null);
+    setLeaguePendingDelete(null);
+    setLeagueBackupPaste('');
+    setShowLeagueBackupImport(false);
+    setLeagueBackupMessage(next.length ? `Loaded ${next.length} league${next.length === 1 ? '' : 's'}.` : 'Loaded an empty league list.');
+    setLeagueBackupError(false);
   };
 
   const openYahooIngest = () => {
@@ -2078,6 +2163,75 @@ export default function App() {
                   </div>
                 );
               })}
+            </div>
+            <div className={`mt-3 pt-3 border-t ${isLight ? 'border-slate-200' : 'border-slate-800'}`}>
+              <div className={`text-[10px] font-black uppercase tracking-wider mb-1.5 ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+                Backup / Transfer Data
+              </div>
+              <div className="grid grid-cols-2 gap-1.5">
+                <button
+                  type="button"
+                  onClick={exportAllLeagues}
+                  className={`py-1.5 rounded-xl text-[11px] font-black border ${
+                    isLight ? 'bg-slate-50 text-slate-800 border-slate-200 hover:bg-slate-100' : 'bg-slate-950 text-slate-200 border-slate-700 hover:bg-slate-800'
+                  }`}
+                >
+                  Export All Leagues
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowLeagueBackupImport((open) => !open);
+                    setLeagueBackupMessage('');
+                    setLeagueBackupError(false);
+                  }}
+                  aria-expanded={showLeagueBackupImport}
+                  className={`py-1.5 rounded-xl text-[11px] font-black border ${
+                    showLeagueBackupImport
+                      ? isLight ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-emerald-950 text-emerald-300 border-emerald-600'
+                      : isLight ? 'bg-slate-50 text-slate-800 border-slate-200 hover:bg-slate-100' : 'bg-slate-950 text-slate-200 border-slate-700 hover:bg-slate-800'
+                  }`}
+                >
+                  Import All Leagues
+                </button>
+              </div>
+              {showLeagueBackupImport && (
+                <div className="mt-2 space-y-1.5">
+                  <textarea
+                    value={leagueBackupPaste}
+                    onChange={(e) => {
+                      setLeagueBackupPaste(e.target.value);
+                      if (leagueBackupMessage) {
+                        setLeagueBackupMessage('');
+                        setLeagueBackupError(false);
+                      }
+                    }}
+                    placeholder="Paste the leagues JSON here"
+                    className={`w-full h-20 rounded-xl p-2 text-[10px] font-mono leading-relaxed resize-y select-text focus:outline-none ${
+                      isLight
+                        ? 'bg-slate-50 border border-slate-200 text-slate-800 placeholder-slate-400 focus:border-emerald-400'
+                        : 'bg-slate-950 border border-slate-700 text-slate-200 placeholder-slate-500 focus:border-emerald-500'
+                    }`}
+                  />
+                  <button
+                    type="button"
+                    onClick={importAllLeagues}
+                    disabled={!leagueBackupPaste.trim()}
+                    className="w-full py-1.5 rounded-xl text-[11px] font-black bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white"
+                  >
+                    Load backup
+                  </button>
+                </div>
+              )}
+              {leagueBackupMessage && (
+                <p className={`mt-1.5 text-[10px] font-bold leading-snug ${
+                  leagueBackupError
+                    ? isLight ? 'text-rose-700' : 'text-rose-300'
+                    : isLight ? 'text-emerald-700' : 'text-emerald-300'
+                }`}>
+                  {leagueBackupMessage}
+                </p>
+              )}
             </div>
           </div>
         </div>,
