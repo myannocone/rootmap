@@ -116,6 +116,12 @@ function canonTeam(team) {
   return NFL_TEAMS.has(key) ? key : '';
 }
 
+export function resolveNflTeam(value) {
+  const abbrev = canonTeam(value);
+  if (abbrev) return abbrev;
+  return nicknameToTeam(value);
+}
+
 function nicknameToTeam(name) {
   const key = String(name || '')
     .toLowerCase()

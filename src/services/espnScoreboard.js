@@ -14,7 +14,13 @@ function parseEspnEvent(evt) {
   if (!home || !away) return null;
 
   const detail = evt?.status?.type?.shortDetail || 'Upcoming';
-  const isLive = evt?.status?.type?.state === 'in';
+  const state = evt?.status?.type?.state || '';
+  const completed = Boolean(evt?.status?.type?.completed);
+  const isLive = state === 'in';
+  const situation = comp?.situation || {};
+  const possessionId = String(situation.possession || '');
+  const possessor = competitors.find((team) => String(team?.id || team?.team?.id || '') === possessionId);
+  const possession = canonTeam(possessor?.team?.abbreviation);
 
   return {
     id: evt?.id || `${away}@${home}`,
@@ -22,8 +28,39 @@ function parseEspnEvent(evt) {
     away,
     homeScore: parseInt(homeTeam?.score || '0', 10),
     awayScore: parseInt(awayTeam?.score || '0', 10),
+    state,
+    completed,
+    isRedZone: Boolean(situation.isRedZone),
+    possession,
     status: isLive ? `LIVE • ${detail}` : detail,
     time: detail
+  };
+}
+
+export function gamePhase(game, now = new Date()) {
+  const state = String(game?.state || '').toLowerCase();
+  const clock = `${game?.status || ''} ${game?.time || ''}`;
+  if (state === 'post' || game?.completed || /\bfinal\b/i.test(clock)) return 'FINAL';
+  if (state === 'in' || /\b(Q[1-4]|1st|2nd|3rd|4th|OT|Halftime)\b/i.test(clock) || /\bLIVE\b/i.test(clock)) {
+    return 'IN_PROGRESS';
+  }
+  if (state === 'pre') return 'UPCOMING';
+  const kickoff = Date.parse(game?.kickoff || '');
+  const instant = now instanceof Date ? now.getTime() : new Date(now).getTime();
+  if (Number.isFinite(kickoff) && instant >= kickoff) return 'IN_PROGRESS';
+  return 'UPCOMING';
+}
+
+function withPhase(game, now) {
+  const phase = gamePhase(game, now);
+  const status = game?.status || game?.time || '';
+  const nextStatus = phase === 'IN_PROGRESS' && status && !/\bLIVE\b/i.test(status)
+    ? `LIVE • ${status}`
+    : status;
+  return {
+    ...game,
+    gameStatus: phase,
+    status: nextStatus || status
   };
 }
 
@@ -46,6 +83,10 @@ function mergeEspnIntoSlate(scheduleGames, events) {
       away: canonTeam(game.away),
       homeScore: homeIsScheduleHome ? live.homeScore : live.awayScore,
       awayScore: homeIsScheduleHome ? live.awayScore : live.homeScore,
+      state: live.state || game.state || '',
+      completed: Boolean(live.completed),
+      isRedZone: Boolean(live.isRedZone),
+      possession: live.possession || '',
       status: live.status,
       time: live.time || game.time
     };
@@ -72,6 +113,6 @@ export async function fetchLiveNFLSlate(now = new Date()) {
     range: slate.range,
     byes: slate.byes || [],
     opensAt: slate.opensAt,
-    games: mergeEspnIntoSlate(slate.games, events)
+    games: mergeEspnIntoSlate(slate.games, events).map((game) => withPhase(game, now))
   };
 }
