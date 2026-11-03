@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect, useMemo, useRef, useLayoutEffect } from 'react';
+﻿import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import RootMapLogo from './components/Logo';
 import { fetchLiveNFLSlate, gamePhase } from './services/espnScoreboard';
@@ -14,6 +14,10 @@ import {
   syncSleeperLeagues
 } from './utils/sleeperApi';
 import { fetchEspnLeague, listEspnTeams, mapEspnLeague } from './utils/espnDirectApi';
+import { openYahooLogin } from './utils/openYahooLogin';
+import { SITE_ORIGIN } from './utils/siteOrigin';
+import { Capacitor } from '@capacitor/core';
+import { notifyCrossFire, prepareCrossFireAlerts, tapHaptic } from './utils/nativeFeedback';
 
 const LEAGUES_STORAGE_KEY = 'rootmap_leagues';
 const THEME_STORAGE_KEY = 'rootmap_theme';
@@ -27,7 +31,7 @@ const STALE_MOCK_LEAGUE_NAMES = new Set([
   'work dynasty',
   'friends ppr'
 ]);
-const YAHOO_OPPONENT_NAME = 'Crab Cakes and Football';
+const MISSING_OPPONENT_NAME = 'Opponent';
 
 const ROOTING_LEGEND = [
   { icon: '🟢', title: 'Root For', detail: 'Started only on your rosters.' },
@@ -85,8 +89,111 @@ function getLeagueDisplayName(lg) {
   return lg?.name || lg?.myTeamName || lg?.userTeam?.name || 'My Team';
 }
 
+function getUserTeamName(lg) {
+  return lg?.myTeamName || lg?.userTeam?.name || getLeagueDisplayName(lg);
+}
+
+function fantasyMark(name) {
+  const palette = [
+    ['#14532d', '#bbf7d0'],
+    ['#4c1d95', '#ddd6fe'],
+    ['#7f1d1d', '#fecaca'],
+    ['#1e3a8a', '#bfdbfe'],
+    ['#78350f', '#fde68a'],
+    ['#134e4a', '#99f6e4']
+  ];
+  const words = String(name || '').trim().split(/\s+/).filter(Boolean);
+  const initials = `${words[0]?.[0] || 'T'}${words[1]?.[0] || words[0]?.[1] || ''}`.toUpperCase();
+  let hash = 0;
+  for (const char of String(name || '')) hash = (hash * 33 + char.charCodeAt(0)) >>> 0;
+  const [bg, fg] = palette[hash % palette.length];
+  return { initials, bg, fg };
+}
+
+function leagueNflTeams(league) {
+  const seen = new Set();
+  const teams = [];
+  getLeaguePortfolio(league).forEach((player) => {
+    const team = canonTeam(player?.nflTeam);
+    if (!team || seen.has(team)) return;
+    seen.add(team);
+    teams.push(team);
+  });
+  return teams.slice(0, 6);
+}
+
+function LeagueScoreboard({ league, isLight }) {
+  const myName = getUserTeamName(league);
+  const oppName = getLeagueOppName(league);
+  const leagueName = getLeagueDisplayName(league);
+  const showLeague = Boolean(leagueName);
+  const myScore = finiteNumber(league?.myScore) ?? 0;
+  const oppScore = finiteNumber(league?.oppScore) ?? 0;
+  const myMark = fantasyMark(myName);
+  const oppMark = fantasyMark(oppName);
+  const teams = leagueNflTeams(league);
+  const scoreClass = (leading) => (
+    leading
+      ? isLight ? 'text-emerald-700' : 'text-emerald-300'
+      : isLight ? 'text-slate-400' : 'text-slate-500'
+  );
+  const teamSide = (name, score, proj, mark, leading, align) => (
+    <div className={`min-w-0 flex flex-col gap-1 ${align === 'end' ? 'items-end text-right' : 'items-start text-left'}`}>
+      <div
+        className="w-7 h-7 rounded-lg flex items-center justify-center font-black text-[10px]"
+        style={{ backgroundColor: mark.bg, color: mark.fg }}
+        aria-hidden="true"
+      >
+        {mark.initials}
+      </div>
+      <div className={`w-full font-black text-[13px] leading-tight break-words ${isLight ? 'text-slate-900' : 'text-white'}`}>
+        {name}
+      </div>
+      <div className={`font-black text-3xl leading-none tabular-nums ${scoreClass(leading)}`}>
+        {scoreText(score)}
+      </div>
+      {proj != null && (
+        <div className={`text-[10px] font-mono ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+          Proj {scoreText(proj)}
+        </div>
+      )}
+    </div>
+  );
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between gap-2">
+        <div className={`min-w-0 text-[10px] font-black uppercase tracking-wider truncate ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+          {showLeague ? leagueName : 'This week'}
+        </div>
+        <span className={`shrink-0 text-[10px] font-mono px-2 py-0.5 rounded-full font-bold border ${
+          isLight ? 'bg-purple-50 text-purple-700 border-purple-200' : 'bg-purple-950 text-purple-300 border-purple-800'
+        }`}>
+          {league?.platform || 'League'}
+        </span>
+      </div>
+      <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
+        {teamSide(myName, myScore, league?.myProj, myMark, myScore > oppScore || myScore === oppScore, 'end')}
+        <div className={`text-[10px] font-black tracking-[0.2em] ${isLight ? 'text-slate-400' : 'text-slate-500'}`}>VS</div>
+        {teamSide(oppName, oppScore, league?.oppProj, oppMark, oppScore > myScore || myScore === oppScore, 'start')}
+      </div>
+      {teams.length > 0 && (
+        <div className="flex items-center justify-center gap-1.5">
+          {teams.map((team) => (
+            <PlayerHeadshot key={team} name={team} team={team} defense size={26} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function getLeagueOppName(lg) {
-  return lg?.oppTeamName || lg?.opponent || lg?.oppTeam?.name || YAHOO_OPPONENT_NAME;
+  return lg?.oppTeamName || lg?.opponent || lg?.oppTeam?.name || MISSING_OPPONENT_NAME;
+}
+
+function scoreText(value) {
+  const number = finiteNumber(value);
+  return number == null ? '—' : number.toFixed(1);
 }
 
 function normalizeLeague(lg, index = 0) {
@@ -106,6 +213,8 @@ function normalizeLeague(lg, index = 0) {
     season: lg.season || '2026',
     myScore: lg.myScore || 0,
     oppScore: lg.oppScore || 0,
+    myProj: lg.myProj ?? lg.userTeam?.projectedScore ?? null,
+    oppProj: lg.oppProj ?? lg.oppTeam?.projectedScore ?? null,
     portfolio,
     threats,
     starters: portfolio,
@@ -271,8 +380,154 @@ function gameForTeam(games, nflTeam) {
   return (games || []).find((game) => canonTeam(game.home) === key || canonTeam(game.away) === key) || null;
 }
 
+function etClock(kickoff) {
+  const date = new Date(kickoff);
+  if (!Number.isFinite(date.getTime())) return null;
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    weekday: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23'
+  }).formatToParts(date).map((part) => [part.type, part.value]));
+  return {
+    weekday: parts.weekday,
+    minutes: (Number(parts.hour) * 60) + Number(parts.minute)
+  };
+}
+
+function weekByeTeams() {
+  return new Set((getActiveSlate().byes || []).map((team) => canonTeam(team)));
+}
+
+function playerIsBye(player, game) {
+  const team = canonTeam(player?.nflTeam);
+  const text = `${player?.gameClock || ''} ${player?.opponent || ''} ${player?.gameStatus || ''} ${game?.status || ''} ${game?.time || ''}`;
+  if (/\bbye\b/i.test(text)) return true;
+  if (team && weekByeTeams().has(team)) return true;
+  const kickoff = game?.kickoff || player?.kickoff || player?.gameDate;
+  if (!game && (kickoff == null || kickoff === '') && team) return true;
+  return false;
+}
+
+function slateWindowFor(player) {
+  if (player?.isBye || player?.gameStatus === 'BYE' || /\bbye\b/i.test(`${player?.gameClock || ''} ${player?.opponent || ''}`)) {
+    return { id: 'bye', label: 'Bye Week', rank: 6 };
+  }
+  if (player?.gameStatus === 'IN_PROGRESS' || player?.isLive) return { id: 'live', label: 'Live', rank: 0 };
+  if (player?.gameStatus === 'FINAL') return { id: 'final', label: 'Final', rank: 5 };
+  const et = etClock(player?.kickoff);
+  const text = `${player?.gameClock || ''} ${player?.time || ''}`;
+  if (!et) {
+    if (/1:00/.test(text)) return { id: 'early', label: '1:00 PM', rank: 1 };
+    if (/4:(00|05|25)/.test(text)) return { id: 'afternoon', label: '4:00 PM', rank: 2 };
+    return { id: 'bye', label: 'Bye Week', rank: 6 };
+  }
+  if (et.weekday === 'Mon' || (et.weekday === 'Sun' && et.minutes >= 19 * 60)) {
+    return { id: 'prime', label: 'Prime Time', rank: 4 };
+  }
+  if (et.minutes < 16 * 60) return { id: 'early', label: '1:00 PM', rank: 1 };
+  if (et.minutes < 19 * 60) return { id: 'afternoon', label: '4:00 PM', rank: 2 };
+  if (et.weekday === 'Thu') return { id: 'thursday', label: 'Thursday', rank: 3 };
+  if (et.weekday === 'Sat') return { id: 'saturday', label: 'Saturday', rank: 3 };
+  if (et.weekday === 'Fri') return { id: 'friday', label: 'Friday', rank: 3 };
+  return { id: 'bye', label: 'Bye Week', rank: 6 };
+}
+
+function boardMetric(player, windowId) {
+  if (windowId === 'early' || windowId === 'afternoon') {
+    return (player.myShares || 0) + (player.oppShares || 0);
+  }
+  const upcoming = player.gameStatus !== 'IN_PROGRESS' && player.gameStatus !== 'FINAL' && !player.isLive;
+  if (upcoming) return finiteNumber(player.projPoints) ?? finiteNumber(player.points) ?? 0;
+  return finiteNumber(player.actualPoints) ?? finiteNumber(player.points) ?? finiteNumber(player.projPoints) ?? 0;
+}
+
+function playerPoints(player) {
+  return finiteNumber(player?.actualPoints) ?? finiteNumber(player?.points) ?? 0;
+}
+
+function playerProj(player) {
+  return finiteNumber(player?.projPoints) ?? finiteNumber(player?.points) ?? 0;
+}
+
+function boomDelta(player) {
+  const actual = finiteNumber(player?.actualPoints);
+  const proj = finiteNumber(player?.projPoints);
+  if (actual == null || proj == null) return Number.NEGATIVE_INFINITY;
+  return actual - proj;
+}
+
+function compareBoardPlayers(a, b, sortMode) {
+  const aw = slateWindowFor(a);
+  const bw = slateWindowFor(b);
+  const sink = (window) => (window.id === 'bye' ? 2 : window.id === 'final' ? 1 : 0);
+  if (sink(aw) !== sink(bw)) return sink(aw) - sink(bw);
+  let diff = 0;
+  if (sortMode === 'livePoints') diff = playerPoints(b) - playerPoints(a);
+  else if (sortMode === 'boom') diff = boomDelta(b) - boomDelta(a);
+  else if (sortMode === 'exposure') {
+    diff = ((b.myShares || 0) + (b.oppShares || 0)) - ((a.myShares || 0) + (a.oppShares || 0));
+  } else if (sortMode === 'projected') diff = playerProj(b) - playerProj(a);
+  else {
+    if (aw.rank !== bw.rank) return aw.rank - bw.rank;
+    diff = boardMetric(b, aw.id) - boardMetric(a, aw.id);
+  }
+  if (diff) return diff;
+  return String(a.name || '').localeCompare(String(b.name || ''));
+}
+
+function passesBoardFilters(player, filters) {
+  if (filters?.hideFinal && (player?.gameStatus === 'FINAL')) return false;
+  if (filters?.liveOnly && !(player?.isLive || player?.gameStatus === 'IN_PROGRESS')) return false;
+  if (filters?.redZoneOnly && !player?.inRedZone) return false;
+  return true;
+}
+
+function slateBucket(player, sortMode) {
+  const slate = slateWindowFor(player);
+  if (slate.id === 'bye') return { key: 'bye', label: 'Bye Week', rank: slate.rank };
+  if (slate.id === 'final') return { key: 'final', label: 'Final', rank: slate.rank };
+  if (sortMode !== 'slate') return { key: 'board', label: '', rank: 0 };
+  return { key: slate.id, label: slate.label, rank: slate.rank };
+}
+
+function alignedSlateColumns(forPlayers, againstPlayers, sortMode) {
+  const buckets = new Map();
+  const place = (player, field) => {
+    const slate = slateBucket(player, sortMode);
+    if (!buckets.has(slate.key)) {
+      buckets.set(slate.key, { ...slate, forPlayers: [], againstPlayers: [] });
+    }
+    buckets.get(slate.key)[field].push(player);
+  };
+  forPlayers.forEach((player) => place(player, 'forPlayers'));
+  againstPlayers.forEach((player) => place(player, 'againstPlayers'));
+  return [...buckets.values()].sort((a, b) => a.rank - b.rank);
+}
+
+function sideLeagueNames(player, side) {
+  const list = side === 'against' ? player?.oppLeagues : player?.myLeagues;
+  return [...new Set((list || []).map((item) => item?.league).filter(Boolean))];
+}
+
 function applyLiveToPlayer(player, games, liveScores, now = new Date()) {
   const game = gameForTeam(games, player?.nflTeam);
+  const bye = playerIsBye(player, game);
+  player.isBye = bye;
+  if (bye) {
+    player.gameStatus = 'BYE';
+    player.isLive = false;
+    player.hasPossession = false;
+    player.inRedZone = false;
+    player.kickoff = null;
+    player.gameDate = null;
+    player.opponent = 'BYE';
+    player.gameClock = 'Bye';
+    const live = sleeperLiveNumbers(player, liveScores);
+    if (live?.proj != null) player.projPoints = live.proj;
+    return player;
+  }
   const phase = game ? gamePhase(game, now) : 'UPCOMING';
   player.gameStatus = phase;
   player.isLive = phase === 'IN_PROGRESS';
@@ -304,8 +559,9 @@ function liveScoreView(player) {
   const actual = finiteNumber(player?.actualPoints);
   const stored = finiteNumber(player?.points);
   const explicitProj = finiteNumber(player?.projPoints);
-  const live = player?.gameStatus === 'IN_PROGRESS' || Boolean(player?.isLive) || clockIsLive(player?.gameClock);
-  const finalGame = player?.gameStatus === 'FINAL';
+  const bye = Boolean(player?.isBye || player?.gameStatus === 'BYE');
+  const live = !bye && (player?.gameStatus === 'IN_PROGRESS' || Boolean(player?.isLive) || clockIsLive(player?.gameClock));
+  const finalGame = !bye && player?.gameStatus === 'FINAL';
   const proj = explicitProj != null
     ? explicitProj
     : (actual == null && stored != null && stored !== 0 ? stored : null);
@@ -314,6 +570,8 @@ function liveScoreView(player) {
   const delta = hasActual && proj != null ? actual - proj : null;
   return {
     live,
+    bye,
+    final: finalGame,
     shown,
     proj,
     delta,
@@ -322,17 +580,59 @@ function liveScoreView(player) {
   };
 }
 
-function LivePulse() {
+function LivePulse({ size = 6 }) {
+  const px = `${size}px`;
   return (
-    <span className="relative inline-flex h-1.5 w-1.5 shrink-0" aria-hidden="true">
+    <span className="relative inline-flex shrink-0" style={{ width: px, height: px }} aria-hidden="true">
       <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
-      <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-emerald-500" />
+      <span className="relative inline-flex h-full w-full rounded-full bg-emerald-500" />
     </span>
+  );
+}
+
+function CrossFireMeter({ player, isLight }) {
+  const mine = player?.myShares || 0;
+  const opp = player?.oppShares || 0;
+  if (!(mine > 0 && opp > 0)) return null;
+  const net = mine - opp;
+  const bias = net > 0 ? `+${net} Net Share` : net < 0 ? `${net} Net Share` : 'Neutral Impact';
+  const biasColor = net > 0
+    ? (isLight ? 'text-emerald-700' : 'text-emerald-300')
+    : net < 0
+      ? (isLight ? 'text-rose-700' : 'text-rose-300')
+      : (isLight ? 'text-slate-500' : 'text-slate-400');
+  return (
+    <div className="space-y-1">
+      <div className={`flex w-full max-w-full flex-wrap items-stretch overflow-hidden rounded-full border text-[9px] font-black leading-tight ${
+        isLight ? 'border-slate-200' : 'border-slate-600'
+      }`}>
+        <span className={`px-1.5 py-1 ${isLight ? 'bg-emerald-100 text-emerald-800' : 'bg-emerald-950 text-emerald-300'}`}>
+          🟢 {mine} {mine === 1 ? 'Start' : 'Starts'}
+        </span>
+        <span className={`px-1 py-1 ${isLight ? 'bg-white text-slate-300' : 'bg-slate-900 text-slate-600'}`}>|</span>
+        <span className={`px-1.5 py-1 ${isLight ? 'bg-rose-100 text-rose-800' : 'bg-rose-950 text-rose-300'}`}>
+          🔴 {opp} {opp === 1 ? 'Opponent' : 'Opponents'}
+        </span>
+      </div>
+      <div className={`text-[9px] font-black uppercase tracking-wide ${biasColor}`}>{bias}</div>
+    </div>
   );
 }
 
 function LivePoints({ player, isLight, tone = 'for', layout = 'inline' }) {
   const view = liveScoreView(player);
+  const [scorePop, setScorePop] = useState(false);
+  const previousShown = useRef(null);
+  useEffect(() => {
+    const shown = view.shown;
+    if (previousShown.current != null && shown > previousShown.current + 0.05) {
+      setScorePop(true);
+      const timer = window.setTimeout(() => setScorePop(false), 420);
+      previousShown.current = shown;
+      return () => window.clearTimeout(timer);
+    }
+    previousShown.current = shown;
+  }, [view.shown]);
   const color = view.live
     ? (isLight ? 'text-slate-950' : 'text-white')
     : tone === 'against'
@@ -352,24 +652,25 @@ function LivePoints({ player, isLight, tone = 'for', layout = 'inline' }) {
         : (isLight ? 'text-slate-500' : 'text-slate-400');
   const muted = isLight ? 'text-slate-500' : 'text-slate-400';
   if (layout === 'hero') {
+    const scoreLabel = view.bye ? 'Bye' : view.live ? 'Live pts' : view.final ? 'Final pts' : 'Pts';
     return (
-      <div className="mt-2 flex items-end justify-between gap-2">
-        <div className="min-w-0">
-          <div className={`text-[1.85rem] font-black tabular-nums leading-none tracking-tight ${color}`}>
+      <div className="mt-1.5">
+        <div className="flex items-baseline gap-1.5">
+          {view.live && <LivePulse size={8} />}
+          <span className={`text-[1.7rem] font-black tabular-nums leading-none tracking-tight ${color} ${scorePop ? 'rootmap-score-pop' : ''}`}>
             {view.shown.toFixed(1)}
-          </div>
-          <div className={`mt-1 text-[10px] font-black uppercase tracking-wide ${view.live ? (isLight ? 'text-emerald-700' : 'text-emerald-300') : muted}`}>
-            {view.live ? 'Live pts' : 'Pts'}
-          </div>
+          </span>
+          <span className={`text-[10px] font-black uppercase tracking-wide ${view.live ? (isLight ? 'text-emerald-700' : 'text-emerald-300') : muted}`}>
+            {scoreLabel}
+          </span>
         </div>
-        <div className="text-right leading-tight shrink-0 pb-0.5">
-          {deltaText && <div className={`text-sm font-black tabular-nums ${deltaColor}`}>{deltaText}</div>}
-          {view.showProj && (
-            <div className={`text-[10px] font-semibold ${muted}`}>
-              Proj {view.proj.toFixed(1)}
-            </div>
-          )}
-        </div>
+        {view.showProj && (
+          <div className={`mt-0.5 text-[11px] font-semibold tabular-nums leading-tight ${muted}`}>
+            {deltaText && <span className={`font-black ${deltaColor}`}>{deltaText}</span>}
+            {deltaText ? ' vs ' : ''}
+            Proj {view.proj.toFixed(1)}
+          </div>
+        )}
       </div>
     );
   }
@@ -377,7 +678,7 @@ function LivePoints({ player, isLight, tone = 'for', layout = 'inline' }) {
     <div className={`text-right shrink-0 max-w-[9.5rem] leading-tight ${view.live ? (isLight ? 'text-green-600' : 'text-emerald-400') : color}`}>
       <span className="inline-flex items-center justify-end gap-1 font-mono font-black text-xs">
         {view.live && <LivePulse />}
-        <span>{view.shown.toFixed(1)} pts</span>
+        <span className={scorePop ? 'rootmap-score-pop' : ''}>{view.shown.toFixed(1)} pts</span>
         {deltaText && <span className={`text-[9px] font-black ${deltaColor}`}>{deltaText}</span>}
       </span>
       {view.showProj && (
@@ -389,29 +690,27 @@ function LivePoints({ player, isLight, tone = 'for', layout = 'inline' }) {
   );
 }
 
-function rosterCardSurface(isLight, isLive, isConflict, isHovered) {
-  if (isLive && isConflict) {
+function rosterCardSurface(isLight, isLive, isConflict, isHovered, inRedZone) {
+  const zone = inRedZone ? 'rootmap-redzone' : '';
+  if (isConflict) {
+    const pulse = inRedZone ? zone : 'rootmap-crossfire';
+    if (isLive) {
+      return isLight
+        ? `${pulse} border-violet-600 bg-violet-50 ring-2 ring-inset ring-violet-500 ${isHovered ? 'shadow-md' : ''}`
+        : `${pulse} border-violet-300 bg-violet-950/50 ring-2 ring-inset ring-violet-300 ${isHovered ? 'shadow-md' : ''}`;
+    }
     return isLight
-      ? `border-emerald-600 bg-emerald-50 ring-2 ring-inset ring-emerald-500 ${isHovered ? 'shadow-md' : ''}`
-      : `border-emerald-400 bg-emerald-950/50 ring-2 ring-inset ring-emerald-400 ${isHovered ? 'shadow-md' : ''}`;
+      ? `${pulse} border-violet-500 bg-violet-50 ring-2 ring-violet-400 ${isHovered ? 'shadow-md' : ''}`
+      : `${pulse} border-violet-400 bg-violet-950/40 ring-2 ring-violet-400 ${isHovered ? 'shadow-md' : ''}`;
   }
   if (isLive) {
     return isLight
-      ? 'border-emerald-600 bg-emerald-50 ring-2 ring-inset ring-emerald-500'
-      : 'border-emerald-400 bg-emerald-950/50 ring-2 ring-inset ring-emerald-400';
-  }
-  if (isConflict) {
-    return isLight
-      ? isHovered
-        ? 'bg-amber-50 border-amber-400 ring-2 ring-amber-300'
-        : 'bg-white border-amber-300 hover:bg-amber-50/50'
-      : isHovered
-        ? 'bg-amber-950/40 border-amber-400 ring-1 ring-amber-400'
-        : 'bg-amber-950/20 border-amber-500/50 hover:bg-amber-950/30';
+      ? `${zone} border-emerald-600 bg-emerald-50 ring-2 ring-inset ring-emerald-500`
+      : `${zone} border-emerald-400 bg-emerald-950/50 ring-2 ring-inset ring-emerald-400`;
   }
   return isLight
-    ? 'bg-white border-slate-200 hover:border-slate-300 hover:shadow'
-    : 'bg-slate-900 border-slate-800 hover:border-slate-700';
+    ? `${zone} bg-white border-slate-200 hover:border-slate-300 hover:shadow`
+    : `${zone} bg-slate-900 border-slate-800 hover:border-slate-700`;
 }
 
 function RosterCard({
@@ -426,12 +725,15 @@ function RosterCard({
   onHoverEnd,
   cardRef
 }) {
-  const isConflict = side === 'for' ? player.oppShares > 0 : player.myShares > 0;
+  const isConflict = side === 'cross' || (side === 'for' ? player.oppShares > 0 : player.myShares > 0);
   const shares = side === 'for' ? player.myShares : player.oppShares;
   const live = Boolean(player.isLive || player.gameStatus === 'IN_PROGRESS');
-  const shareColor = side === 'for'
-    ? (isLight ? 'text-green-600' : 'text-emerald-400')
-    : (isLight ? 'text-red-600' : 'text-rose-400');
+  const accent = getTeamAccent(canonTeam(player.nflTeam) || player.nflTeam);
+  const shareColor = side === 'against'
+    ? (isLight ? 'text-red-600' : 'text-rose-400')
+    : side === 'cross'
+      ? 'text-violet-500'
+      : (isLight ? 'text-green-600' : 'text-emerald-400');
   return (
     <div
       data-player-name={player.name}
@@ -440,8 +742,16 @@ function RosterCard({
       onClick={onSelect}
       onMouseEnter={onHoverStart}
       onMouseLeave={onHoverEnd}
-      className={`relative rounded-xl p-2.5 transition active:scale-[0.98] cursor-pointer border shadow-sm touch-manipulation ${rosterCardSurface(isLight, live, isConflict, isHovered)}`}
+      className={`relative w-full min-w-0 overflow-hidden rounded-xl p-2 pl-3 transition active:scale-[0.98] cursor-pointer border shadow-sm touch-manipulation ${rosterCardSurface(isLight, live, isConflict, isHovered, player.inRedZone)}`}
     >
+      <span
+        aria-hidden="true"
+        className="pointer-events-none absolute left-0 top-2 bottom-2 w-1 rounded-full"
+        style={{
+          backgroundColor: accent.bg,
+          boxShadow: live ? `0 0 10px ${accent.bg}` : undefined
+        }}
+      />
       <div className="flex items-start gap-2">
         <PlayerHeadshot key={`${player.name}-${headshotTick}`} name={player.name} team={player.nflTeam} defense={isTeamDefense(player)} size={36} />
         <div className="min-w-0 flex-1">
@@ -454,9 +764,14 @@ function RosterCard({
         </div>
       </div>
 
-      {(player.gameClock || player.inRedZone || player.hasPossession) && (
+      {(player.isBye || player.gameClock || player.inRedZone || player.hasPossession) && (
         <div className="mt-1.5 flex flex-wrap items-center gap-1">
-          {player.gameClock && (
+          {player.isBye && (
+            <span className="px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-wider bg-slate-600 text-white">
+              BYE
+            </span>
+          )}
+          {player.gameClock && !player.isBye && (
             <span className={`text-[10px] font-bold leading-tight break-words ${
               live
                 ? isLight ? 'text-emerald-800' : 'text-emerald-200'
@@ -480,7 +795,7 @@ function RosterCard({
         </div>
       )}
 
-      <LivePoints player={player} isLight={isLight} tone={side === 'against' ? 'against' : 'for'} layout="hero" />
+      <LivePoints player={player} isLight={isLight} tone={side === 'against' ? 'against' : side === 'cross' ? 'cross' : 'for'} layout="hero" />
 
       {player.bigPlay && (
         <div className="mt-1.5">
@@ -494,16 +809,27 @@ function RosterCard({
 
       <ExposureFlags player={player} isLight={isLight} />
 
-      <div className={`flex justify-between items-start gap-1 text-[10px] pt-1.5 border-t font-mono ${
-        live
-          ? isLight ? 'border-emerald-200' : 'border-emerald-800/80'
-          : isLight ? 'border-slate-100' : 'border-slate-800/80'
-      }`}>
-        <span className={`font-bold shrink-0 ${shareColor}`}>
-          {shares} {shares === 1 ? 'LEAGUE' : 'LEAGUES'}
-        </span>
-        <span className="min-w-0 text-right break-words">{stance}</span>
-      </div>
+      {side !== 'cross' && (
+        <div className={`flex justify-between items-start gap-1 text-[10px] pt-1 border-t font-mono ${
+          live
+            ? isLight ? 'border-emerald-200' : 'border-emerald-800/80'
+            : isLight ? 'border-slate-100' : 'border-slate-800/80'
+        }`}>
+          <span className={`min-w-0 font-bold break-words ${shareColor}`}>
+            {isConflict ? (
+              <>
+                <span className="block text-[8px] font-black uppercase tracking-wide">
+                  {side === 'against' ? 'Faced in' : 'Started in'}
+                </span>
+                {sideLeagueNames(player, side).join(', ') || (side === 'against' ? 'Opponent league' : 'Your league')}
+              </>
+            ) : (
+              `${shares} ${shares === 1 ? 'LEAGUE' : 'LEAGUES'}`
+            )}
+          </span>
+          <span className="min-w-0 text-right break-words">{isConflict ? null : stance}</span>
+        </div>
+      )}
     </div>
   );
 }
@@ -535,11 +861,31 @@ function isTeamDefense(player) {
   return pos === 'DEF' || slot === 'DEF';
 }
 
+const IDP_POSITIONS = new Set([
+  'LB', 'DL', 'DB', 'DE', 'DT', 'CB', 'S', 'FS', 'SS', 'ILB', 'OLB', 'MLB', 'NT', 'EDGE', 'IDP', 'OL'
+]);
+
+function isIdpPlayer(player) {
+  if (!player || isTeamDefense(player)) return false;
+  const pos = normalizePosition(player.position);
+  const slot = normalizeSlot(player.slot);
+  if (pos === 'K' || slot === 'K' || pos === 'DEF' || slot === 'DEF') return false;
+  return IDP_POSITIONS.has(pos) || IDP_POSITIONS.has(slot);
+}
+
 function isOffensiveStarter(player) {
   if (!player || isTeamDefense(player)) return false;
   const pos = normalizePosition(player.position);
   const slot = normalizeSlot(player.slot);
   return OFFENSIVE_POSITIONS.has(pos) || OFFENSIVE_POSITIONS.has(slot);
+}
+
+function isRootMapBoardPlayer(player) {
+  if (!player || isIdpPlayer(player)) return false;
+  if (isTeamDefense(player)) return true;
+  const pos = normalizePosition(player.position);
+  const slot = normalizeSlot(player.slot);
+  return pos === 'K' || slot === 'K' || isOffensiveStarter(player);
 }
 
 function defenseOpponentTeam(defTeam, games) {
@@ -589,22 +935,16 @@ function ExposureFlags({ player, isLight }) {
   const pill = 'inline-flex items-center px-1.5 py-0.5 rounded font-black border text-[9px] leading-tight';
   return (
     <div className="space-y-1 mb-1.5">
-      <div className="flex flex-wrap gap-1">
-        {player.friendlyFire && (
+      {player.friendlyFire && (
+        <div className="flex flex-wrap gap-1">
           <span className={`${pill} ${
             isLight ? 'bg-orange-50 text-orange-800 border-orange-300' : 'bg-orange-950/70 text-orange-300 border-orange-700'
           }`}>
             ⚔️ Friendly Fire
           </span>
-        )}
-        {player.crossfire && (
-          <span className={`${pill} ${
-            isLight ? 'bg-violet-50 text-violet-800 border-violet-300' : 'bg-violet-950/70 text-violet-300 border-violet-700'
-          }`}>
-            {getCombinedStance(player).label}
-          </span>
-        )}
-      </div>
+        </div>
+      )}
+      {player.crossfire && <CrossFireMeter player={player} isLight={isLight} />}
       {player.friendlyFire && (
         <p className={`text-[9px] leading-snug font-semibold break-words ${isLight ? 'text-orange-800' : 'text-orange-200/90'}`}>
           {friendlyFireNote(player)}
@@ -695,7 +1035,7 @@ function toStarterRecord(player, side) {
     isStarter: isMine,
     ownership: isMine ? 1.0 : 0,
     isThreat: !isMine,
-    opponent: isMine ? null : YAHOO_OPPONENT_NAME
+    opponent: null
   };
 }
 
@@ -800,6 +1140,46 @@ function parseOppSlotBlock(lines, startIndex, slotToken) {
   };
 }
 
+function isYahooChromeLine(line) {
+  return /^(week\b.*|starters|bench|projected|projection|proj\b.*|matchup|yahoo|fantasy|points|pts|vs\.?|edit|live|recap)$/i.test(String(line || '').trim());
+}
+
+function parseYahooHeader(lines) {
+  const firstSlot = lines.findIndex((line) => SLOT_TOKEN_RE.test(line));
+  const header = firstSlot === -1 ? lines.slice(0, 16) : lines.slice(0, firstSlot);
+  const teams = [];
+  header.forEach((line, index) => {
+    if (teams.length >= 2 || !isNameLine(line) || isYahooChromeLine(line)) return;
+    let score = null;
+    let proj = null;
+    let sawProj = false;
+    for (let cursor = index + 1; cursor < Math.min(index + 5, header.length); cursor += 1) {
+      const next = header[cursor];
+      if (isYahooChromeLine(next) && /proj/i.test(next)) {
+        sawProj = true;
+        const inline = next.match(/(\d+\.\d{1,2})/);
+        if (inline) proj = parseFloat(inline[1]);
+        continue;
+      }
+      if (isFloatLine(next)) {
+        if (sawProj && proj == null) proj = parseFloat(next);
+        else if (score == null) score = parseFloat(next);
+        continue;
+      }
+      if (isNameLine(next)) break;
+    }
+    teams.push({ name: stripNameNoise(line), score, proj });
+  });
+  return {
+    myTeamName: teams[0]?.name || '',
+    oppTeamName: teams[1]?.name || '',
+    myScore: teams[0]?.score,
+    oppScore: teams[1]?.score,
+    myProj: teams[0]?.proj ?? null,
+    oppProj: teams[1]?.proj ?? null
+  };
+}
+
 function parseYahooMatchupText(raw) {
   const lines = String(raw || '')
     .replace(/\r/g, '')
@@ -807,6 +1187,7 @@ function parseYahooMatchupText(raw) {
     .map((l) => l.trim())
     .filter(Boolean);
 
+  const header = parseYahooHeader(lines);
   const myStarters = [];
   const oppStarters = [];
   let cursor = 0;
@@ -829,10 +1210,12 @@ function parseYahooMatchupText(raw) {
   }
 
   return {
-    myTeamName: 'My Team',
-    oppTeamName: YAHOO_OPPONENT_NAME,
-    myScore: undefined,
-    oppScore: undefined,
+    myTeamName: header.myTeamName || 'My Team',
+    oppTeamName: header.oppTeamName || MISSING_OPPONENT_NAME,
+    myScore: header.myScore,
+    oppScore: header.oppScore,
+    myProj: header.myProj,
+    oppProj: header.oppProj,
     myStarters,
     oppStarters
   };
@@ -1075,7 +1458,9 @@ export default function App() {
     return 'dark';
   });
   const [view, setView] = useState('matchups');
-  const [sortMode, setSortMode] = useState('exposure');
+  const [sortMode, setSortMode] = useState('slate');
+  const [boardFilters, setBoardFilters] = useState({ liveOnly: false, redZoneOnly: false, hideFinal: false });
+  const [showSortSheet, setShowSortSheet] = useState(false);
   const [leagues, setLeagues] = useState(loadStoredLeagues);
   const [games, setGames] = useState(() => getActiveSlate().games);
   const [liveScores, setLiveScores] = useState(null);
@@ -1120,6 +1505,8 @@ export default function App() {
   const [espnPrivateOpen, setEspnPrivateOpen] = useState(false);
   const [espnSwid, setEspnSwid] = useState('');
   const [espnS2, setEspnS2] = useState('');
+  const [espnNativeSession, setEspnNativeSession] = useState(null);
+  const [rootView, setRootView] = useState('both');
   const [yahooPaste, setYahooPaste] = useState('');
   const [yahooIngestError, setYahooIngestError] = useState('');
   const [yahooLeagueName, setYahooLeagueName] = useState('');
@@ -1133,11 +1520,7 @@ export default function App() {
   const [leagueBackupMessage, setLeagueBackupMessage] = useState('');
   const [leagueBackupError, setLeagueBackupError] = useState(false);
 
-  const containerRef = useRef(null);
   const filterButtonRef = useRef(null);
-  const leftCardRefs = useRef({});
-  const rightCardRefs = useRef({});
-  const [connectors, setConnectors] = useState([]);
 
   const isLight = theme === 'light';
 
@@ -1175,7 +1558,7 @@ export default function App() {
 
   const handleConnectYahoo = () => {
     setIsSyncing(true);
-    window.location.assign('/api/auth/yahoo/login');
+    openYahooLogin();
   };
 
   const refreshLiveSlate = async () => {
@@ -1251,7 +1634,7 @@ export default function App() {
   }, [leagues]);
 
   useEffect(() => {
-    if (!showLegend && !showLeagueFilter && !leaguePendingDelete && !showSetupImport && !showSleeper && !showEspn && !showYahooIngest) return undefined;
+    if (!showLegend && !showLeagueFilter && !leaguePendingDelete && !showSetupImport && !showSleeper && !showEspn && !showYahooIngest && !showSortSheet) return undefined;
     const onKey = (event) => {
       if (event.key !== 'Escape') return;
       if (showEspn) {
@@ -1282,10 +1665,11 @@ export default function App() {
       }
       setShowLegend(false);
       setShowLeagueFilter(false);
+      setShowSortSheet(false);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [showLegend, showLeagueFilter, leaguePendingDelete, showSetupImport, showSleeper, showEspn, showYahooIngest]);
+  }, [showLegend, showLeagueFilter, leaguePendingDelete, showSetupImport, showSleeper, showEspn, showYahooIngest, showSortSheet]);
 
   const confirmRemoveLeague = () => {
     if (!leaguePendingDelete) return;
@@ -1525,9 +1909,10 @@ export default function App() {
     setEspnPrivateOpen(false);
     setEspnSwid('');
     setEspnS2('');
+    setEspnNativeSession(null);
   };
 
-  const openEspnConnect = () => {
+  const openEspnConnect = async () => {
     setShowYahooIngest(false);
     setEspnError('');
     setEspnBusy('');
@@ -1537,8 +1922,31 @@ export default function App() {
     setEspnPrivateOpen(false);
     setEspnSwid('');
     setEspnS2('');
+    setEspnNativeSession(null);
     setEspnWeek(String(slateMeta.week || 8));
     setEspnSeason('2026');
+    if (Capacitor.isNativePlatform()) {
+      try {
+        const { openNativeEspnLogin } = await import('./utils/espnLogin');
+        const result = await openNativeEspnLogin();
+        const swid = String(result?.swid || '');
+        const espnS2 = String(result?.espnS2 || '');
+        if (!swid || !espnS2) {
+          setSyncStatus('ESPN sign-in did not finish. Open Connect ESPN and sign in on ESPN’s page.');
+          return;
+        }
+        setEspnNativeSession({ swid, espnS2 });
+        if (result.leagueId) setEspnLeagueId(String(result.leagueId));
+        setShowEspn(true);
+        setSyncStatus('Signed in on ESPN’s page. Pick your team. That sign-in is used once, then discarded.');
+      } catch (error) {
+        const message = String(error?.message || '');
+        if (!message.toLowerCase().includes('cancel')) {
+          setSyncStatus('ESPN sign-in could not open.');
+        }
+      }
+      return;
+    }
     setShowEspn(true);
   };
 
@@ -1553,8 +1961,8 @@ export default function App() {
         leagueId: espnLeagueId,
         season: espnSeason,
         week: espnWeek,
-        swid: espnPrivateOpen ? espnSwid : '',
-        espnS2: espnPrivateOpen ? espnS2 : ''
+        swid: espnNativeSession?.swid || (espnPrivateOpen ? espnSwid : ''),
+        espnS2: espnNativeSession?.espnS2 || (espnPrivateOpen ? espnS2 : '')
       });
       const teams = listEspnTeams(league);
       if (!teams.length) {
@@ -1630,7 +2038,7 @@ export default function App() {
       ? (detectedLeague || espnTeamName || 'ESPN League')
       : (parsed.myTeamName && parsed.myTeamName !== 'My Team' ? parsed.myTeamName : autoName);
     const leagueName = typedName && typedName !== autoName ? typedName : fallbackName;
-    const oppTeamName = parsed.oppTeam?.name || parsed.oppTeamName || YAHOO_OPPONENT_NAME;
+    const oppTeamName = parsed.oppTeam?.name || parsed.oppTeamName || MISSING_OPPONENT_NAME;
     const imported = normalizeLeague({
       id: espnPaste ? (parsed.id || `espn-${Date.now()}`) : `lg_${Date.now()}`,
       name: leagueName,
@@ -1640,6 +2048,8 @@ export default function App() {
       platform: espnPaste ? 'ESPN' : 'Yahoo',
       myScore: parsed.myScore ?? parsed.userTeam?.score ?? 0,
       oppScore: parsed.oppScore ?? parsed.oppTeam?.score ?? 0,
+      myProj: parsed.myProj ?? parsed.userTeam?.projectedScore ?? null,
+      oppProj: parsed.oppProj ?? parsed.oppTeam?.projectedScore ?? null,
       ...(espnPaste ? {
         userTeam: { ...parsed.userTeam, name: espnTeamName || leagueName, starters: myStarters },
         oppTeam: { ...parsed.oppTeam, name: oppTeamName, starters: oppStarters }
@@ -1669,6 +2079,41 @@ export default function App() {
     [visibleLeagues, games, liveScores]
   );
 
+  const crossFirePointsRef = useRef(null);
+
+  useEffect(() => {
+    prepareCrossFireAlerts();
+  }, []);
+
+  useEffect(() => {
+    const next = new Map();
+    playerMasterIndex.forEach((player) => {
+      if (!player.crossfire) return;
+      const points = finiteNumber(player.actualPoints);
+      if (points == null) return;
+      next.set(player.cardKey, { points, player });
+    });
+    const previous = crossFirePointsRef.current;
+    crossFirePointsRef.current = next;
+    if (!previous || !Capacitor.isNativePlatform()) return;
+    let best = null;
+    next.forEach((entry, key) => {
+      const before = previous.get(key);
+      if (!before || entry.points <= before.points + 0.05) return;
+      const delta = entry.points - before.points;
+      if (!best || delta > best.delta) best = { ...entry, delta };
+    });
+    if (!best) return;
+    const mine = best.player.myLeagues?.[0]?.league || 'your league';
+    const opp = best.player.oppLeagues?.[0]?.league || 'the other league';
+    notifyCrossFire({
+      name: best.player.name,
+      delta: best.delta.toFixed(1),
+      mine,
+      opp
+    });
+  }, [playerMasterIndex]);
+
   const drawerPlayer = selectedPlayer
     ? (
       playerMasterIndex.get(selectedPlayer.cardKey)
@@ -1677,101 +2122,97 @@ export default function App() {
     )
     : null;
 
-  const gameRank = (player) => {
-    if (player.gameStatus === 'IN_PROGRESS' || player.isLive) return 0;
-    if (player.gameStatus === 'FINAL') return 2;
-    return 1;
-  };
-
-  const sortComparator = (a, b, isLeftColumn) => {
-    const rankDiff = gameRank(a) - gameRank(b);
-    if (rankDiff) return rankDiff;
-    if (gameRank(a) === 1) {
-      const kickoff = (player) => {
-        const time = Date.parse(player.kickoff || '');
-        return Number.isFinite(time) ? time : Number.POSITIVE_INFINITY;
-      };
-      const kickDiff = kickoff(a) - kickoff(b);
-      if (kickDiff) return kickDiff;
-      const projection = (player) => finiteNumber(player.projPoints) ?? finiteNumber(player.points) ?? 0;
-      if (projection(a) !== projection(b)) return projection(b) - projection(a);
-    }
-    if (sortMode === 'redzone') {
-      if (a.inRedZone !== b.inRedZone) return a.inRedZone ? -1 : 1;
-    }
-    if (sortMode === 'conflict') {
-      const exposureConflict = (p) => (
-        (p.myShares > 0 && p.oppShares > 0) || p.friendlyFire || p.crossfire
-      ) ? 1 : 0;
-      const aConflict = exposureConflict(a);
-      const bConflict = exposureConflict(b);
-      if (aConflict !== bConflict) return bConflict - aConflict;
-    }
-    const aShares = isLeftColumn ? a.myShares : a.oppShares;
-    const bShares = isLeftColumn ? b.myShares : b.oppShares;
-    return bShares - aShares;
-  };
-
-  const onField = (player) => player.isLive || player.gameStatus === 'IN_PROGRESS';
-
-  const myPortfolio = useMemo(() => {
+  const rankedBoard = useMemo(() => {
     return Array.from(playerMasterIndex.values())
-      .filter((p) => p.myShares > 0 && (sortMode !== 'live' || onField(p)))
-      .sort((a, b) => sortComparator(a, b, true));
-  }, [playerMasterIndex, sortMode]);
+      .filter((p) => isRootMapBoardPlayer(p) && (p.myShares > 0 || p.oppShares > 0) && passesBoardFilters(p, boardFilters))
+      .sort((a, b) => compareBoardPlayers(a, b, sortMode));
+  }, [playerMasterIndex, sortMode, boardFilters]);
 
-  const oppThreats = useMemo(() => {
-    return Array.from(playerMasterIndex.values())
-      .filter((p) => p.oppShares > 0 && (sortMode !== 'live' || onField(p)))
-      .sort((a, b) => sortComparator(a, b, false));
-  }, [playerMasterIndex, sortMode]);
+  const forCount = rankedBoard.filter((p) => p.myShares > 0).length;
+  const againstCount = rankedBoard.filter((p) => p.oppShares > 0).length;
 
-  const updateConnectors = () => {
-    if (!containerRef.current) return;
-    const containerRect = containerRef.current.getBoundingClientRect();
-    const lines = [];
+  const myPortfolio = useMemo(
+    () => rankedBoard.filter((p) => p.myShares > 0 && rootView !== 'against'),
+    [rankedBoard, rootView]
+  );
 
-    myPortfolio.forEach(player => {
-      if (player.oppShares > 0) {
-        const leftEl = leftCardRefs.current[player.cardKey || player.name];
-        const rightEl = rightCardRefs.current[player.cardKey || player.name];
+  const oppThreats = useMemo(
+    () => rankedBoard.filter((p) => p.oppShares > 0 && rootView !== 'for'),
+    [rankedBoard, rootView]
+  );
 
-        if (leftEl && rightEl) {
-          const lRect = leftEl.getBoundingClientRect();
-          const rRect = rightEl.getBoundingClientRect();
-
-          const x1 = lRect.right - containerRect.left;
-          const y1 = lRect.top + lRect.height / 2 - containerRect.top;
-          const x2 = rRect.left - containerRect.left;
-          const y2 = rRect.top + rRect.height / 2 - containerRect.top;
-
-          lines.push({ name: player.name, cardKey: player.cardKey || player.name, x1, y1, x2, y2 });
-        }
-      }
-    });
-
-    setConnectors(lines);
-  };
-
-  useLayoutEffect(() => {
-    if (view === 'matchups') {
-      updateConnectors();
-      const timer = setTimeout(updateConnectors, 60);
-      window.addEventListener('resize', updateConnectors);
-      return () => {
-        clearTimeout(timer);
-        window.removeEventListener('resize', updateConnectors);
-      };
-    }
-  }, [view, sortMode, theme, myPortfolio, oppThreats]);
+  const filterCount = Number(boardFilters.liveOnly) + Number(boardFilters.redZoneOnly) + Number(boardFilters.hideFinal);
 
   const getGamePlayers = (game) => {
     if (!game) return [];
     const home = canonTeam(game.home);
     const away = canonTeam(game.away);
     return Array.from(playerMasterIndex.values()).filter(
-      (p) => (p.myShares > 0 || p.oppShares > 0) && (canonTeam(p.nflTeam) === away || canonTeam(p.nflTeam) === home)
+      (p) => isRootMapBoardPlayer(p) && (p.myShares > 0 || p.oppShares > 0) && (canonTeam(p.nflTeam) === away || canonTeam(p.nflTeam) === home)
     );
+  };
+
+  const orderedGames = useMemo(() => {
+    const exposure = (game) => getGamePlayers(game).reduce(
+      (sum, player) => sum + (player.myShares || 0) + (player.oppShares || 0),
+      0
+    );
+    return [...(games || [])].sort((a, b) => {
+      const asWindow = slateWindowFor({
+        gameStatus: a.gameStatus || gamePhase(a),
+        isLive: a.gameStatus === 'IN_PROGRESS' || /\bLIVE\b/i.test(a.status || ''),
+        kickoff: a.kickoff,
+        gameClock: a.status || a.time
+      });
+      const bsWindow = slateWindowFor({
+        gameStatus: b.gameStatus || gamePhase(b),
+        isLive: b.gameStatus === 'IN_PROGRESS' || /\bLIVE\b/i.test(b.status || ''),
+        kickoff: b.kickoff,
+        gameClock: b.status || b.time
+      });
+      if (asWindow.rank !== bsWindow.rank) return asWindow.rank - bsWindow.rank;
+      if (asWindow.id === 'early' || asWindow.id === 'afternoon') return exposure(b) - exposure(a);
+      return 0;
+    });
+  }, [games, playerMasterIndex]);
+
+  const renderBoardColumn = (players, side) => {
+    let previousWindow = '';
+    let markedFinal = false;
+    let markedBye = false;
+    return players.map((player) => {
+      const window = slateWindowFor(player);
+      const showSlate = sortMode === 'slate' && window.id !== previousWindow;
+      const showFinal = sortMode !== 'slate' && window.id === 'final' && !markedFinal;
+      const showBye = window.id === 'bye' && !markedBye;
+      if (window.id === 'final') markedFinal = true;
+      if (window.id === 'bye') markedBye = true;
+      previousWindow = window.id;
+      const cardKey = player.cardKey || player.name;
+      const isConflict = side === 'cross' || (side === 'for' ? player.oppShares > 0 : player.myShares > 0);
+      return (
+        <div key={`${side}_${cardKey}`} className="space-y-1">
+          {(showSlate || showFinal || showBye) && (
+            <div className={`px-1 text-[10px] font-black uppercase tracking-wider ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+              {window.id === 'bye' ? 'Bye Week' : showFinal ? 'Final' : window.label}
+            </div>
+          )}
+          <div className={window.id === 'bye' ? 'opacity-60' : window.id === 'final' ? 'opacity-75' : undefined}>
+          <RosterCard
+            player={player}
+            side={side}
+            isLight={isLight}
+            isHovered={hoveredConflictPlayer === cardKey}
+            headshotTick={headshotTick}
+            stance={renderStance(player)}
+            onSelect={() => setSelectedPlayer(player)}
+            onHoverStart={() => isConflict && setHoveredConflictPlayer(cardKey)}
+            onHoverEnd={() => setHoveredConflictPlayer(null)}
+          />
+          </div>
+        </div>
+      );
+    });
   };
 
   const renderStance = (player) => {
@@ -1811,13 +2252,23 @@ export default function App() {
               Root<span className="text-emerald-400">Map</span>
             </span>
           </div>
-          <div className="flex items-center gap-1.5 shrink-0">
+          <div className="relative z-50 flex items-center gap-1.5 shrink-0">
+            <button
+            onClick={() => setView(view === 'game-slate' ? 'matchups' : 'game-slate')}
+            className={`shrink-0 h-9 px-2 rounded-lg text-[10px] font-black border whitespace-nowrap transition ${
+              view === 'game-slate'
+                ? isLight ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-emerald-950 text-emerald-300 border-emerald-600'
+                : isLight ? 'bg-slate-100 text-slate-700 border-slate-300 hover:bg-slate-200' : 'bg-slate-900 text-slate-200 border-slate-700 hover:bg-slate-800'
+            }`}
+          >
+            Week {slateMeta.week}
+          </button>
             <button
               type="button"
               onClick={() => setTheme(isLight ? 'dark' : 'light')}
               aria-label={isLight ? 'Switch to dark mode' : 'Switch to light mode'}
               title={isLight ? 'Dark mode' : 'Light mode'}
-              className={`w-11 h-11 rounded-lg border flex items-center justify-center transition touch-manipulation ${
+              className={`w-9 h-9 rounded-lg border flex items-center justify-center transition touch-manipulation ${
                 isLight
                   ? 'bg-white text-slate-900 border-slate-200 hover:bg-slate-50'
                   : 'bg-slate-900 text-amber-300 border-slate-700 hover:bg-slate-800'
@@ -1834,61 +2285,81 @@ export default function App() {
               )}
             </button>
             <button
-            onClick={() => setView(view === 'game-slate' ? 'matchups' : 'game-slate')}
-            className={`shrink-0 px-2 py-1 rounded-lg text-[10px] font-black border whitespace-nowrap transition ${
-              view === 'game-slate'
-                ? isLight ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-emerald-950 text-emerald-300 border-emerald-600'
-                : isLight ? 'bg-slate-100 text-slate-700 border-slate-300 hover:bg-slate-200' : 'bg-slate-900 text-slate-200 border-slate-700 hover:bg-slate-800'
-            }`}
-          >
-            Week {slateMeta.week}
-          </button>
+              ref={filterButtonRef}
+              type="button"
+              onClick={() => setShowSortSheet(true)}
+              className={`shrink-0 inline-flex h-9 items-center gap-1 rounded-full border px-2.5 text-[10px] font-black whitespace-nowrap ${
+                filterCount > 0 || sortMode !== 'slate'
+                  ? isLight ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-950 border-white'
+                  : isLight ? 'bg-white text-slate-700 border-slate-300' : 'bg-slate-900 text-slate-200 border-slate-700'
+              }`}
+            >
+              Sort & Filter
+              {filterCount > 0 && (
+                <span className={`rounded-full px-1 text-[9px] ${isLight ? 'bg-white/20' : 'bg-slate-900/10'}`}>{filterCount}</span>
+              )}
+              <span aria-hidden="true">▾</span>
+            </button>
           </div>
         </div>
-        <div className="flex items-center gap-1.5">
-          <button
-            onClick={() => setShowLegend(true)}
-            className={`px-2 py-1 rounded-lg text-[10px] font-black border whitespace-nowrap transition ${
-              isLight
-                ? 'bg-emerald-50 text-emerald-800 border-emerald-300 hover:bg-emerald-100'
-                : 'bg-emerald-950/70 text-emerald-300 border-emerald-700 hover:bg-emerald-900/80'
-            }`}
-            aria-haspopup="dialog"
+        {view === 'matchups' && leagues.length > 0 && (
+          <div
+            className={`grid items-end gap-3 px-1 pt-2 ${rootView === 'both' ? 'grid-cols-2' : 'grid-cols-[1fr_auto_1fr]'}`}
+            role="tablist"
+            aria-label="Rooting view"
           >
-            ⓘ Legend
-          </button>
-          <button
-            onClick={openYahooIngest}
-            className={`px-2 py-1 rounded-lg text-[10px] font-black border whitespace-nowrap transition ${
-              isLight
-                ? 'bg-purple-50 text-purple-700 border-purple-300 hover:bg-purple-100'
-                : 'bg-purple-950/70 text-purple-300 border-purple-700 hover:bg-purple-900/80'
-            }`}
-          >
-            + Import League
-          </button>
-          <button
-            ref={filterButtonRef}
-            onClick={toggleLeagueFilter}
-            aria-expanded={showLeagueFilter}
-            aria-haspopup="dialog"
-            className={`ml-auto inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-black whitespace-nowrap border transition ${
-              showLeagueFilter || hiddenCount > 0
-                ? isLight ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-emerald-950 text-emerald-300 border-emerald-600'
-                : isLight ? 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50' : 'bg-slate-900 text-slate-200 border-slate-600 hover:bg-slate-800'
-            }`}
-          >
-            <svg viewBox="0 0 16 16" className="w-3 h-3" aria-hidden="true">
-              <path d="M1.5 2.5h13l-5 6.2v4.3l-3 1.5V8.7L1.5 2.5z" fill="currentColor" />
-            </svg>
-            Filter Leagues
-            {hiddenCount > 0 && (
-              <span className={`font-mono ${isLight ? 'text-emerald-50' : 'text-emerald-200'}`}>
-                {visibleLeagues.length}/{leagues.length}
-              </span>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={rootView !== 'against'}
+              onClick={() => {
+                setRootView((current) => {
+                  const next = current === 'for' ? 'both' : 'for';
+                  if (next !== current) tapHaptic();
+                  return next;
+                });
+              }}
+              className={`min-h-11 text-base font-black tracking-wider uppercase pb-2 border-b-2 transition-colors ${
+                rootView !== 'against'
+                  ? isLight ? 'text-emerald-700 border-emerald-600' : 'text-emerald-400 border-emerald-500'
+                  : isLight ? 'text-slate-400 border-transparent' : 'text-slate-500 border-transparent'
+              }`}
+            >
+              Root For ({forCount})
+            </button>
+            {rootView !== 'both' && (
+              <button
+                type="button"
+                onClick={() => {
+                  setRootView('both');
+                  tapHaptic();
+                }}
+                className={`min-h-11 px-1 pb-2 text-[11px] font-black uppercase tracking-wider ${isLight ? 'text-slate-500' : 'text-slate-400'}`}
+              >
+                Both
+              </button>
             )}
-          </button>
-        </div>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={rootView !== 'for'}
+              onClick={() => {
+                setRootView((current) => {
+                  const next = current === 'against' ? 'both' : 'against';
+                  if (next !== current) tapHaptic();
+                  return next;
+                });
+              }}
+              className={`min-h-11 text-base font-black tracking-wider uppercase pb-2 border-b-2 transition-colors ${
+                rootView !== 'for'
+                  ? isLight ? 'text-rose-700 border-rose-600' : 'text-rose-400 border-rose-500'
+                  : isLight ? 'text-slate-400 border-transparent' : 'text-slate-500 border-transparent'
+              }`}
+            >
+              Root Against ({againstCount})
+            </button>
+          </div>
+        )}
       </header>
       </div>
 
@@ -1932,172 +2403,64 @@ export default function App() {
         )}
         {view === 'matchups' && leagues.length > 0 && (
           <div className="space-y-3">
-            <div className="space-y-2">
-              <div className="flex justify-between items-center px-1">
-                <div className={`text-xs font-black uppercase tracking-wider ${isLight ? 'text-slate-700' : 'text-slate-300'}`}>
-                  Combined Rooting
-                </div>
-                <div className={`text-[11px] font-mono font-bold ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
-                  {myPortfolio.length} Active • {oppThreats.length} Threats
-                </div>
-              </div>
-
-              <div className="flex gap-1.5 overflow-x-auto pb-1 scrollbar-none text-[11px] font-bold">
-                <button
-                  onClick={() => setSortMode('exposure')}
-                  className={`min-h-11 px-3 rounded-lg border whitespace-nowrap transition touch-manipulation ${
-                    sortMode === 'exposure'
-                      ? isLight ? 'bg-slate-900 text-white border-slate-900 shadow-sm' : 'bg-slate-800 text-white border-slate-600 shadow-sm'
-                      : isLight ? 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50' : 'bg-slate-900/60 text-slate-400 border-slate-800 hover:text-slate-200'
-                  }`}
-                >
-                  ⚡ Exposure
-                </button>
-                <button
-                  onClick={() => setSortMode('live')}
-                  className={`min-h-11 px-3 rounded-lg border whitespace-nowrap transition touch-manipulation ${
-                    sortMode === 'live'
-                      ? isLight ? 'bg-emerald-600 text-white border-emerald-600 shadow-sm' : 'bg-emerald-950 text-emerald-400 border-emerald-700 shadow-sm'
-                      : isLight ? 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50' : 'bg-slate-900/60 text-slate-400 border-slate-800 hover:text-slate-200'
-                  }`}
-                >
-                  🟢 Live On Field
-                </button>
-                <button
-                  onClick={() => setSortMode('redzone')}
-                  className={`min-h-11 px-3 rounded-lg border whitespace-nowrap transition touch-manipulation ${
-                    sortMode === 'redzone'
-                      ? isLight ? 'bg-rose-600 text-white border-rose-600 shadow-sm' : 'bg-rose-950 text-rose-400 border-rose-700 shadow-sm'
-                      : isLight ? 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50' : 'bg-slate-900/60 text-slate-400 border-slate-800 hover:text-slate-200'
-                  }`}
-                >
-                  🔴 Red Zone
-                </button>
-                <button
-                  onClick={() => setSortMode('conflict')}
-                  className={`min-h-11 px-3 rounded-lg border whitespace-nowrap transition touch-manipulation ${
-                    sortMode === 'conflict'
-                      ? isLight ? 'bg-amber-500 text-slate-900 border-amber-500 font-black shadow-sm' : 'bg-amber-950 text-amber-400 border-amber-700 shadow-sm'
-                      : isLight ? 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50' : 'bg-slate-900/60 text-slate-400 border-slate-800 hover:text-slate-200'
-                  }`}
-                >
-                  🔀 Conflicted First
-                </button>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-2 gap-4 text-center text-xs font-black tracking-wider uppercase">
-              <div className={`rounded-xl py-2 px-1 flex flex-col items-center justify-center border shadow-sm transition ${
-                isLight ? 'bg-white border-slate-200 text-green-600' : 'bg-slate-900 border-emerald-500/30 text-emerald-400'
-              }`}>
-                <span className="leading-tight">Root For (Your Portfolio)</span>
-                <span className={`text-[10px] font-normal normal-case tracking-normal ${isLight ? 'text-green-700' : 'text-slate-400'}`}>
-                  ({myPortfolio.length} Active)
-                </span>
-              </div>
-              <div className={`rounded-xl py-2 px-1 flex flex-col items-center justify-center border shadow-sm transition ${
-                isLight ? 'bg-white border-slate-200 text-red-600' : 'bg-slate-900 border-rose-500/30 text-rose-400'
-              }`}>
-                <span className="leading-tight">Root Against (Opposition Threats)</span>
-                <span className={`text-[10px] font-normal normal-case tracking-normal ${isLight ? 'text-red-700' : 'text-slate-400'}`}>
-                  ({oppThreats.length} Total)
-                </span>
-              </div>
-            </div>
-
-            {myPortfolio.length === 0 && oppThreats.length === 0 && (
+            {((rootView === 'both' && rankedBoard.length === 0)
+              || (rootView === 'for' && myPortfolio.length === 0)
+              || (rootView === 'against' && oppThreats.length === 0)) && (
               <div className={`rounded-2xl px-3 py-4 text-center text-xs font-semibold border ${
                 isLight ? 'bg-white border-slate-200 text-slate-500' : 'bg-slate-900 border-slate-800 text-slate-400'
               }`}>
                 {visibleLeagues.length === 0
                   ? 'Every league is filtered out. Turn one back on in Filter Leagues. Saved rosters stay on this device.'
-                  : sortMode === 'live'
-                    ? 'No starters are on the field right now.'
+                  : (boardFilters.liveOnly || boardFilters.redZoneOnly || boardFilters.hideFinal)
+                    ? 'No starters match this filter.'
                     : 'No starters in this view.'}
               </div>
             )}
 
-            <div ref={containerRef} className="relative">
-              <svg className="pointer-events-none absolute inset-0 w-full h-full z-20 overflow-visible">
-                <defs>
-                  <linearGradient id="conflictWireGrad" x1="0%" y1="0%" x2="100%" y2="0%">
-                    <stop offset="0%" stopColor="#10b981" stopOpacity="0.8" />
-                    <stop offset="50%" stopColor="#f59e0b" stopOpacity="1" />
-                    <stop offset="100%" stopColor="#f43f5e" stopOpacity="0.8" />
-                  </linearGradient>
-                  <filter id="wireGlow" x="-20%" y="-20%" width="140%" height="140%">
-                    <feDropShadow dx="0" dy="0" stdDeviation="2.5" floodColor="#f59e0b" floodOpacity="0.7"/>
-                  </filter>
-                </defs>
-
-                {connectors.map((c) => {
-                  const isHovered = hoveredConflictPlayer === (c.cardKey || c.name) || selectedPlayer?.cardKey === c.cardKey;
-                  const dx = (c.x2 - c.x1) * 0.55;
-                  const pathData = `M ${c.x1} ${c.y1} C ${c.x1 + dx} ${c.y1}, ${c.x2 - dx} ${c.y2}, ${c.x2} ${c.y2}`;
-
-                  return (
-                    <g key={c.cardKey || c.name}>
-                      <path
-                        d={pathData}
-                        fill="none"
-                        stroke={isHovered ? "#f59e0b" : "url(#conflictWireGrad)"}
-                        strokeWidth={isHovered ? 3.5 : 2}
-                        strokeDasharray={isHovered ? "none" : "3,3"}
-                        strokeOpacity={isHovered ? 1 : 0.75}
-                        filter={isHovered ? "url(#wireGlow)" : undefined}
-                      />
-                      <circle cx={c.x1} cy={c.y1} r={isHovered ? 3.5 : 2.5} fill="#10b981" />
-                      <circle cx={c.x2} cy={c.y2} r={isHovered ? 3.5 : 2.5} fill="#f43f5e" />
-                    </g>
-                  );
-                })}
-              </svg>
-
-              <div className="grid grid-cols-2 gap-3 relative z-10">
-                <div className="space-y-2.5">
-                  {myPortfolio.map((player) => {
-                    const isConflict = player.oppShares > 0;
-                    const cardKey = player.cardKey || player.name;
+            <div className="relative">
+              {rootView === 'both' ? (
+                <div className="flex flex-col gap-3">
+                  {alignedSlateColumns(myPortfolio, oppThreats, sortMode).map((group) => {
+                    const headerClass = `px-1 text-[10px] font-black uppercase tracking-wider ${isLight ? 'text-slate-500' : 'text-slate-400'}`;
+                    const faded = group.key === 'bye' ? 'opacity-60' : group.key === 'final' ? 'opacity-75' : '';
+                    const column = (players, side) => (
+                      <div className={`flex-1 flex flex-col space-y-3 min-w-0 ${faded}`}>
+                        {group.label && players.length > 0 && (
+                          <div className={headerClass}>{group.label}</div>
+                        )}
+                        {players.map((player) => {
+                          const cardKey = player.cardKey || player.name;
+                          const conflict = (player.myShares || 0) > 0 && (player.oppShares || 0) > 0;
+                          return (
+                            <RosterCard
+                              key={`${side}_${cardKey}`}
+                              player={player}
+                              side={side}
+                              isLight={isLight}
+                              isHovered={hoveredConflictPlayer === `${side}_${cardKey}`}
+                              headshotTick={headshotTick}
+                              stance={renderStance(player)}
+                              onSelect={() => setSelectedPlayer(player)}
+                              onHoverStart={() => conflict && setHoveredConflictPlayer(`${side}_${cardKey}`)}
+                              onHoverEnd={() => setHoveredConflictPlayer(null)}
+                            />
+                          );
+                        })}
+                      </div>
+                    );
                     return (
-                      <RosterCard
-                        key={`my_${cardKey}`}
-                        player={player}
-                        side="for"
-                        isLight={isLight}
-                        isHovered={hoveredConflictPlayer === cardKey}
-                        headshotTick={headshotTick}
-                        stance={renderStance(player)}
-                        cardRef={(el) => { leftCardRefs.current[cardKey] = el; }}
-                        onSelect={() => setSelectedPlayer(player)}
-                        onHoverStart={() => isConflict && setHoveredConflictPlayer(cardKey)}
-                        onHoverEnd={() => setHoveredConflictPlayer(null)}
-                      />
+                      <div key={group.key} className="flex items-start gap-2">
+                        {column(group.forPlayers, 'for')}
+                        {column(group.againstPlayers, 'against')}
+                      </div>
                     );
                   })}
                 </div>
-
-                <div className="space-y-2.5">
-                  {oppThreats.map((threat) => {
-                    const isConflict = threat.myShares > 0;
-                    const cardKey = threat.cardKey || threat.name;
-                    return (
-                      <RosterCard
-                        key={`opp_${cardKey}`}
-                        player={threat}
-                        side="against"
-                        isLight={isLight}
-                        isHovered={hoveredConflictPlayer === cardKey}
-                        headshotTick={headshotTick}
-                        stance={renderStance(threat)}
-                        cardRef={(el) => { rightCardRefs.current[cardKey] = el; }}
-                        onSelect={() => setSelectedPlayer(threat)}
-                        onHoverStart={() => isConflict && setHoveredConflictPlayer(cardKey)}
-                        onHoverEnd={() => setHoveredConflictPlayer(null)}
-                      />
-                    );
-                  })}
+              ) : (
+                <div className="space-y-2">
+                  {renderBoardColumn(rootView === 'for' ? myPortfolio : oppThreats, rootView)}
                 </div>
-              </div>
+              )}
             </div>
           </div>
         )}
@@ -2130,7 +2493,7 @@ export default function App() {
               </div>
             </div>
 
-            {(games || []).map(game => {
+            {orderedGames.map(game => {
               const activeMatchPlayers = getGamePlayers(game);
               return (
                 <div key={game.id} className={`rounded-2xl overflow-hidden border shadow-sm ${
@@ -2258,44 +2621,86 @@ export default function App() {
               </div>
             )}
 
-            {leagues.map((lg) => (
+            {leagues.map((lg) => {
+              const myScore = finiteNumber(lg.myScore) ?? 0;
+              const oppScore = finiteNumber(lg.oppScore) ?? 0;
+              const ahead = myScore > oppScore;
+              const behind = oppScore > myScore;
+              return (
               <div
                 key={lg.id}
                 onClick={() => setActiveLeagueDrawer(lg)}
-                className={`rounded-2xl p-4 space-y-3 cursor-pointer border shadow-sm transition ${
-                  isLight 
-                    ? 'bg-white border-slate-200 hover:border-slate-300 hover:shadow' 
-                    : 'bg-slate-900 border-slate-800 hover:border-slate-700'
+                className={`rounded-3xl p-4 space-y-3 cursor-pointer border shadow-sm transition ${
+                  ahead
+                    ? isLight
+                      ? 'bg-white border-emerald-200 hover:border-emerald-300'
+                      : 'bg-gradient-to-b from-slate-900 to-emerald-950/40 border-emerald-900 hover:border-emerald-700'
+                    : behind
+                      ? isLight
+                        ? 'bg-white border-rose-200 hover:border-rose-300'
+                        : 'bg-gradient-to-b from-slate-900 to-rose-950/30 border-rose-900 hover:border-rose-700'
+                      : isLight
+                        ? 'bg-white border-slate-200 hover:border-slate-300'
+                        : 'bg-slate-900 border-slate-700 hover:border-slate-600'
                 }`}
               >
-                <div className="flex justify-between items-start">
-                  <div>
-                    <div className={`font-black text-base ${isLight ? 'text-slate-900' : 'text-white'}`}>{getLeagueDisplayName(lg)}</div>
-                    <div className={`text-xs ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>vs {getLeagueOppName(lg)}</div>
-                  </div>
-                  <span className={`text-[10px] font-mono px-2 py-0.5 rounded-full font-bold border ${
-                    isLight ? 'bg-purple-50 text-purple-700 border-purple-200' : 'bg-purple-950 text-purple-300 border-purple-800'
-                  }`}>
-                    {lg.platform}
-                  </span>
-                </div>
-                <div className={`flex justify-between items-center gap-2 pt-2 border-t text-xs ${
-                  isLight ? 'border-slate-100 text-slate-500' : 'border-slate-800 text-slate-400'
+                <LeagueScoreboard league={lg} isLight={isLight} />
+                <div className={`flex justify-between items-center gap-2 pt-2 border-t text-[11px] ${
+                  isLight ? 'border-slate-100 text-slate-500' : 'border-white/10 text-slate-400'
                 }`}>
-                  <span>{getLeaguePortfolio(lg).length} Starters Synced</span>
+                  <span>{getLeaguePortfolio(lg).length} starters</span>
                   <span className={`font-bold ${
                     hiddenLeagueIds.has(lg.id)
                       ? isLight ? 'text-slate-400' : 'text-slate-500'
                       : isLight ? 'text-emerald-700' : 'text-emerald-400'
                   }`}>
-                    {hiddenLeagueIds.has(lg.id) ? 'Off combined board' : 'On combined board'}
-                  </span>
-                  <span className={`font-mono font-bold ${isLight ? 'text-slate-800' : 'text-slate-200'}`}>
-                    {(lg.myScore || 0).toFixed(2)} - {(lg.oppScore || 0).toFixed(2)}
+                    {hiddenLeagueIds.has(lg.id) ? 'Off the board' : ahead ? 'Winning' : behind ? 'Trailing' : 'Tied'}
                   </span>
                 </div>
               </div>
-            ))}
+              );
+            })}
+
+            <div className={`rounded-2xl p-4 border space-y-3 shadow-sm ${
+              isLight ? 'bg-white border-slate-200' : 'bg-slate-900 border-slate-800'
+            }`}>
+              <div>
+                <div className={`font-black text-sm ${isLight ? 'text-slate-900' : 'text-white'}`}>
+                  This device
+                </div>
+                <p className={`text-xs mt-1 leading-relaxed ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+                  Leagues stay on this phone. Clearing data disconnects every league saved here.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  const confirmed = window.confirm('Clear All Data / Disconnect Leagues? Every saved league on this device will be removed.');
+                  if (!confirmed) return;
+                  ['rootmap_leagues', 'rootmap_sleeper_username', 'yahoo_access_token'].forEach((key) => {
+                    try { localStorage.removeItem(key); } catch { /* storage can be unavailable */ }
+                  });
+                  setLeagues([]);
+                  setEspnNativeSession(null);
+                  setEspnSwid('');
+                  setEspnS2('');
+                  setSleeperUsername('');
+                  setHiddenLeagueIds(new Set());
+                  setSyncStatus('All leagues were removed from this device.');
+                }}
+                className={`w-full min-h-11 px-3 py-2 rounded-xl text-xs font-black border ${
+                  isLight ? 'border-rose-300 text-rose-700 bg-rose-50' : 'border-rose-800 text-rose-300 bg-rose-950/40'
+                }`}
+              >
+                Clear All Data / Disconnect Leagues
+              </button>
+              <a
+                href={`${SITE_ORIGIN}/privacy`}
+                className={`block text-xs font-bold underline ${isLight ? 'text-slate-600' : 'text-slate-300'}`}
+              >
+                Privacy policy
+              </a>
+            </div>
           </div>
         )}
       </main>
@@ -2495,6 +2900,135 @@ export default function App() {
                 className="flex-1 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-black shadow-lg transition"
               >
                 Remove league
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showSortSheet && (
+        <div
+          onClick={() => setShowSortSheet(false)}
+          className="fixed inset-0 z-[80] bg-black/60 backdrop-blur-sm flex items-end justify-center"
+          role="presentation"
+        >
+          <div
+            onClick={(event) => event.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="sort-filter-title"
+            className={`border-t rounded-t-3xl p-5 max-w-md w-full space-y-4 shadow-2xl pb-[calc(1.25rem+env(safe-area-inset-bottom))] ${
+              isLight ? 'bg-white border-slate-200' : 'bg-slate-900 border-slate-800'
+            }`}
+          >
+            <div className={`w-12 h-1.5 rounded-full mx-auto ${isLight ? 'bg-slate-300' : 'bg-slate-700'}`} />
+            <h3 id="sort-filter-title" className={`text-base font-black ${isLight ? 'text-slate-900' : 'text-white'}`}>
+              Sort
+            </h3>
+            <div className="space-y-1.5">
+              {[
+                { id: 'slate', icon: '🏈', label: 'Game Slate', detail: 'Live, 1:00, 4:00, Sunday and Monday night. Final, then bye week.', defaultSort: true },
+                { id: 'livePoints', icon: '⚡', label: 'Most Live Points', detail: 'Leaderboard by points already scored.' },
+                { id: 'boom', icon: '🚀', label: 'Points Above Projection', detail: 'Top booms and value added.' },
+                { id: 'exposure', icon: '🔥', label: 'Portfolio Exposure', detail: 'Most starts plus opponents.' },
+                { id: 'projected', icon: '🎯', label: 'Highest Projected', detail: 'Biggest projected totals.' }
+              ].map((option) => {
+                const selected = sortMode === option.id;
+                return (
+                  <button
+                    key={option.id}
+                    type="button"
+                    aria-pressed={selected}
+                    onClick={() => {
+                      setSortMode(option.id);
+                      tapHaptic();
+                    }}
+                    className={`w-full text-left rounded-2xl border px-3 py-2.5 flex items-start gap-2 ${
+                      selected
+                        ? isLight ? 'bg-emerald-50 border-emerald-400' : 'bg-emerald-950/50 border-emerald-600'
+                        : isLight ? 'bg-slate-50 border-slate-200' : 'bg-slate-950 border-slate-800'
+                    }`}
+                  >
+                    <span aria-hidden="true">{option.icon}</span>
+                    <span className="min-w-0">
+                      <span className={`block text-xs font-black ${isLight ? 'text-slate-900' : 'text-white'}`}>
+                        {option.label}
+                        {option.defaultSort && (
+                          <span className={`ml-1.5 text-[9px] uppercase tracking-wide ${isLight ? 'text-slate-400' : 'text-slate-500'}`}>Default</span>
+                        )}
+                      </span>
+                      <span className={`block text-[11px] mt-0.5 ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>{option.detail}</span>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+            <h3 className={`text-base font-black ${isLight ? 'text-slate-900' : 'text-white'}`}>Filter</h3>
+            <div className="space-y-2">
+              {[
+                { key: 'liveOnly', label: 'Live On Field Only' },
+                { key: 'redZoneOnly', label: 'Red Zone Only' },
+                { key: 'hideFinal', label: 'Hide Completed Games' }
+              ].map((option) => {
+                const on = boardFilters[option.key];
+                return (
+                  <button
+                    key={option.key}
+                    type="button"
+                    role="switch"
+                    aria-checked={on}
+                    onClick={() => {
+                      setBoardFilters((current) => ({ ...current, [option.key]: !current[option.key] }));
+                      tapHaptic();
+                    }}
+                    className={`w-full flex items-center justify-between gap-3 rounded-2xl border px-3 py-2.5 text-xs font-black ${
+                      isLight ? 'bg-slate-50 border-slate-200 text-slate-900' : 'bg-slate-950 border-slate-800 text-white'
+                    }`}
+                  >
+                    {option.label}
+                    <span className={`w-10 h-6 rounded-full p-0.5 transition ${on ? 'bg-emerald-500' : isLight ? 'bg-slate-300' : 'bg-slate-700'}`}>
+                      <span className={`block w-5 h-5 rounded-full bg-white shadow transition ${on ? 'translate-x-4' : 'translate-x-0'}`} />
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+            <div className="grid grid-cols-3 gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowSortSheet(false);
+                  setShowLegend(true);
+                }}
+                className={`min-h-11 rounded-xl border text-[11px] font-black ${
+                  isLight ? 'border-slate-200 text-slate-700' : 'border-slate-700 text-slate-200'
+                }`}
+              >
+                Legend
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowSortSheet(false);
+                  openYahooIngest();
+                }}
+                className={`min-h-11 rounded-xl border text-[11px] font-black ${
+                  isLight ? 'border-slate-200 text-slate-700' : 'border-slate-700 text-slate-200'
+                }`}
+              >
+                Import
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowSortSheet(false);
+                  toggleLeagueFilter();
+                }}
+                className={`min-h-11 rounded-xl border text-[11px] font-black ${
+                  isLight ? 'border-slate-200 text-slate-700' : 'border-slate-700 text-slate-200'
+                }`}
+              >
+                Leagues{hiddenCount > 0 ? ` ${visibleLeagues.length}/${leagues.length}` : ''}
               </button>
             </div>
           </div>
@@ -2995,6 +3529,13 @@ export default function App() {
               />
             </div>
 
+            {espnNativeSession && (
+              <p className={`text-xs leading-relaxed ${isLight ? 'text-slate-600' : 'text-slate-300'}`}>
+                Signed in on ESPN’s page for this sync. The password is not saved. Close this screen and the session is discarded.
+              </p>
+            )}
+
+            {!Capacitor.isNativePlatform() && (
             <div>
               <button
                 type="button"
@@ -3058,6 +3599,7 @@ export default function App() {
                 </div>
               )}
             </div>
+            )}
 
             <div className="grid grid-cols-2 gap-2">
               <div>
@@ -3285,12 +3827,9 @@ export default function App() {
               isLight ? 'bg-white border-slate-200' : 'bg-slate-900 border-slate-800'
             }`}
           >
-            <div className={`w-12 h-1.5 rounded-full mx-auto mb-3 ${isLight ? 'bg-slate-300' : 'bg-slate-700'}`} />
-            <div className={`flex justify-between items-center border-b pb-3 ${isLight ? 'border-slate-100' : 'border-slate-800'}`}>
-              <div>
-                <h3 className={`text-base font-black ${isLight ? 'text-slate-900' : 'text-white'}`}>{getLeagueDisplayName(activeLeagueDrawer)}</h3>
-                <div className={`text-xs ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>vs {getLeagueOppName(activeLeagueDrawer)}</div>
-              </div>
+            <div className="flex items-center justify-between mb-3">
+              <div className="w-7" />
+              <div className={`w-12 h-1.5 rounded-full ${isLight ? 'bg-slate-300' : 'bg-slate-700'}`} />
               <button
                 onClick={() => setActiveLeagueDrawer(null)}
                 className={`w-7 h-7 rounded-full flex items-center justify-center font-bold text-xs ${
@@ -3299,6 +3838,9 @@ export default function App() {
               >
                 ✕
               </button>
+            </div>
+            <div className={`border-b pb-3 ${isLight ? 'border-slate-100' : 'border-slate-800'}`}>
+              <LeagueScoreboard league={activeLeagueDrawer} isLight={isLight} />
             </div>
             <div className="overflow-y-auto space-y-2 py-3">
               {getLeaguePortfolio(activeLeagueDrawer).map((raw, idx) => {

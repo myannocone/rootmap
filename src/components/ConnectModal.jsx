@@ -1,4 +1,5 @@
 ﻿import React, { useState } from 'react';
+import { openYahooLogin } from '../utils/openYahooLogin';
 
 export default function ConnectModal({ isOpen, onClose, onAddLeague }) {
   const [platform, setPlatform] = useState('yahoo');
@@ -8,7 +9,7 @@ export default function ConnectModal({ isOpen, onClose, onAddLeague }) {
   if (!isOpen) return null;
 
   const handleYahooLogin = () => {
-    window.location.href = '/api/auth/yahoo/login';
+    openYahooLogin();
   };
 
   const handleManualAdd = (e) => {

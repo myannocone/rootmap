@@ -28,6 +28,51 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+@keyframes rootmap-crossfire {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(167, 139, 250, 0.2);
+  }
+  50% {
+    box-shadow: 0 0 0 3px rgba(167, 139, 250, 0.9);
+  }
+}
+
+.rootmap-crossfire {
+  animation: rootmap-crossfire 1.6s ease-in-out infinite;
+}
+
+@keyframes rootmap-score-pop {
+  0% { transform: scale(1); }
+  45% { transform: scale(1.16); }
+  100% { transform: scale(1); }
+}
+
+.rootmap-score-pop {
+  display: inline-block;
+  animation: rootmap-score-pop 420ms ease-out;
+}
+
+@keyframes rootmap-redzone {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(225, 29, 72, 0.2);
+  }
+  50% {
+    box-shadow: 0 0 0 3px rgba(225, 29, 72, 0.8);
+  }
+}
+
+.rootmap-redzone {
+  animation: rootmap-redzone 1.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rootmap-crossfire,
+  .rootmap-score-pop,
+  .rootmap-redzone {
+    animation: none;
+  }
+}
+
 #root {
   width: 100%;
   max-width: none;

@@ -1,3 +1,6 @@
+import { Capacitor } from '@capacitor/core';
+import { SITE_ORIGIN } from './siteOrigin';
+
 const ESPN_ORIGIN = 'https://lm-api-reads.fantasy.espn.com';
 
 const POSITION_BY_ID = {
@@ -96,7 +99,8 @@ function clientEspnUrl({ season, leagueId, week, session }) {
     swid: session?.swid || '',
     espn_s2: session?.espnS2 || ''
   });
-  return `/api/espn?${params.toString()}`;
+  const path = `/api/espn?${params.toString()}`;
+  return Capacitor.isNativePlatform() ? `${SITE_ORIGIN}${path}` : path;
 }
 
 function assertSeasonAndWeek(season, week) {

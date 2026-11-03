@@ -18,8 +18,25 @@ function decodeOnce(value) {
   }
 }
 
+function privacyRoute() {
+  const sendPrivacy = (req, _res, next) => {
+    const path = String(req.url || '').split('?')[0]
+    if (path === '/privacy' || path === '/privacy/') req.url = '/privacy.html'
+    next()
+  }
+  return {
+    name: 'privacy-route',
+    configureServer(server) {
+      server.middlewares.use(sendPrivacy)
+    },
+    configurePreviewServer(server) {
+      server.middlewares.use(sendPrivacy)
+    }
+  }
+}
+
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [react(), tailwindcss(), privacyRoute()],
   server: {
     host: true,
     port: 5173,

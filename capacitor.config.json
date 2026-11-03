@@ -1,0 +1,13 @@
+{
+  "appId": "com.myannocone.rootmap",
+  "appName": "RootMap",
+  "webDir": "dist",
+  "ios": {
+    "contentInset": "automatic"
+  },
+  "plugins": {
+    "LocalNotifications": {
+      "presentationOptions": ["badge", "sound", "banner"]
+    }
+  }
+}
