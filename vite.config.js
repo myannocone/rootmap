@@ -1,6 +1,7 @@
 import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
-import { defineConfig } from 'vite'
+import { defineConfig, loadEnv } from 'vite'
+import { completeYahooOAuth, startYahooLogin } from './lib/yahooFantasy.js'
 
 function headerValue(req, name) {
   const value = req.headers[name]
@@ -15,6 +16,34 @@ function decodeOnce(value) {
     return decodeURIComponent(text)
   } catch {
     return text
+  }
+}
+
+function yahooAuthDev() {
+  const attach = (server) => {
+    const env = loadEnv(server.config.mode, server.config.root || process.cwd(), '')
+    for (const key of ['YAHOO_CLIENT_ID', 'YAHOO_CLIENT_SECRET', 'YAHOO_REDIRECT_URI', 'APP_URL']) {
+      if (!process.env[key] && env[key]) process.env[key] = env[key]
+    }
+    server.middlewares.use(async (req, res, next) => {
+      const url = new URL(req.url || '/', 'http://localhost')
+      const path = url.pathname
+      const login = path === '/api/auth/yahoo/login' || path === '/api/auth/yahoo'
+      const callback = path === '/api/auth/callback' || path === '/api/auth/yahoo/callback'
+      if (!login && !callback) return next()
+      req.query = Object.fromEntries(url.searchParams.entries())
+      try {
+        if (login) return startYahooLogin(req, res)
+        return await completeYahooOAuth(req, res)
+      } catch (err) {
+        return next(err)
+      }
+    })
+  }
+  return {
+    name: 'yahoo-auth-dev',
+    configureServer: attach,
+    configurePreviewServer: attach
   }
 }
 
@@ -36,7 +65,7 @@ function privacyRoute() {
 }
 
 export default defineConfig({
-  plugins: [react(), tailwindcss(), privacyRoute()],
+  plugins: [yahooAuthDev(), react(), tailwindcss(), privacyRoute()],
   server: {
     host: true,
     port: 5173,

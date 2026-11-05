@@ -23,7 +23,7 @@ function queryValue(req, name) {
 export default async function handler(req, res) {
   const leagueId = String(queryValue(req, 'leagueId')).trim();
   const season = String(queryValue(req, 'season') || '2026').trim();
-  const week = String(queryValue(req, 'week') || '8').trim();
+  const week = String(queryValue(req, 'week') || '9').trim();
   const swid = decodeOnce(queryValue(req, 'swid')).trim();
   const espnS2 = decodeOnce(queryValue(req, 'espn_s2')).trim();
 
@@ -34,7 +34,7 @@ export default async function handler(req, res) {
     return;
   }
 
-  const target = `https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/${encodeURIComponent(season)}/segments/0/leagues/${leagueId}?view=mMatchup&view=mRoster&view=mTeam&view=mSettings&scoringPeriodId=${encodeURIComponent(week)}`;
+  const target = `https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/${encodeURIComponent(season)}/segments/0/leagues/${leagueId}?view=mMatchup&view=mRoster&view=mTeam&view=mSettings&scoringPeriodId=${encodeURIComponent(week)}&matchupPeriodId=${encodeURIComponent(week)}`;
   const headers = { Accept: 'application/json' };
   if (swid && espnS2) {
     headers.Cookie = `SWID=${swid}; espn_s2=${espnS2};`;

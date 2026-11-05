@@ -1,4 +1,4 @@
-﻿import { canonTeam, getActiveSlate } from '../data/nflSchedule';
+﻿import { byeTeamsForGames, canonTeam, getActiveSlate, getSlateByWeek } from '../data/nflSchedule';
 
 function pairKey(away, home) {
   return [canonTeam(away), canonTeam(home)].sort().join('|');
@@ -26,6 +26,9 @@ function parseEspnEvent(evt) {
     id: evt?.id || `${away}@${home}`,
     home,
     away,
+    homeName: homeTeam?.team?.shortDisplayName || homeTeam?.team?.displayName || home,
+    awayName: awayTeam?.team?.shortDisplayName || awayTeam?.team?.displayName || away,
+    kickoff: evt?.date || null,
     homeScore: parseInt(homeTeam?.score || '0', 10),
     awayScore: parseInt(awayTeam?.score || '0', 10),
     state,
@@ -35,6 +38,31 @@ function parseEspnEvent(evt) {
     status: isLive ? `LIVE • ${detail}` : detail,
     time: detail
   };
+}
+
+function gamesFromEspnEvents(events, week) {
+  return (events || []).map((evt) => {
+    const parsed = parseEspnEvent(evt);
+    if (!parsed) return null;
+    return {
+      id: parsed.id,
+      week,
+      away: parsed.away,
+      home: parsed.home,
+      awayName: parsed.awayName,
+      homeName: parsed.homeName,
+      kickoff: parsed.kickoff,
+      time: parsed.time,
+      status: parsed.status,
+      homeScore: parsed.homeScore,
+      awayScore: parsed.awayScore,
+      state: parsed.state,
+      completed: parsed.completed,
+      isRedZone: parsed.isRedZone,
+      possession: parsed.possession,
+      players: []
+    };
+  }).filter(Boolean);
 }
 
 export function gamePhase(game, now = new Date()) {
@@ -93,11 +121,22 @@ function mergeEspnIntoSlate(scheduleGames, events) {
   });
 }
 
-export async function fetchLiveNFLSlate(now = new Date()) {
-  const slate = getActiveSlate(now);
+export async function fetchLiveNFLSlate(now = new Date(), week = null) {
+  const active = getActiveSlate(now);
+  const requested = Number(week) || active?.week || 9;
+  const slate = getSlateByWeek(requested) || {
+    week: requested,
+    season: active?.season || 2026,
+    label: `Week ${requested}`,
+    range: '',
+    byes: [],
+    opensAt: null,
+    games: []
+  };
   let events = [];
   try {
-    const res = await fetch('https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard');
+    const url = `https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?dates=${slate.season}&seasontype=2&week=${slate.week}`;
+    const res = await fetch(url);
     if (res.ok) {
       const data = await res.json();
       events = data?.events || [];
@@ -106,13 +145,22 @@ export async function fetchLiveNFLSlate(now = new Date()) {
     console.error('ESPN fetch fallback triggered:', err);
   }
 
+  const espnGames = gamesFromEspnEvents(events, slate.week);
+  let games = slate.games.length ? mergeEspnIntoSlate(slate.games, events) : espnGames;
+  if (slate.games.length && espnGames.length) {
+    const known = new Set(games.map((game) => pairKey(game.away, game.home)));
+    espnGames.forEach((game) => {
+      if (!known.has(pairKey(game.away, game.home))) games.push(game);
+    });
+  }
+
   return {
     week: slate.week,
     season: slate.season,
     label: slate.label,
     range: slate.range,
-    byes: slate.byes || [],
+    byes: byeTeamsForGames(games, slate.byes),
     opensAt: slate.opensAt,
-    games: mergeEspnIntoSlate(slate.games, events).map((game) => withPhase(game, now))
+    games: games.map((game) => withPhase(game, now))
   };
 }

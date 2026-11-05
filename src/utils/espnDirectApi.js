@@ -1,4 +1,5 @@
 import { Capacitor } from '@capacitor/core';
+import { activeOrProjected, isActiveEspnSlot } from './activeLineup';
 import { SITE_ORIGIN } from './siteOrigin';
 
 const ESPN_ORIGIN = 'https://lm-api-reads.fantasy.espn.com';
@@ -81,6 +82,7 @@ function espnViewQuery(week) {
   const params = new URLSearchParams();
   ['mMatchup', 'mRoster', 'mTeam', 'mSettings'].forEach((view) => params.append('view', view));
   params.set('scoringPeriodId', String(week));
+  params.set('matchupPeriodId', String(week));
   return params.toString();
 }
 
@@ -142,7 +144,7 @@ export function espnCookieHeader(swid, espnS2) {
   return `SWID=${swid}; espn_s2=${espnS2};`;
 }
 
-export async function fetchEspnLeague({ leagueId, season = 2026, week = 8, swid = '', espnS2 = '' }) {
+export async function fetchEspnLeague({ leagueId, season = 2026, week = 9, swid = '', espnS2 = '' }) {
   const id = String(leagueId || '').trim();
   if (!/^\d+$/.test(id)) throw new Error('Enter an ESPN league ID.');
   const { year, weekNumber } = assertSeasonAndWeek(season, week);
@@ -265,7 +267,7 @@ function espnScore(player, pool, weekNumber) {
 function starterFromEntry(entry, weekNumber) {
   if (!entry || typeof entry !== 'object') return null;
   const slotId = Number(entry.lineupSlotId);
-  if (slotId === 20 || slotId === 21) return null;
+  const isStarter = isActiveEspnSlot(slotId);
   const pool = entry.playerPoolEntry;
   const player = pool && typeof pool === 'object' ? pool.player : null;
   if (!player || typeof player !== 'object') return null;
@@ -291,7 +293,7 @@ function starterFromEntry(entry, weekNumber) {
     inRedZone: false,
     gameClock: `Week ${weekNumber}`,
     bigPlay: null,
-    isStarter: true
+    isStarter
   };
 }
 
@@ -318,11 +320,30 @@ export function mapEspnLeague({ league, leagueId, teamId, week, season = 2026 })
     : teams.find((entry) => String(entry.id) === String(opponentKey));
   const userTeamName = espnTeamName(team);
   const oppTeamName = opponent ? espnTeamName(opponent) : 'No matchup';
-  const mine = startersFor(team, weekNumber, 'mine');
-  const opp = opponent ? startersFor(opponent, weekNumber, 'opp') : [];
+  const espnSide = (entry) => {
+    const overall = entry?.record?.overall || {};
+    const wins = Number(overall.wins);
+    const losses = Number(overall.losses);
+    if (!Number.isFinite(wins) || !Number.isFinite(losses)) return { record: null, rank: null };
+    const rank = Number(entry.playoffSeed || entry.rankCalculatedFinal || entry.currentProjectedRank);
+    return {
+      record: { wins, losses, ties: Number(overall.ties) || 0 },
+      rank: Number.isFinite(rank) && rank > 0 ? rank : null
+    };
+  };
+  const mineStanding = espnSide(team);
+  const oppStanding = espnSide(opponent);
+  const mineAll = startersFor(team, weekNumber, 'mine');
+  const oppAll = opponent ? startersFor(opponent, weekNumber, 'opp') : [];
+  const mine = activeOrProjected(mineAll);
+  const opp = activeOrProjected(oppAll);
   const id = String(leagueId || league?.id || '').trim();
   return {
     id: `espn-${id}`,
+    espnLeagueId: id,
+    espnTeamId: String(teamId),
+    lineupWeek: weekNumber,
+    lineupProjected: mine.some((player) => player.projectedStart) || opp.some((player) => player.projectedStart),
     name: String(league?.settings?.name || '').trim() || `ESPN ${id}`,
     platform: 'ESPN',
     season: String(season),
@@ -331,6 +352,10 @@ export function mapEspnLeague({ league, leagueId, teamId, week, season = 2026 })
     myTeamName: userTeamName,
     oppTeamName,
     opponent: oppTeamName,
+    myRecord: mineStanding.record,
+    oppRecord: oppStanding.record,
+    myRank: mineStanding.rank,
+    oppRank: oppStanding.rank,
     userTeam: { name: userTeamName, starters: mine },
     oppTeam: { name: oppTeamName, starters: opp },
     portfolio: mine,

@@ -1,4 +1,5 @@
 import { resolveNflTeam } from './leagueParser.js';
+import { activeOrProjected } from './activeLineup.js';
 
 const SLEEPER_BASE = 'https://api.sleeper.app/v1';
 const PLAYERS_CACHE_KEY = 'sleeper_nfl_players';
@@ -138,7 +139,18 @@ export function sleeperScoreSignature(bundle) {
   }).join('|');
 }
 
-export async function fetchSleeperLiveScores({ season = SLEEPER_SEASON, week = 8, ids = null } = {}) {
+export async function fetchNflState() {
+  const state = await sleeperGet('/state/nfl');
+  const week = Number(state?.week);
+  const season = String(state?.season || SLEEPER_SEASON);
+  return {
+    week: Number.isFinite(week) && week > 0 ? week : 9,
+    season,
+    seasonType: state?.season_type || 'regular'
+  };
+}
+
+export async function fetchSleeperLiveScores({ season = SLEEPER_SEASON, week = 9, ids = null } = {}) {
   const weekNumber = Number(week);
   const onlyIds = Array.isArray(ids) ? ids.map(String).filter(Boolean) : null;
   if (onlyIds && !onlyIds.length) return { byId: {}, byName: {} };
@@ -290,7 +302,11 @@ function starterFromId(playerId, slotHint, score, players) {
   };
 }
 
-function lineupFrom(ids, slots, matchup, players, stats, projections, scoringKey) {
+function realPlayerIds(ids) {
+  return (ids || []).map((id) => String(id)).filter((id) => id && id !== '0');
+}
+
+function lineupFrom(ids, slots, matchup, players, stats, projections, scoringKey, isStarter = true) {
   return (ids || [])
     .map((id, index) => starterFromId(
       id,
@@ -298,7 +314,25 @@ function lineupFrom(ids, slots, matchup, players, stats, projections, scoringKey
       scoreForStarter(id, index, matchup, stats, projections, scoringKey),
       players
     ))
-    .filter(Boolean);
+    .filter(Boolean)
+    .map((player) => ({ ...player, isStarter }));
+}
+
+function weekLineup(matchup, roster, slots, players, stats, projections, scoringKey) {
+  const weekIds = realPlayerIds(matchup?.starters);
+  const rosterIds = realPlayerIds(roster?.starters);
+  const usingProjected = weekIds.length === 0;
+  const ids = weekIds.length ? weekIds : rosterIds;
+  const starters = lineupFrom(ids, slots, matchup, players, stats, projections, scoringKey, true)
+    .map((player) => ({ ...player, projectedStart: usingProjected && rosterIds.length > 0, isStarter: true }));
+  const chosen = new Set(ids);
+  const benchIds = realPlayerIds(roster?.players).filter((id) => !chosen.has(id));
+  const bench = lineupFrom(benchIds, [], roster, players, stats, projections, scoringKey, false);
+  if (starters.length) {
+    return { players: starters, bench, projected: usingProjected && rosterIds.length > 0 };
+  }
+  const projected = activeOrProjected(bench);
+  return { players: projected, bench, projected: projected.length > 0 };
 }
 
 export function mapSleeperLeague({
@@ -326,8 +360,8 @@ export function mapSleeperLeague({
     ));
 
   const scoringKey = sleeperScoringKey(league?.scoringSettings || league?.scoring_settings);
-  const myIds = weekMatchup?.starters?.length ? weekMatchup.starters : (roster?.starters || []);
-  const mine = lineupFrom(myIds, slots, weekMatchup, players, weekStats, weekProjections, scoringKey).map((player) => ({
+  const mineLineup = weekLineup(weekMatchup, roster, slots, players, weekStats, weekProjections, scoringKey);
+  const mine = mineLineup.players.map((player) => ({
     ...player,
     ownership: 1,
     isThreat: false,
@@ -336,8 +370,12 @@ export function mapSleeperLeague({
 
   const oppStarters = [];
   const seen = new Set();
+  let oppProjected = false;
   opponents.forEach((opponent) => {
-    lineupFrom(opponent.starters, slots, opponent, players, weekStats, weekProjections, scoringKey).forEach((player) => {
+    const oppRosterEntry = (rosters || []).find((entry) => entry.roster_id === opponent.roster_id);
+    const oppLineup = weekLineup(opponent, oppRosterEntry, slots, players, weekStats, weekProjections, scoringKey);
+    if (oppLineup.projected) oppProjected = true;
+    oppLineup.players.forEach((player) => {
       if (seen.has(player.sleeperId)) return;
       seen.add(player.sleeperId);
       oppStarters.push({
@@ -355,9 +393,33 @@ export function mapSleeperLeague({
     return teamLabel(oppUser);
   }).filter(Boolean);
   const oppTeamName = oppNames.length ? oppNames.join(' & ') : 'No matchup';
+  const rankedRosters = [...(rosters || [])].sort((a, b) => {
+    const aw = Number(a?.settings?.wins) || 0;
+    const bw = Number(b?.settings?.wins) || 0;
+    if (bw !== aw) return bw - aw;
+    return (Number(b?.settings?.fpts) || 0) - (Number(a?.settings?.fpts) || 0);
+  });
+  const recordFor = (entry) => entry ? {
+    wins: Number(entry.settings?.wins) || 0,
+    losses: Number(entry.settings?.losses) || 0,
+    ties: Number(entry.settings?.ties) || 0
+  } : null;
+  const rankFor = (entry) => {
+    const index = rankedRosters.findIndex((item) => item.roster_id === entry?.roster_id);
+    return index >= 0 ? index + 1 : null;
+  };
+  const oppRoster = opponents.length
+    ? (rosters || []).find((entry) => entry.roster_id === opponents[0].roster_id)
+    : null;
 
   return {
     id: `sleeper-${league.id}`,
+    sleeperLeagueId: String(league.id),
+    sleeperUserId: String(userId || ''),
+    lineupWeek: Number(week),
+    lineupProjected: Boolean(mineLineup.projected || oppProjected),
+    rosterPositions: league.rosterPositions || league.roster_positions || [],
+    scoringSettings: league.scoringSettings || league.scoring_settings || null,
     name: league.name,
     platform: 'Sleeper',
     season: SLEEPER_SEASON,
@@ -366,6 +428,10 @@ export function mapSleeperLeague({
     myTeamName: userTeamName,
     oppTeamName,
     opponent: oppTeamName,
+    myRecord: recordFor(roster),
+    oppRecord: recordFor(oppRoster),
+    myRank: rankFor(roster),
+    oppRank: rankFor(oppRoster),
     userTeam: { name: userTeamName, starters: mine },
     oppTeam: { name: oppTeamName, starters: oppStarters },
     portfolio: mine,

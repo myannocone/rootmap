@@ -2,9 +2,10 @@
 import { createPortal } from 'react-dom';
 import RootMapLogo from './components/Logo';
 import { fetchLiveNFLSlate, gamePhase } from './services/espnScoreboard';
-import { getActiveSlate } from './data/nflSchedule';
+import { FALLBACK_NFL_WEEK, getActiveSlate, getSlateByWeek } from './data/nflSchedule';
 import { isEspnMatchupText, parseEspnMatchupText, resolveNflTeam } from './utils/leagueParser';
 import {
+  fetchNflState,
   fetchSleeperLiveScores,
   fetchUserSleeperLeagues,
   lookupSleeperUser,
@@ -18,6 +19,7 @@ import { openYahooLogin } from './utils/openYahooLogin';
 import { SITE_ORIGIN } from './utils/siteOrigin';
 import { Capacitor } from '@capacitor/core';
 import { notifyCrossFire, prepareCrossFireAlerts, tapHaptic } from './utils/nativeFeedback';
+import { decodeSetupJson, encodeSetupPayload, linkIsLocalOnly, setupLinkFor } from './utils/setupSync';
 
 const LEAGUES_STORAGE_KEY = 'rootmap_leagues';
 const THEME_STORAGE_KEY = 'rootmap_theme';
@@ -38,7 +40,8 @@ const ROOTING_LEGEND = [
   { icon: '🟢', title: 'Double Down (+2 or more)', detail: 'Started on multiple of your rosters.' },
   { icon: '🔴', title: 'Root Against', detail: 'Started only by an opponent.' },
   { icon: '⚡', title: 'Cross Fire', detail: 'The same player is in your starters and an opponent’s starters.' },
-  { icon: '⚔️', title: 'Friendly Fire', detail: 'Offense playing directly against your active DEF.' },
+  { icon: '🎯', title: 'Double Dip', detail: 'Offense vs Opponent DEF (Dual point swing on TDs).' },
+  { icon: '⚠️', title: 'Friendly Fire', detail: 'Offense vs Your DEF (Offensive TD reduces defense points).' },
   { icon: '○', title: 'Neutral / Free Agent', detail: 'Not started by you or an opponent in the leagues on the board.' }
 ];
 
@@ -77,12 +80,16 @@ function firstPlayerList(...candidates) {
   return [];
 }
 
+function listedStarters(list) {
+  return (list || []).filter((player) => player && player.isStarter !== false);
+}
+
 function getLeaguePortfolio(lg) {
-  return firstPlayerList(lg?.portfolio, lg?.starters, lg?.userTeam?.starters);
+  return listedStarters(firstPlayerList(lg?.portfolio, lg?.starters, lg?.userTeam?.starters));
 }
 
 function getLeagueThreats(lg) {
-  return firstPlayerList(lg?.threats, lg?.opponentStarters, lg?.oppTeam?.starters);
+  return listedStarters(firstPlayerList(lg?.threats, lg?.opponentStarters, lg?.oppTeam?.starters));
 }
 
 function getLeagueDisplayName(lg) {
@@ -110,16 +117,107 @@ function fantasyMark(name) {
   return { initials, bg, fg };
 }
 
-function leagueNflTeams(league) {
-  const seen = new Set();
-  const teams = [];
-  getLeaguePortfolio(league).forEach((player) => {
+function ordinalRank(value) {
+  const rank = Number(value);
+  if (!Number.isInteger(rank) || rank < 1) return '';
+  const teen = rank % 100;
+  if (teen >= 11 && teen <= 13) return `${rank}th`;
+  const suffix = ['th', 'st', 'nd', 'rd'][rank % 10] || 'th';
+  return `${rank}${suffix}`;
+}
+
+function formatSeasonRecord(record) {
+  if (!record) return '';
+  if (typeof record === 'string') return record.trim();
+  const wins = finiteNumber(record.wins ?? record.w);
+  const losses = finiteNumber(record.losses ?? record.l);
+  if (wins == null || losses == null) return '';
+  const ties = finiteNumber(record.ties ?? record.t);
+  return ties ? `${wins}-${losses}-${ties}` : `${wins}-${losses}`;
+}
+
+function teamSeasonLine(name, record, rank) {
+  const bits = [formatSeasonRecord(record), ordinalRank(rank)].filter(Boolean);
+  return bits.length ? `${name} (${bits.join(' • ')})` : name;
+}
+
+function leagueSideRecord(league, side) {
+  const team = side === 'opp' ? league?.oppTeam : league?.userTeam;
+  const record = side === 'opp'
+    ? (league?.oppRecord || team?.record)
+    : (league?.myRecord || team?.record);
+  const rank = side === 'opp'
+    ? (league?.oppRank || team?.rank || team?.standing)
+    : (league?.myRank || team?.rank || team?.standing);
+  return { record, rank };
+}
+
+function matchupOutlook(league) {
+  const myLive = finiteNumber(league?.myScore) ?? 0;
+  const oppLive = finiteNumber(league?.oppScore) ?? 0;
+  const myFull = finiteNumber(league?.myProj);
+  const oppFull = finiteNumber(league?.oppProj);
+  const myRem = myFull == null ? 0 : Math.max(0, myFull - myLive);
+  const oppRem = oppFull == null ? 0 : Math.max(0, oppFull - oppLive);
+  const myTotal = myLive + myRem;
+  const oppTotal = oppLive + oppRem;
+  const sum = myTotal + oppTotal;
+  const myPct = sum > 0 ? Math.round((myTotal / sum) * 100) : 50;
+  const oppPct = 100 - myPct;
+  return { myLive, oppLive, myRem, oppRem, myTotal, oppTotal, myPct, oppPct };
+}
+
+function leagueHasLivePlayers(league, games) {
+  const teams = new Set();
+  [...getLeaguePortfolio(league), ...getLeagueThreats(league)].forEach((player) => {
     const team = canonTeam(player?.nflTeam);
-    if (!team || seen.has(team)) return;
-    seen.add(team);
-    teams.push(team);
+    if (team) teams.add(team);
   });
-  return teams.slice(0, 6);
+  return (games || []).some((game) => {
+    const live = game?.gameStatus === 'IN_PROGRESS' || /\bLIVE\b/i.test(`${game?.status || ''} ${game?.time || ''}`);
+    if (!live) return false;
+    return teams.has(canonTeam(game.home)) || teams.has(canonTeam(game.away));
+  });
+}
+
+function MatchupLineups({ league, week, isLight }) {
+  const mine = getLeaguePortfolio(league);
+  const opp = getLeagueThreats(league);
+  const projected = Boolean(league?.lineupProjected || mine.some((player) => player.projectedStart) || opp.some((player) => player.projectedStart));
+  const column = (title, players, align) => (
+    <div className={`min-w-0 ${align === 'end' ? 'text-right' : 'text-left'}`}>
+      <div className={`text-[9px] font-black uppercase tracking-wider ${isLight ? 'text-slate-400' : 'text-slate-500'}`}>
+        {title}
+      </div>
+      {players.length === 0 ? (
+        <p className={`mt-1 text-[10px] leading-snug ${isLight ? 'text-slate-400' : 'text-slate-500'}`}>
+          No Week {week} starters saved
+        </p>
+      ) : (
+        <ul className="mt-1 space-y-0.5">
+          {players.map((player) => (
+            <li key={`${player.name}-${player.nflTeam || ''}`} className="min-w-0">
+              <div className={`truncate text-[11px] font-black ${isLight ? 'text-slate-900' : 'text-white'}`}>{player.name}</div>
+              <div className={`truncate text-[9px] font-bold ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+                {player.position || player.slot}{player.nflTeam ? ` · ${player.nflTeam}` : ''}
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+  return (
+    <div className={`space-y-1 border-t pt-2 ${isLight ? 'border-slate-100' : 'border-white/10'}`}>
+      <div className={`text-[10px] font-black uppercase tracking-wider ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+        {projected ? `Projected Week ${week} starters` : `Week ${week} starters`}
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        {column(getUserTeamName(league), mine, 'start')}
+        {column(getLeagueOppName(league), opp, 'end')}
+      </div>
+    </div>
+  );
 }
 
 function LeagueScoreboard({ league, isLight }) {
@@ -131,13 +229,15 @@ function LeagueScoreboard({ league, isLight }) {
   const oppScore = finiteNumber(league?.oppScore) ?? 0;
   const myMark = fantasyMark(myName);
   const oppMark = fantasyMark(oppName);
-  const teams = leagueNflTeams(league);
+  const mine = leagueSideRecord(league, 'my');
+  const opp = leagueSideRecord(league, 'opp');
+  const outlook = matchupOutlook(league);
   const scoreClass = (leading) => (
     leading
       ? isLight ? 'text-emerald-700' : 'text-emerald-300'
       : isLight ? 'text-slate-400' : 'text-slate-500'
   );
-  const teamSide = (name, score, proj, mark, leading, align) => (
+  const teamSide = (name, record, rank, score, proj, mark, leading, align) => (
     <div className={`min-w-0 flex flex-col gap-1 ${align === 'end' ? 'items-end text-right' : 'items-start text-left'}`}>
       <div
         className="w-7 h-7 rounded-lg flex items-center justify-center font-black text-[10px]"
@@ -147,7 +247,7 @@ function LeagueScoreboard({ league, isLight }) {
         {mark.initials}
       </div>
       <div className={`w-full font-black text-[13px] leading-tight break-words ${isLight ? 'text-slate-900' : 'text-white'}`}>
-        {name}
+        {teamSeasonLine(name, record, rank)}
       </div>
       <div className={`font-black text-3xl leading-none tabular-nums ${scoreClass(leading)}`}>
         {scoreText(score)}
@@ -172,17 +272,21 @@ function LeagueScoreboard({ league, isLight }) {
         </span>
       </div>
       <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
-        {teamSide(myName, myScore, league?.myProj, myMark, myScore > oppScore || myScore === oppScore, 'end')}
+        {teamSide(myName, mine.record, mine.rank, myScore, league?.myProj, myMark, myScore > oppScore || myScore === oppScore, 'end')}
         <div className={`text-[10px] font-black tracking-[0.2em] ${isLight ? 'text-slate-400' : 'text-slate-500'}`}>VS</div>
-        {teamSide(oppName, oppScore, league?.oppProj, oppMark, oppScore > myScore || myScore === oppScore, 'start')}
+        {teamSide(oppName, opp.record, opp.rank, oppScore, league?.oppProj, oppMark, oppScore > myScore || myScore === oppScore, 'start')}
       </div>
-      {teams.length > 0 && (
-        <div className="flex items-center justify-center gap-1.5">
-          {teams.map((team) => (
-            <PlayerHeadshot key={team} name={team} team={team} defense size={26} />
-          ))}
+      <div className="space-y-1">
+        <div className="flex items-center justify-between text-[10px] font-black tabular-nums">
+          <span className={isLight ? 'text-emerald-700' : 'text-emerald-300'}>{outlook.myPct}%</span>
+          <span className={`font-bold ${isLight ? 'text-slate-400' : 'text-slate-500'}`}>Win odds</span>
+          <span className={isLight ? 'text-rose-700' : 'text-rose-300'}>{outlook.oppPct}%</span>
         </div>
-      )}
+        <div className={`flex h-2 overflow-hidden rounded-full ${isLight ? 'bg-slate-200' : 'bg-slate-800'}`} aria-hidden="true">
+          <div className="bg-emerald-500" style={{ width: `${outlook.myPct}%` }} />
+          <div className="bg-rose-500" style={{ width: `${outlook.oppPct}%` }} />
+        </div>
+      </div>
     </div>
   );
 }
@@ -402,36 +506,46 @@ function weekByeTeams() {
 
 function playerIsBye(player, game) {
   const team = canonTeam(player?.nflTeam);
-  const text = `${player?.gameClock || ''} ${player?.opponent || ''} ${player?.gameStatus || ''} ${game?.status || ''} ${game?.time || ''}`;
+  const text = `${game?.status || ''} ${game?.time || ''}`;
   if (/\bbye\b/i.test(text)) return true;
+  if (game) return false;
   if (team && weekByeTeams().has(team)) return true;
-  const kickoff = game?.kickoff || player?.kickoff || player?.gameDate;
-  if (!game && (kickoff == null || kickoff === '') && team) return true;
-  return false;
+  return Boolean(team);
+}
+
+function kickoffMillis(value) {
+  const parsed = Date.parse(value || '');
+  return Number.isFinite(parsed) ? parsed : Number.POSITIVE_INFINITY;
 }
 
 function slateWindowFor(player) {
   if (player?.isBye || player?.gameStatus === 'BYE' || /\bbye\b/i.test(`${player?.gameClock || ''} ${player?.opponent || ''}`)) {
-    return { id: 'bye', label: 'Bye Week', rank: 6 };
+    return { id: 'bye', label: 'Bye Week', rank: 8 };
   }
   if (player?.gameStatus === 'IN_PROGRESS' || player?.isLive) return { id: 'live', label: 'Live', rank: 0 };
-  if (player?.gameStatus === 'FINAL') return { id: 'final', label: 'Final', rank: 5 };
+  if (player?.gameStatus === 'FINAL') return { id: 'final', label: 'Final', rank: 7 };
   const et = etClock(player?.kickoff);
   const text = `${player?.gameClock || ''} ${player?.time || ''}`;
   if (!et) {
-    if (/1:00/.test(text)) return { id: 'early', label: '1:00 PM', rank: 1 };
-    if (/4:(00|05|25)/.test(text)) return { id: 'afternoon', label: '4:00 PM', rank: 2 };
-    return { id: 'bye', label: 'Bye Week', rank: 6 };
+    if (/\bthu/i.test(text)) return { id: 'thursday', label: 'Thursday', rank: 1 };
+    if (/\bfri/i.test(text)) return { id: 'friday', label: 'Friday', rank: 2 };
+    if (/\bsat/i.test(text)) return { id: 'saturday', label: 'Saturday', rank: 2 };
+    if (/9:30|morning/i.test(text)) return { id: 'morning', label: 'Sunday Morning', rank: 3 };
+    if (/1:00/.test(text)) return { id: 'early', label: '1:00 PM', rank: 4 };
+    if (/4:(00|05|25)/.test(text)) return { id: 'afternoon', label: '4:00 PM', rank: 5 };
+    if (/\bmon/i.test(text)) return { id: 'mnf', label: 'Monday Night', rank: 6 };
+    if (/\bsun/i.test(text)) return { id: 'snf', label: 'Sunday Night', rank: 6 };
+    return { id: 'bye', label: 'Bye Week', rank: 8 };
   }
-  if (et.weekday === 'Mon' || (et.weekday === 'Sun' && et.minutes >= 19 * 60)) {
-    return { id: 'prime', label: 'Prime Time', rank: 4 };
-  }
-  if (et.minutes < 16 * 60) return { id: 'early', label: '1:00 PM', rank: 1 };
-  if (et.minutes < 19 * 60) return { id: 'afternoon', label: '4:00 PM', rank: 2 };
-  if (et.weekday === 'Thu') return { id: 'thursday', label: 'Thursday', rank: 3 };
-  if (et.weekday === 'Sat') return { id: 'saturday', label: 'Saturday', rank: 3 };
-  if (et.weekday === 'Fri') return { id: 'friday', label: 'Friday', rank: 3 };
-  return { id: 'bye', label: 'Bye Week', rank: 6 };
+  if (et.weekday === 'Thu') return { id: 'thursday', label: 'Thursday', rank: 1 };
+  if (et.weekday === 'Fri') return { id: 'friday', label: 'Friday', rank: 2 };
+  if (et.weekday === 'Sat') return { id: 'saturday', label: 'Saturday', rank: 2 };
+  if (et.weekday === 'Sun' && et.minutes < 12 * 60) return { id: 'morning', label: 'Sunday Morning', rank: 3 };
+  if (et.weekday === 'Sun' && et.minutes < 16 * 60) return { id: 'early', label: '1:00 PM', rank: 4 };
+  if (et.weekday === 'Sun' && et.minutes < 19 * 60) return { id: 'afternoon', label: '4:00 PM', rank: 5 };
+  if (et.weekday === 'Sun') return { id: 'snf', label: 'Sunday Night', rank: 6 };
+  if (et.weekday === 'Mon') return { id: 'mnf', label: 'Monday Night', rank: 6 };
+  return { id: 'bye', label: 'Bye Week', rank: 8 };
 }
 
 function boardMetric(player, windowId) {
@@ -471,6 +585,8 @@ function compareBoardPlayers(a, b, sortMode) {
   } else if (sortMode === 'projected') diff = playerProj(b) - playerProj(a);
   else {
     if (aw.rank !== bw.rank) return aw.rank - bw.rank;
+    const kickoffDelta = kickoffMillis(a.kickoff) - kickoffMillis(b.kickoff);
+    if (kickoffDelta) return kickoffDelta;
     diff = boardMetric(b, aw.id) - boardMetric(a, aw.id);
   }
   if (diff) return diff;
@@ -738,6 +854,7 @@ function RosterCard({
     <div
       data-player-name={player.name}
       data-friendly-fire={player.friendlyFire ? 'true' : 'false'}
+      data-double-dip={player.doubleDip ? 'true' : 'false'}
       ref={cardRef}
       onClick={onSelect}
       onMouseEnter={onHoverStart}
@@ -761,6 +878,7 @@ function RosterCard({
           <div className={`text-[10px] font-bold mt-0.5 ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
             {player.position} · {player.nflTeam}
           </div>
+          <ConnotationBadge player={player} isLight={isLight} />
         </div>
       </div>
 
@@ -873,11 +991,21 @@ function isIdpPlayer(player) {
   return IDP_POSITIONS.has(pos) || IDP_POSITIONS.has(slot);
 }
 
+function isKicker(player) {
+  const pos = normalizePosition(player?.position);
+  const slot = normalizeSlot(player?.slot);
+  return pos === 'K' || slot === 'K';
+}
+
 function isOffensiveStarter(player) {
   if (!player || isTeamDefense(player)) return false;
   const pos = normalizePosition(player.position);
   const slot = normalizeSlot(player.slot);
   return OFFENSIVE_POSITIONS.has(pos) || OFFENSIVE_POSITIONS.has(slot);
+}
+
+function isUserScoringStarter(player) {
+  return isOffensiveStarter(player) || isKicker(player);
 }
 
 function isRootMapBoardPlayer(player) {
@@ -900,56 +1028,78 @@ function defenseOpponentTeam(defTeam, games) {
   return null;
 }
 
+function defenseFaces(defPlayer, games, offenseTeam) {
+  return defenseOpponentTeam(defPlayer?.nflTeam, games) === offenseTeam;
+}
+
 function markExposureTags(playerMap, leagueList, games) {
-  const defsByOpponent = new Map();
-  (leagueList || []).forEach((lg) => {
-    getLeaguePortfolio(lg).forEach((p) => {
-      if (!isTeamDefense(p)) return;
-      const defTeam = canonTeam(p.nflTeam);
-      const facing = defenseOpponentTeam(defTeam, games);
-      if (!defTeam || !facing) return;
-      if (!defsByOpponent.has(facing)) defsByOpponent.set(facing, new Set());
-      defsByOpponent.get(facing).add(defTeam);
-    });
+  playerMap.forEach((player) => {
+    player.friendlyFire = false;
+    player.friendlyFireLeagues = [];
+    player.doubleDip = false;
+    player.doubleDipLeagues = [];
+    player.crossfire = (player.myShares || 0) > 0 && (player.oppShares || 0) > 0;
   });
 
-  playerMap.forEach((player) => {
-    const team = canonTeam(player.nflTeam);
-    const defs = isOffensiveStarter(player) && player.myShares > 0
-      ? Array.from(defsByOpponent.get(team) || [])
-      : [];
-    player.friendlyFire = defs.length > 0;
-    player.friendlyFireDefs = defs;
-    player.crossfire = (player.myShares || 0) > 0 && (player.oppShares || 0) > 0;
+  (leagueList || []).forEach((lg) => {
+    const leagueName = getLeagueDisplayName(lg);
+    const mine = getLeaguePortfolio(lg);
+    const theirs = getLeagueThreats(lg);
+    const myDefs = mine.filter((player) => isTeamDefense(player));
+    const oppDefs = theirs.filter((player) => isTeamDefense(player));
+    mine.filter((player) => isUserScoringStarter(player)).forEach((player) => {
+      const team = canonTeam(player.nflTeam);
+      const card = playerMap.get(playerCardKey(player.name, team));
+      if (!card || !team) return;
+      if (myDefs.some((def) => defenseFaces(def, games, team))) {
+        card.friendlyFire = true;
+        if (!card.friendlyFireLeagues.includes(leagueName)) card.friendlyFireLeagues.push(leagueName);
+      }
+      if (oppDefs.some((def) => defenseFaces(def, games, team))) {
+        card.doubleDip = true;
+        if (!card.doubleDipLeagues.includes(leagueName)) card.doubleDipLeagues.push(leagueName);
+      }
+    });
   });
 }
 
-function friendlyFireNote(player) {
-  const teams = (player?.friendlyFireDefs || []).join(', ');
-  if (!teams) return '';
-  return `Offense vs. starting ${teams} (Cheer for offensive TD: net positive)`;
+function ConnotationBadge({ player, isLight }) {
+  if (!player?.doubleDip && !player?.friendlyFire) return null;
+  return (
+    <div className="mt-1 space-y-1">
+      {player.doubleDip && (
+        <div>
+          <span className={`inline-flex items-center px-1.5 py-0.5 rounded font-black border text-[8px] leading-tight tracking-wide ${
+            isLight ? 'bg-cyan-50 text-amber-700 border-cyan-400' : 'bg-cyan-950/80 text-amber-200 border-cyan-500'
+          }`}>
+            🎯 DOUBLE DIP
+          </span>
+          <p className={`mt-0.5 text-[9px] leading-snug font-semibold break-words ${isLight ? 'text-cyan-800' : 'text-cyan-200'}`}>
+            Offense vs Opponent DEF (Dual point swing on TDs)
+          </p>
+        </div>
+      )}
+      {player.friendlyFire && (
+        <div>
+          <span className={`inline-flex items-center px-1.5 py-0.5 rounded font-black border text-[8px] leading-tight tracking-wide ${
+            isLight ? 'bg-amber-50 text-amber-800 border-amber-400' : 'bg-amber-950/70 text-amber-200 border-amber-500'
+          }`}>
+            ⚠️ FRIENDLY FIRE
+          </span>
+          <p className={`mt-0.5 text-[9px] leading-snug font-semibold break-words ${isLight ? 'text-amber-800' : 'text-amber-200'}`}>
+            Offense vs Your DEF (Offensive TD reduces defense points)
+          </p>
+        </div>
+      )}
+    </div>
+  );
 }
 
 function ExposureFlags({ player, isLight }) {
-  if (!player?.friendlyFire && !player?.crossfire) return null;
-  const pill = 'inline-flex items-center px-1.5 py-0.5 rounded font-black border text-[9px] leading-tight';
+  if (!player?.crossfire) return null;
   return (
     <div className="space-y-1 mb-1.5">
-      {player.friendlyFire && (
-        <div className="flex flex-wrap gap-1">
-          <span className={`${pill} ${
-            isLight ? 'bg-orange-50 text-orange-800 border-orange-300' : 'bg-orange-950/70 text-orange-300 border-orange-700'
-          }`}>
-            ⚔️ Friendly Fire
-          </span>
-        </div>
-      )}
-      {player.crossfire && <CrossFireMeter player={player} isLight={isLight} />}
-      {player.friendlyFire && (
-        <p className={`text-[9px] leading-snug font-semibold break-words ${isLight ? 'text-orange-800' : 'text-orange-200/90'}`}>
-          {friendlyFireNote(player)}
-        </p>
-      )}
+      <CrossFireMeter player={player} isLight={isLight} />
     </div>
   );
 }
@@ -1458,19 +1608,25 @@ export default function App() {
     return 'dark';
   });
   const [view, setView] = useState('matchups');
+  const [leagueSort, setLeagueSort] = useState('closest');
   const [sortMode, setSortMode] = useState('slate');
   const [boardFilters, setBoardFilters] = useState({ liveOnly: false, redZoneOnly: false, hideFinal: false });
   const [showSortSheet, setShowSortSheet] = useState(false);
   const [leagues, setLeagues] = useState(loadStoredLeagues);
-  const [games, setGames] = useState(() => getActiveSlate().games);
+  const [selectedWeek, setSelectedWeek] = useState(() => getActiveSlate()?.week || FALLBACK_NFL_WEEK);
+  const [showWeekPicker, setShowWeekPicker] = useState(false);
+  const [games, setGames] = useState(() => (getActiveSlate() || getSlateByWeek(FALLBACK_NFL_WEEK))?.games || []);
   const [liveScores, setLiveScores] = useState(null);
   const leaguesRef = useRef(leagues);
   const gamesSigRef = useRef('');
   const scoresSigRef = useRef('');
+  const weekPinnedRef = useRef(false);
+  const lineupRefreshRef = useRef(null);
+  const requestWeekRef = useRef(getActiveSlate()?.week || FALLBACK_NFL_WEEK);
   leaguesRef.current = leagues;
   const [slateMeta, setSlateMeta] = useState(() => {
-    const slate = getActiveSlate();
-    return { week: slate.week, label: slate.label, range: slate.range, byes: slate.byes || [] };
+    const slate = getActiveSlate() || getSlateByWeek(FALLBACK_NFL_WEEK);
+    return { week: slate?.week || FALLBACK_NFL_WEEK, label: slate?.label || `Week ${FALLBACK_NFL_WEEK}`, range: slate?.range || '', byes: slate?.byes || [] };
   });
   const [leaguePendingDelete, setLeaguePendingDelete] = useState(null);
   const [selectedPlayer, setSelectedPlayer] = useState(null);
@@ -1479,6 +1635,8 @@ export default function App() {
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncStatus, setSyncStatus] = useState('');
   const [showYahooIngest, setShowYahooIngest] = useState(false);
+  const [showConnect, setShowConnect] = useState(false);
+  const [connectTab, setConnectTab] = useState('yahoo');
   const [showSleeper, setShowSleeper] = useState(false);
   const [sleeperUsername, setSleeperUsername] = useState(() => {
     try {
@@ -1487,7 +1645,7 @@ export default function App() {
       return '';
     }
   });
-  const [sleeperWeek, setSleeperWeek] = useState('8');
+  const [sleeperWeek, setSleeperWeek] = useState(() => String(getActiveSlate()?.week || FALLBACK_NFL_WEEK));
   const [sleeperUserId, setSleeperUserId] = useState('');
   const [sleeperChoices, setSleeperChoices] = useState([]);
   const [sleeperSelected, setSleeperSelected] = useState(() => new Set());
@@ -1495,7 +1653,7 @@ export default function App() {
   const [sleeperError, setSleeperError] = useState('');
   const [showEspn, setShowEspn] = useState(false);
   const [espnLeagueId, setEspnLeagueId] = useState('');
-  const [espnWeek, setEspnWeek] = useState('8');
+  const [espnWeek, setEspnWeek] = useState(() => String(getActiveSlate()?.week || FALLBACK_NFL_WEEK));
   const [espnSeason, setEspnSeason] = useState('2026');
   const [espnLeague, setEspnLeague] = useState(null);
   const [espnTeams, setEspnTeams] = useState([]);
@@ -1519,6 +1677,10 @@ export default function App() {
   const [leagueBackupPaste, setLeagueBackupPaste] = useState('');
   const [leagueBackupMessage, setLeagueBackupMessage] = useState('');
   const [leagueBackupError, setLeagueBackupError] = useState(false);
+  const [showMobileSync, setShowMobileSync] = useState(false);
+  const [mobileSyncLink, setMobileSyncLink] = useState('');
+  const [mobileSyncCode, setMobileSyncCode] = useState('');
+  const [mobileSyncNote, setMobileSyncNote] = useState('');
 
   const filterButtonRef = useRef(null);
 
@@ -1542,8 +1704,31 @@ export default function App() {
     const urlParams = new URLSearchParams(window.location.search);
     const yahoo = urlParams.get('yahoo');
     const authError = urlParams.get('auth_error');
-    if (!yahoo && !authError) return undefined;
-    if (yahoo === 'synced') {
+    const imported = urlParams.get('import');
+    if (!yahoo && !authError && !imported) return undefined;
+    if (imported) {
+      decodeSetupJson(imported)
+        .then((json) => {
+          const next = leaguesFromJson(json);
+          if (!next?.length) {
+            setSyncStatus('That phone link did not include a setup.');
+            return;
+          }
+          try {
+            localStorage.setItem(LEAGUES_STORAGE_KEY, JSON.stringify(next));
+          } catch {
+            setSyncStatus('Could not save this setup on this device.');
+            return;
+          }
+          setLeagues(next);
+          setHiddenLeagueIds(new Set());
+          setActiveLeagueDrawer(null);
+          setSyncStatus(`Imported setup with ${next.length} league${next.length === 1 ? '' : 's'}.`);
+        })
+        .catch(() => {
+          setSyncStatus('That phone link could not be read.');
+        });
+    } else if (yahoo === 'synced') {
       const count = Number(urlParams.get('count')) || 0;
       setLeagues(loadStoredLeagues());
       setSyncStatus(count === 1
@@ -1556,16 +1741,23 @@ export default function App() {
     return undefined;
   }, []);
 
-  const handleConnectYahoo = () => {
+  const handleConnectYahoo = async () => {
     setIsSyncing(true);
-    openYahooLogin();
+    setSyncStatus('');
+    try {
+      await openYahooLogin();
+    } catch (err) {
+      setIsSyncing(false);
+      setSyncStatus(err?.message || 'Missing Yahoo Client ID in .env');
+    }
   };
 
-  const refreshLiveSlate = async () => {
-    const active = getActiveSlate();
+  const refreshLiveSlate = async (week = selectedWeek) => {
+    const requested = Number(week) || FALLBACK_NFL_WEEK;
     try {
-      const slate = await fetchLiveNFLSlate();
-      if (Array.isArray(slate?.games) && slate.games.length > 0) {
+      const slate = await fetchLiveNFLSlate(new Date(), requested);
+      if (requestWeekRef.current !== requested) return;
+      if (Array.isArray(slate?.games)) {
         const signature = slate.games.map((game) => [
           game.id,
           game.status,
@@ -1592,9 +1784,10 @@ export default function App() {
     }
     try {
       const scores = await fetchSleeperLiveScores({
-        season: active.season,
-        week: active.week
+        season: getSlateByWeek(requested)?.season || getActiveSlate()?.season || 2026,
+        week: requested
       });
+      if (requestWeekRef.current !== requested) return;
       const signature = sleeperScoreSignature(scores);
       if (signature !== scoresSigRef.current) {
         scoresSigRef.current = signature;
@@ -1606,10 +1799,99 @@ export default function App() {
   };
 
   useEffect(() => {
-    refreshLiveSlate();
-    const interval = setInterval(refreshLiveSlate, 60000);
+    requestWeekRef.current = selectedWeek;
+    gamesSigRef.current = '';
+    scoresSigRef.current = '';
+    refreshLiveSlate(selectedWeek);
+    const interval = setInterval(() => refreshLiveSlate(selectedWeek), 60000);
     return () => clearInterval(interval);
+  }, [selectedWeek]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchNflState()
+      .then((state) => {
+        if (cancelled || weekPinnedRef.current) return;
+        const week = Number(state?.week);
+        if (!Number.isFinite(week) || week < 1 || week > 18) return;
+        if (week === requestWeekRef.current) return;
+        const slate = getSlateByWeek(week);
+        setSelectedWeek(week);
+        setSlateMeta({
+          week,
+          label: slate?.label || `Week ${week}`,
+          range: slate?.range || '',
+          byes: slate?.byes || []
+        });
+        if (slate?.games?.length) setGames(slate.games);
+      })
+      .catch(() => {
+        // the dated slate stays on the fallback week
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
+
+  useEffect(() => {
+    const week = Number(selectedWeek);
+    if (!week || lineupRefreshRef.current === week) return undefined;
+    lineupRefreshRef.current = week;
+    let cancelled = false;
+    const refreshStoredLineups = async () => {
+      const current = leaguesRef.current || [];
+      const updates = new Map();
+      try {
+        const username = localStorage.getItem('rootmap_sleeper_username') || '';
+        const sleeperLeagues = current.filter((lg) => lg?.sleeperLeagueId || String(lg?.id || '').startsWith('sleeper-'));
+        if (username && sleeperLeagues.length) {
+          const user = await lookupSleeperUser(username);
+          const imported = await syncSleeperLeagues({
+            userId: user.user_id,
+            week,
+            leagues: sleeperLeagues.map((lg) => ({
+              id: lg.sleeperLeagueId || String(lg.id).replace(/^sleeper-/, ''),
+              name: lg.name,
+              rosterPositions: lg.rosterPositions,
+              scoringSettings: lg.scoringSettings
+            }))
+          });
+          imported.forEach((lg) => updates.set(lg.id, lg));
+        }
+      } catch (err) {
+        console.warn('Sleeper lineup refresh failed', err);
+      }
+      for (const lg of current) {
+        if (cancelled || !lg?.espnLeagueId || !lg?.espnTeamId) continue;
+        try {
+          const raw = await fetchEspnLeague({
+            leagueId: lg.espnLeagueId,
+            season: lg.season || 2026,
+            week
+          });
+          const mapped = mapEspnLeague({
+            league: raw,
+            leagueId: lg.espnLeagueId,
+            teamId: lg.espnTeamId,
+            week,
+            season: lg.season || 2026
+          });
+          updates.set(mapped.id, mapped);
+        } catch (err) {
+          console.warn('ESPN lineup refresh failed', err);
+        }
+      }
+      if (cancelled || !updates.size) return;
+      setLeagues((prev) => prev.map((lg) => {
+        const next = updates.get(lg.id);
+        return next ? normalizeLeague({ ...lg, ...next }) : lg;
+      }));
+    };
+    refreshStoredLineups();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedWeek]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1634,22 +1916,26 @@ export default function App() {
   }, [leagues]);
 
   useEffect(() => {
-    if (!showLegend && !showLeagueFilter && !leaguePendingDelete && !showSetupImport && !showSleeper && !showEspn && !showYahooIngest && !showSortSheet) return undefined;
+    if (!showLegend && !showLeagueFilter && !leaguePendingDelete && !showSetupImport && !showConnect && !showSleeper && !showEspn && !showYahooIngest && !showSortSheet && !showWeekPicker && !showMobileSync) return undefined;
     const onKey = (event) => {
       if (event.key !== 'Escape') return;
-      if (showEspn) {
+      if (showEspn || showSleeper || showYahooIngest || showConnect) {
+        setShowConnect(false);
         setShowEspn(false);
+        setShowSleeper(false);
+        setShowYahooIngest(false);
         setEspnPrivateOpen(false);
         setEspnSwid('');
         setEspnS2('');
+        setEspnNativeSession(null);
         return;
       }
-      if (showSleeper) {
-        setShowSleeper(false);
+      if (showMobileSync) {
+        setShowMobileSync(false);
         return;
       }
-      if (showYahooIngest) {
-        setShowYahooIngest(false);
+      if (showWeekPicker) {
+        setShowWeekPicker(false);
         return;
       }
       if (showSetupImport) {
@@ -1669,7 +1955,7 @@ export default function App() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [showLegend, showLeagueFilter, leaguePendingDelete, showSetupImport, showSleeper, showEspn, showYahooIngest, showSortSheet]);
+  }, [showLegend, showLeagueFilter, leaguePendingDelete, showSetupImport, showConnect, showSleeper, showEspn, showYahooIngest, showSortSheet, showWeekPicker, showMobileSync]);
 
   const confirmRemoveLeague = () => {
     if (!leaguePendingDelete) return;
@@ -1724,6 +2010,89 @@ export default function App() {
       else next.add(leagueId);
       return next;
     });
+  };
+
+  const chooseWeek = (week) => {
+    const number = Number(week);
+    if (!Number.isFinite(number) || number < 1 || number > 18) return;
+    weekPinnedRef.current = true;
+    requestWeekRef.current = number;
+    const slate = getSlateByWeek(number);
+    setSelectedWeek(number);
+    setSlateMeta({
+      week: number,
+      label: slate?.label || `Week ${number}`,
+      range: slate?.range || '',
+      byes: slate?.byes || []
+    });
+    setGames(slate?.games || []);
+    setShowWeekPicker(false);
+    tapHaptic();
+  };
+
+  const copyText = async (value) => {
+    const text = String(value || '');
+    if (!text) return false;
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      try {
+        const area = document.createElement('textarea');
+        area.value = text;
+        area.setAttribute('readonly', '');
+        area.style.position = 'fixed';
+        area.style.left = '0';
+        area.style.top = '0';
+        document.body.appendChild(area);
+        area.focus();
+        area.select();
+        const copied = document.execCommand('copy');
+        document.body.removeChild(area);
+        return copied;
+      } catch {
+        return false;
+      }
+    }
+  };
+
+  const openMobileSync = async () => {
+    setShowSortSheet(false);
+    setShowLeagueFilter(false);
+    setShowWeekPicker(false);
+    let json = '';
+    try {
+      json = localStorage.getItem(LEAGUES_STORAGE_KEY) || '';
+    } catch {
+      json = '';
+    }
+    if (!json) json = JSON.stringify(leagues);
+    let count = 0;
+    try {
+      const parsed = JSON.parse(json);
+      count = Array.isArray(parsed) ? parsed.length : 0;
+    } catch {
+      count = leagues.length;
+      json = JSON.stringify(leagues);
+    }
+    if (!count) {
+      setMobileSyncLink('');
+      setMobileSyncCode('');
+      setMobileSyncNote('Add a league on this device before sending the setup to a phone.');
+      setShowMobileSync(true);
+      return;
+    }
+    const code = await encodeSetupPayload(json);
+    const link = setupLinkFor(window.location.origin, window.location.pathname, code);
+    const local = linkIsLocalOnly(window.location.hostname);
+    setMobileSyncCode(code);
+    setMobileSyncLink(link);
+    setMobileSyncNote(local
+      ? 'This link only opens on this computer. Copy the code and paste it into Import on the phone.'
+      : link
+        ? 'Open the link on the phone and the leagues load immediately.'
+        : 'This setup is too long for a link. Copy the code and paste it on the phone.');
+    setShowMobileSync(true);
   };
 
   const exportSetup = async () => {
@@ -1787,11 +2156,18 @@ export default function App() {
     setShowSetupImport(true);
   };
 
-  const saveImportedSetup = () => {
-    const next = parseSetupCode(leagueBackupPaste);
+  const saveImportedSetup = async () => {
+    let decoded = leagueBackupPaste;
+    try {
+      decoded = await decodeSetupJson(leagueBackupPaste);
+    } catch {
+      decoded = leagueBackupPaste;
+    }
+    const next = parseSetupCode(decoded) || parseSetupCode(leagueBackupPaste);
     if (!next) {
       setLeagueBackupMessage('Paste a setup code.');
       setLeagueBackupError(true);
+      setMobileSyncNote('Paste a setup code or phone link.');
       return;
     }
     try {
@@ -1807,26 +2183,35 @@ export default function App() {
     setLeaguePendingDelete(null);
     setLeagueBackupPaste('');
     setShowSetupImport(false);
+    setShowMobileSync(false);
     setLeagueBackupError(false);
     setLeagueBackupMessage(`Setup imported. ${next.length} league${next.length === 1 ? '' : 's'} on the board.`);
     setSyncStatus(`Imported setup with ${next.length} league${next.length === 1 ? '' : 's'}.`);
   };
 
+  const selectConnectTab = (tab) => {
+    setConnectTab(tab);
+    setShowConnect(true);
+    setShowYahooIngest(tab === 'yahoo');
+    setShowSleeper(tab === 'sleeper');
+    setShowEspn(tab === 'espn');
+  };
+
+  const closeConnect = () => {
+    setShowConnect(false);
+    setShowYahooIngest(false);
+    setShowSleeper(false);
+    setShowEspn(false);
+    setEspnPrivateOpen(false);
+    setEspnSwid('');
+    setEspnS2('');
+    setEspnNativeSession(null);
+  };
+
   const openYahooIngest = () => {
     setYahooIngestError('');
     setYahooLeagueName(`League ${leagues.length + 1}`);
-    setShowYahooIngest(true);
-  };
-
-  const openSleeperConnect = () => {
-    setShowYahooIngest(false);
-    setSleeperError('');
-    setSleeperBusy('');
-    setSleeperChoices([]);
-    setSleeperSelected(new Set());
-    setSleeperUserId('');
-    setSleeperWeek(String(slateMeta.week || 8));
-    setShowSleeper(true);
+    selectConnectTab('yahoo');
   };
 
   const toggleSleeperLeague = (leagueId) => {
@@ -1895,7 +2280,7 @@ export default function App() {
       setLeagues(next);
       setHiddenLeagueIds(new Set());
       setView('matchups');
-      setShowSleeper(false);
+      closeConnect();
       setSyncStatus(`Synced ${normalized.length} Sleeper league${normalized.length === 1 ? '' : 's'} for Week ${sleeperWeek}.`);
     } catch (error) {
       setSleeperError(error?.message || 'Could not sync those Sleeper leagues.');
@@ -1905,15 +2290,10 @@ export default function App() {
   };
 
   const closeEspnConnect = () => {
-    setShowEspn(false);
-    setEspnPrivateOpen(false);
-    setEspnSwid('');
-    setEspnS2('');
-    setEspnNativeSession(null);
+    closeConnect();
   };
 
   const openEspnConnect = async () => {
-    setShowYahooIngest(false);
     setEspnError('');
     setEspnBusy('');
     setEspnLeague(null);
@@ -1923,7 +2303,7 @@ export default function App() {
     setEspnSwid('');
     setEspnS2('');
     setEspnNativeSession(null);
-    setEspnWeek(String(slateMeta.week || 8));
+    setEspnWeek(String(slateMeta.week || FALLBACK_NFL_WEEK));
     setEspnSeason('2026');
     if (Capacitor.isNativePlatform()) {
       try {
@@ -1937,7 +2317,7 @@ export default function App() {
         }
         setEspnNativeSession({ swid, espnS2 });
         if (result.leagueId) setEspnLeagueId(String(result.leagueId));
-        setShowEspn(true);
+        selectConnectTab('espn');
         setSyncStatus('Signed in on ESPN’s page. Pick your team. That sign-in is used once, then discarded.');
       } catch (error) {
         const message = String(error?.message || '');
@@ -1947,7 +2327,7 @@ export default function App() {
       }
       return;
     }
-    setShowEspn(true);
+    selectConnectTab('espn');
   };
 
   const loadEspnLeague = async () => {
@@ -2063,7 +2443,7 @@ export default function App() {
     setYahooIngestError('');
     setYahooPaste('');
     setYahooLeagueName('');
-    setShowYahooIngest(false);
+    closeConnect();
     setSyncStatus(`Imported ${myStarters.length} starters and ${oppStarters.length} threats into ${leagueName}.`);
   };
 
@@ -2142,6 +2522,34 @@ export default function App() {
   );
 
   const filterCount = Number(boardFilters.liveOnly) + Number(boardFilters.redZoneOnly) + Number(boardFilters.hideFinal);
+  const leagueSortReadyRef = useRef(false);
+
+  useEffect(() => {
+    if (leagueSortReadyRef.current || !games.length) return;
+    leagueSortReadyRef.current = true;
+    const live = games.some((game) => game.gameStatus === 'IN_PROGRESS' || /\bLIVE\b/i.test(`${game.status || ''} ${game.time || ''}`));
+    setLeagueSort(live ? 'closest' : 'standing');
+  }, [games]);
+
+  const sortedLeagues = useMemo(() => {
+    const list = [...leagues];
+    list.sort((a, b) => {
+      if (leagueSort === 'standing') {
+        const ar = Number(leagueSideRecord(a, 'my').rank) || 99;
+        const br = Number(leagueSideRecord(b, 'my').rank) || 99;
+        if (ar !== br) return ar - br;
+      } else if (leagueSort === 'win') {
+        const delta = matchupOutlook(b).myPct - matchupOutlook(a).myPct;
+        if (delta) return delta;
+      } else {
+        const ad = Math.abs((finiteNumber(a.myScore) ?? 0) - (finiteNumber(a.oppScore) ?? 0));
+        const bd = Math.abs((finiteNumber(b.myScore) ?? 0) - (finiteNumber(b.oppScore) ?? 0));
+        if (ad !== bd) return ad - bd;
+      }
+      return getUserTeamName(a).localeCompare(getUserTeamName(b));
+    });
+    return list;
+  }, [leagues, leagueSort]);
 
   const getGamePlayers = (game) => {
     if (!game) return [];
@@ -2171,8 +2579,9 @@ export default function App() {
         gameClock: b.status || b.time
       });
       if (asWindow.rank !== bsWindow.rank) return asWindow.rank - bsWindow.rank;
-      if (asWindow.id === 'early' || asWindow.id === 'afternoon') return exposure(b) - exposure(a);
-      return 0;
+      const kickoffDelta = kickoffMillis(a.kickoff) - kickoffMillis(b.kickoff);
+      if (kickoffDelta) return kickoffDelta;
+      return exposure(b) - exposure(a);
     });
   }, [games, playerMasterIndex]);
 
@@ -2237,6 +2646,59 @@ export default function App() {
     return <span className={`font-bold text-right leading-tight ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>Neutral / Free Agent</span>;
   };
 
+  const connectTabs = (
+    <div className="grid grid-cols-3 gap-1.5" role="tablist" aria-label="League platform">
+      {[
+        ['yahoo', '🟣 Yahoo'],
+        ['sleeper', '🟢 Sleeper'],
+        ['espn', '🔴 ESPN']
+      ].map(([id, label]) => {
+        const active = connectTab === id;
+        const activeClass = id === 'yahoo'
+          ? 'bg-purple-600 border-purple-500 text-white'
+          : id === 'sleeper'
+            ? 'bg-emerald-600 border-emerald-500 text-white'
+            : 'bg-red-600 border-red-500 text-white';
+        return (
+          <button
+            key={id}
+            type="button"
+            role="tab"
+            aria-selected={active}
+            onClick={() => {
+              if (id === 'espn') openEspnConnect();
+              else selectConnectTab(id);
+            }}
+            className={`min-h-11 rounded-xl text-xs font-black border ${
+              active
+                ? activeClass
+                : isLight
+                  ? 'bg-white border-slate-200 text-slate-600'
+                  : 'bg-slate-950 border-slate-700 text-slate-300'
+            }`}
+          >
+            {label}
+          </button>
+        );
+      })}
+    </div>
+  );
+
+  const syncPhoneButton = (
+    <button
+      type="button"
+      onClick={() => {
+        closeConnect();
+        openMobileSync();
+      }}
+      className={`w-full min-h-11 rounded-xl border text-xs font-black ${
+        isLight ? 'border-slate-200 text-slate-700 bg-slate-50' : 'border-slate-700 text-slate-200 bg-slate-950'
+      }`}
+    >
+      📱 Sync to Phone (QR / Link)
+    </button>
+  );
+
   return (
     <div className={`min-h-screen pb-[calc(7.5rem+env(safe-area-inset-bottom))] font-sans transition-colors duration-200 ${
       isLight ? 'bg-slate-50 text-slate-900' : 'bg-slate-950 text-slate-100'
@@ -2254,9 +2716,12 @@ export default function App() {
           </div>
           <div className="relative z-50 flex items-center gap-1.5 shrink-0">
             <button
-            onClick={() => setView(view === 'game-slate' ? 'matchups' : 'game-slate')}
+            type="button"
+            aria-haspopup="dialog"
+            aria-expanded={showWeekPicker}
+            onClick={() => setShowWeekPicker((open) => !open)}
             className={`shrink-0 h-9 px-2 rounded-lg text-[10px] font-black border whitespace-nowrap transition ${
-              view === 'game-slate'
+              showWeekPicker || view === 'game-slate'
                 ? isLight ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-emerald-950 text-emerald-300 border-emerald-600'
                 : isLight ? 'bg-slate-100 text-slate-700 border-slate-300 hover:bg-slate-200' : 'bg-slate-900 text-slate-200 border-slate-700 hover:bg-slate-800'
             }`}
@@ -2300,6 +2765,59 @@ export default function App() {
               )}
               <span aria-hidden="true">▾</span>
             </button>
+            {showWeekPicker && (
+              <>
+                <button
+                  type="button"
+                  aria-label="Close week picker"
+                  className="fixed inset-0 z-40 cursor-default"
+                  onClick={() => setShowWeekPicker(false)}
+                />
+                <div
+                  role="dialog"
+                  aria-label="Choose NFL week"
+                  className={`absolute right-0 top-11 z-50 w-64 rounded-2xl border p-3 shadow-2xl ${
+                    isLight ? 'bg-white border-slate-200' : 'bg-slate-900 border-slate-700'
+                  }`}
+                >
+                  <div className={`text-[10px] font-black uppercase tracking-wider ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+                    NFL week
+                  </div>
+                  <div className="grid grid-cols-6 gap-1 mt-2">
+                    {Array.from({ length: 18 }, (_, index) => index + 1).map((week) => {
+                      const selected = Number(slateMeta.week) === week;
+                      return (
+                        <button
+                          key={week}
+                          type="button"
+                          aria-pressed={selected}
+                          onClick={() => chooseWeek(week)}
+                          className={`h-8 rounded-lg text-[11px] font-black border ${
+                            selected
+                              ? 'bg-emerald-600 text-white border-emerald-600'
+                              : isLight ? 'bg-slate-50 text-slate-700 border-slate-200' : 'bg-slate-950 text-slate-300 border-slate-800'
+                          }`}
+                        >
+                          {week}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowWeekPicker(false);
+                      setView(view === 'game-slate' ? 'matchups' : 'game-slate');
+                    }}
+                    className={`mt-2 w-full min-h-9 rounded-xl border text-[11px] font-black ${
+                      isLight ? 'border-slate-200 text-slate-700' : 'border-slate-700 text-slate-200'
+                    }`}
+                  >
+                    {view === 'game-slate' ? 'Back to board' : 'Open game slate'}
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         </div>
         {view === 'matchups' && leagues.length > 0 && (
@@ -2366,7 +2884,14 @@ export default function App() {
       {/* Main Container */}
       <main className="max-w-md mx-auto p-3 space-y-3">
         {syncStatus && (
-          <div className="bg-purple-950/90 text-purple-200 border border-purple-700 px-3 py-2.5 rounded-xl text-xs font-mono font-bold text-center shadow-lg">
+          <div
+            role="status"
+            className={`px-3 py-2.5 rounded-xl text-xs font-mono font-bold text-center shadow-lg border ${
+              /missing|could not|did not/i.test(syncStatus)
+                ? 'bg-rose-950/95 text-rose-100 border-rose-600'
+                : 'bg-purple-950/90 text-purple-200 border-purple-700'
+            }`}
+          >
             {syncStatus}
           </div>
         )}
@@ -2382,23 +2907,13 @@ export default function App() {
             <p className={`text-xs leading-relaxed ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
               Yahoo sign-in brings every NFL team on that account onto this phone. Each phone keeps its own leagues.
             </p>
-            <div className="flex flex-wrap items-center justify-center gap-2">
-              <button
-                type="button"
-                onClick={handleConnectYahoo}
-                className="px-3.5 py-2 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-xs font-black shadow-lg transition"
-              >
-                Connect Yahoo
-              </button>
-              <button
-                onClick={openYahooIngest}
-                className={`px-3.5 py-2 rounded-xl text-xs font-black border transition ${
-                  isLight ? 'border-slate-300 text-slate-700' : 'border-slate-700 text-slate-200'
-                }`}
-              >
-                Import League
-              </button>
-            </div>
+            <button
+              type="button"
+              onClick={() => selectConnectTab('yahoo')}
+              className="px-3.5 py-2 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-xs font-black shadow-lg transition"
+            >
+              + Connect / Import League
+            </button>
           </div>
         )}
         {view === 'matchups' && leagues.length > 0 && (
@@ -2542,6 +3057,7 @@ export default function App() {
                               <div className="min-w-0">
                                 <div className={`font-bold text-xs truncate ${isLight ? 'text-slate-900' : 'text-white'}`}>{player.name}</div>
                                 <div className={`text-[10px] ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>{player.position} • {player.nflTeam}</div>
+                                <ConnotationBadge player={player} isLight={isLight} />
                               <div className="mt-0.5">{renderStance(player)}</div>
                               </div>
                             </div>
@@ -2578,31 +3094,35 @@ export default function App() {
         {/* VIEW 3: ALL LEAGUES */}
         {view === 'all-leagues' && (
           <div className="space-y-3">
-            <div className={`p-4 rounded-2xl border flex flex-col gap-3 shadow-sm ${
-              isLight ? 'bg-white border-slate-200' : 'bg-slate-900 border-slate-800'
-            }`}>
-              <div className="flex justify-between items-center">
-                <div>
-                  <div className={`font-black text-sm ${isLight ? 'text-slate-900' : 'text-white'}`}>
-                    Platform Integration
-                  </div>
-                  <div className={`text-xs ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
-                    Sync all your Yahoo fantasy rosters automatically
-                  </div>
-                </div>
-                <button
-                  onClick={handleConnectYahoo}
-                  disabled={isSyncing}
-                  className="px-3.5 py-2 rounded-xl bg-purple-600 hover:bg-purple-500 active:scale-95 text-white text-xs font-black shadow-lg transition flex items-center gap-1.5"
-                >
-                  <span>⚡</span>
-                  <span>{isSyncing ? 'Connecting...' : 'Connect Yahoo'}</span>
-                </button>
-              </div>
-            </div>
+            <button
+              type="button"
+              onClick={() => selectConnectTab('yahoo')}
+              className="w-full min-h-11 rounded-2xl bg-purple-600 hover:bg-purple-500 text-white text-sm font-black shadow-lg"
+            >
+              + Connect / Import League
+            </button>
 
-            <div className={`text-xs font-black uppercase tracking-wider ${isLight ? 'text-slate-700' : 'text-slate-300'}`}>
-              Connected Leagues ({leagues.length})
+            <div className="flex items-center justify-between gap-2">
+              <div className={`text-xs font-black uppercase tracking-wider ${isLight ? 'text-slate-700' : 'text-slate-300'}`}>
+                Connected Leagues ({leagues.length})
+              </div>
+              <label className="shrink-0">
+                <span className="sr-only">Sort leagues</span>
+                <select
+                  value={leagueSort}
+                  onChange={(event) => {
+                    setLeagueSort(event.target.value);
+                    tapHaptic();
+                  }}
+                  className={`max-w-[11.5rem] rounded-xl border px-2 py-1.5 text-[11px] font-black ${
+                    isLight ? 'bg-white border-slate-300 text-slate-800' : 'bg-slate-950 border-slate-700 text-slate-100'
+                  }`}
+                >
+                  <option value="closest">⚡ Closest Matchup</option>
+                  <option value="standing">🏆 League Standing</option>
+                  <option value="win">🎯 Highest Win Probability</option>
+                </select>
+              </label>
             </div>
 
             {leagues.length === 0 && (
@@ -2610,28 +3130,25 @@ export default function App() {
                 isLight ? 'bg-white border-slate-200' : 'bg-slate-900 border-slate-800'
               }`}>
                 <div className={`text-sm font-black ${isLight ? 'text-slate-900' : 'text-white'}`}>
-                  Sync your first league via the extension or import tool
+                  Connect a Yahoo, Sleeper, or ESPN league
                 </div>
-                <button
-                  onClick={openYahooIngest}
-                  className="px-3.5 py-2 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-xs font-black shadow-lg transition"
-                >
-                  Import League
-                </button>
               </div>
             )}
 
-            {leagues.map((lg) => {
+            {sortedLeagues.map((lg) => {
               const myScore = finiteNumber(lg.myScore) ?? 0;
               const oppScore = finiteNumber(lg.oppScore) ?? 0;
               const ahead = myScore > oppScore;
               const behind = oppScore > myScore;
+              const nailbiter = Math.abs(myScore - oppScore) <= 10 && leagueHasLivePlayers(lg, games);
               return (
               <div
                 key={lg.id}
                 onClick={() => setActiveLeagueDrawer(lg)}
                 className={`rounded-3xl p-4 space-y-3 cursor-pointer border shadow-sm transition ${
-                  ahead
+                  nailbiter
+                    ? 'rootmap-nailbiter border-amber-400'
+                    : ahead
                     ? isLight
                       ? 'bg-white border-emerald-200 hover:border-emerald-300'
                       : 'bg-gradient-to-b from-slate-900 to-emerald-950/40 border-emerald-900 hover:border-emerald-700'
@@ -2642,9 +3159,15 @@ export default function App() {
                       : isLight
                         ? 'bg-white border-slate-200 hover:border-slate-300'
                         : 'bg-slate-900 border-slate-700 hover:border-slate-600'
-                }`}
+                } ${nailbiter ? (isLight ? 'bg-white' : 'bg-slate-900') : ''}`}
               >
+                {nailbiter && (
+                  <div className={`text-[10px] font-black uppercase tracking-wider ${isLight ? 'text-amber-700' : 'text-amber-300'}`}>
+                    Nailbiter
+                  </div>
+                )}
                 <LeagueScoreboard league={lg} isLight={isLight} />
+                <MatchupLineups league={lg} week={selectedWeek} isLight={isLight} />
                 <div className={`flex justify-between items-center gap-2 pt-2 border-t text-[11px] ${
                   isLight ? 'border-slate-100 text-slate-500' : 'border-white/10 text-slate-400'
                 }`}>
@@ -2917,7 +3440,7 @@ export default function App() {
             role="dialog"
             aria-modal="true"
             aria-labelledby="sort-filter-title"
-            className={`border-t rounded-t-3xl p-5 max-w-md w-full space-y-4 shadow-2xl pb-[calc(1.25rem+env(safe-area-inset-bottom))] ${
+            className={`border-t rounded-t-3xl p-5 max-w-md w-full max-h-[min(92vh,44rem)] overflow-y-auto space-y-4 shadow-2xl pb-[calc(1.25rem+env(safe-area-inset-bottom))] ${
               isLight ? 'bg-white border-slate-200' : 'bg-slate-900 border-slate-800'
             }`}
           >
@@ -2925,9 +3448,34 @@ export default function App() {
             <h3 id="sort-filter-title" className={`text-base font-black ${isLight ? 'text-slate-900' : 'text-white'}`}>
               Sort
             </h3>
+            <div>
+              <div className={`text-[10px] font-black uppercase tracking-wider mb-1.5 ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+                Week
+              </div>
+              <div className="grid grid-cols-9 gap-1">
+                {Array.from({ length: 18 }, (_, index) => index + 1).map((week) => {
+                  const selected = Number(slateMeta.week) === week;
+                  return (
+                    <button
+                      key={week}
+                      type="button"
+                      aria-pressed={selected}
+                      onClick={() => chooseWeek(week)}
+                      className={`h-8 rounded-lg text-[11px] font-black border ${
+                        selected
+                          ? isLight ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-emerald-950 text-emerald-300 border-emerald-600'
+                          : isLight ? 'bg-slate-50 text-slate-700 border-slate-200' : 'bg-slate-950 text-slate-300 border-slate-800'
+                      }`}
+                    >
+                      {week}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
             <div className="space-y-1.5">
               {[
-                { id: 'slate', icon: '🏈', label: 'Game Slate', detail: 'Live, 1:00, 4:00, Sunday and Monday night. Final, then bye week.', defaultSort: true },
+                { id: 'slate', icon: '🏈', label: 'Game Slate', detail: 'Live first, then kickoff time: Thursday, Sunday morning, 1:00, 4:00, Sunday night, Monday night. Final, then bye week.', defaultSort: true },
                 { id: 'livePoints', icon: '⚡', label: 'Most Live Points', detail: 'Leaderboard by points already scored.' },
                 { id: 'boom', icon: '🚀', label: 'Points Above Projection', detail: 'Top booms and value added.' },
                 { id: 'exposure', icon: '🔥', label: 'Portfolio Exposure', detail: 'Most starts plus opponents.' },
@@ -2993,6 +3541,13 @@ export default function App() {
                 );
               })}
             </div>
+            <button
+              type="button"
+              onClick={openMobileSync}
+              className="w-full min-h-11 rounded-xl bg-emerald-600 text-white text-xs font-black"
+            >
+              Export / Sync to Mobile
+            </button>
             <div className="grid grid-cols-3 gap-2 pt-1">
               <button
                 type="button"
@@ -3202,12 +3757,12 @@ export default function App() {
               <div className="grid grid-cols-2 gap-1.5">
                 <button
                   type="button"
-                  onClick={exportSetup}
+                  onClick={openMobileSync}
                   className={`py-1.5 rounded-xl text-[11px] font-black border ${
                     isLight ? 'bg-slate-50 text-slate-800 border-slate-200 hover:bg-slate-100' : 'bg-slate-950 text-slate-200 border-slate-700 hover:bg-slate-800'
                   }`}
                 >
-                  Export Setup
+                  Sync to phone
                 </button>
                 <button
                   type="button"
@@ -3228,6 +3783,110 @@ export default function App() {
                   {leagueBackupMessage}
                 </p>
               )}
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {showMobileSync && createPortal(
+        <div
+          onClick={() => setShowMobileSync(false)}
+          className="fixed inset-0 z-[80] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
+          role="presentation"
+        >
+          <div
+            onClick={(event) => event.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="mobile-sync-title"
+            className={`rounded-3xl p-5 max-w-md w-full space-y-3 shadow-2xl border max-h-[min(92vh,40rem)] overflow-y-auto ${
+              isLight ? 'bg-white border-slate-200' : 'bg-slate-900 border-slate-800'
+            }`}
+          >
+            <div className="flex justify-between items-start gap-3">
+              <div>
+                <h3 id="mobile-sync-title" className={`text-base font-black ${isLight ? 'text-slate-900' : 'text-white'}`}>
+                  Export / Sync to Mobile
+                </h3>
+                <p className={`text-xs mt-1 leading-snug ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+                  {mobileSyncNote}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowMobileSync(false)}
+                className={`text-xl leading-none ${isLight ? 'text-slate-400 hover:text-slate-700' : 'text-slate-500 hover:text-white'}`}
+                aria-label="Close sync to mobile"
+              >
+                ✕
+              </button>
+            </div>
+            {mobileSyncLink && (
+              <textarea
+                readOnly
+                value={mobileSyncLink}
+                className={`w-full h-20 rounded-xl border p-2 text-[11px] font-mono ${
+                  isLight ? 'bg-slate-50 border-slate-200 text-slate-800' : 'bg-slate-950 border-slate-700 text-slate-200'
+                }`}
+              />
+            )}
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                disabled={!mobileSyncLink}
+                onClick={async () => {
+                  const copied = await copyText(mobileSyncLink);
+                  setMobileSyncNote(copied ? 'Phone link copied.' : 'Select the link and copy it.');
+                }}
+                className="min-h-11 rounded-xl bg-emerald-600 text-white text-[11px] font-black disabled:opacity-40"
+              >
+                Copy link
+              </button>
+              <button
+                type="button"
+                disabled={!mobileSyncCode}
+                onClick={async () => {
+                  const copied = await copyText(mobileSyncCode);
+                  setMobileSyncNote(copied ? 'Setup code copied. Paste it on the phone.' : 'Select the code and copy it.');
+                }}
+                className={`min-h-11 rounded-xl border text-[11px] font-black disabled:opacity-40 ${
+                  isLight ? 'border-slate-200 text-slate-800' : 'border-slate-700 text-slate-200'
+                }`}
+              >
+                Copy code
+              </button>
+            </div>
+            {mobileSyncCode && (
+              <textarea
+                readOnly
+                value={mobileSyncCode}
+                className={`w-full h-16 rounded-xl border p-2 text-[11px] font-mono ${
+                  isLight ? 'bg-slate-50 border-slate-200 text-slate-800' : 'bg-slate-950 border-slate-700 text-slate-200'
+                }`}
+              />
+            )}
+            <div className={`pt-2 border-t space-y-2 ${isLight ? 'border-slate-200' : 'border-slate-800'}`}>
+              <div className={`text-[10px] font-black uppercase tracking-wider ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+                Import on this device
+              </div>
+              <textarea
+                value={leagueBackupPaste}
+                onChange={(event) => setLeagueBackupPaste(event.target.value)}
+                placeholder="Paste a phone link or setup code"
+                className={`w-full h-20 rounded-xl border p-2 text-[11px] font-mono ${
+                  isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-slate-950 border-slate-700 text-slate-100'
+                }`}
+              />
+              <button
+                type="button"
+                onClick={saveImportedSetup}
+                className={`w-full min-h-11 rounded-xl border text-xs font-black ${
+                  isLight ? 'border-slate-200 text-slate-800' : 'border-slate-700 text-slate-200'
+                }`}
+              >
+                Import setup
+              </button>
             </div>
           </div>
         </div>,
@@ -3318,7 +3977,7 @@ export default function App() {
 
       {showSleeper && createPortal(
         <div
-          onClick={() => !sleeperBusy && setShowSleeper(false)}
+          onClick={() => !sleeperBusy && closeConnect()}
           className="fixed inset-0 z-[85] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
           role="presentation"
         >
@@ -3334,7 +3993,7 @@ export default function App() {
             <div className="flex justify-between items-start gap-3">
               <div>
                 <h3 id="sleeper-connect-title" className={`text-base font-black ${isLight ? 'text-slate-900' : 'text-white'}`}>
-                  Connect Sleeper
+                  Connect / Import League
                 </h3>
                 <p className={`text-xs mt-1 leading-relaxed ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
                   Enter your Sleeper username. RootMap pulls your 2026 leagues and this week’s starters. No password.
@@ -3342,21 +4001,23 @@ export default function App() {
               </div>
               <button
                 type="button"
-                onClick={() => setShowSleeper(false)}
+                onClick={closeConnect}
                 disabled={Boolean(sleeperBusy)}
                 className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm shrink-0 ${
                   isLight ? 'bg-slate-100 text-slate-500 hover:bg-slate-200' : 'bg-slate-800 text-slate-400'
                 }`}
-                aria-label="Close Sleeper connect"
+                aria-label="Close connect"
               >
                 ✕
               </button>
             </div>
 
+            {connectTabs}
+
             <div className="grid grid-cols-[1fr_5.5rem] gap-2">
               <div>
                 <label className={`text-[11px] font-black uppercase tracking-wider block mb-1 ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
-                  Sleeper username
+                  Enter Sleeper Username
                 </label>
                 <input
                   type="text"
@@ -3365,7 +4026,7 @@ export default function App() {
                     setSleeperUsername(e.target.value);
                     if (sleeperError) setSleeperError('');
                   }}
-                  placeholder="username"
+                  placeholder="Enter Sleeper Username"
                   autoComplete="username"
                   className={`w-full px-3 py-2 rounded-xl text-xs font-bold select-text focus:outline-none ${
                     isLight
@@ -3403,7 +4064,7 @@ export default function App() {
                   : 'border-emerald-600 text-emerald-300 bg-emerald-950 hover:bg-emerald-900'
               }`}
             >
-              {sleeperBusy && !sleeperChoices.length ? sleeperBusy : 'Find leagues'}
+              {sleeperBusy && !sleeperChoices.length ? sleeperBusy : 'Fetch Sleeper Leagues'}
             </button>
 
             {sleeperChoices.length > 0 && (
@@ -3463,6 +4124,7 @@ export default function App() {
                 {sleeperError}
               </div>
             )}
+            {syncPhoneButton}
           </div>
         </div>,
         document.body
@@ -3486,7 +4148,7 @@ export default function App() {
             <div className="flex justify-between items-start gap-3">
               <div>
                 <h3 id="espn-connect-title" className={`text-base font-black ${isLight ? 'text-slate-900' : 'text-white'}`}>
-                  Connect ESPN
+                  Connect / Import League
                 </h3>
                 <p className={`text-xs mt-1 leading-relaxed ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
                   Load a public ESPN league, pick your team, and RootMap reads that week’s starters.
@@ -3499,11 +4161,13 @@ export default function App() {
                 className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm shrink-0 ${
                   isLight ? 'bg-slate-100 text-slate-500 hover:bg-slate-200' : 'bg-slate-800 text-slate-400'
                 }`}
-                aria-label="Close ESPN connect"
+                aria-label="Close connect"
               >
                 ✕
               </button>
             </div>
+
+            {connectTabs}
 
             <div>
               <label className={`text-[11px] font-black uppercase tracking-wider block mb-1 ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
@@ -3700,64 +4364,13 @@ export default function App() {
                 {espnError}
               </div>
             )}
-          </div>
-        </div>,
-        document.body
-      )}
 
-      {showYahooIngest && (
-        <div
-          onClick={() => setShowYahooIngest(false)}
-          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
-        >
-          <div
-            onClick={(e) => e.stopPropagation()}
-            className={`rounded-3xl p-5 max-w-md w-full space-y-4 shadow-2xl border ${
-              isLight ? 'bg-white border-slate-200' : 'bg-slate-900 border-slate-800'
-            }`}
-          >
-            <div className="flex justify-between items-start gap-3">
-              <div>
-                <h3 className={`text-base font-black ${isLight ? 'text-slate-900' : 'text-white'}`}>
-                  Import League
-                </h3>
-                <p className={`text-xs mt-1 leading-relaxed ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
-                  On a Yahoo or ESPN Fantasy matchup page, press Ctrl+A, Ctrl+C, and paste here. ESPN starter tables are read up to the bench.
-                </p>
-              </div>
-              <button
-                onClick={() => setShowYahooIngest(false)}
-                className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm shrink-0 ${
-                  isLight ? 'bg-slate-100 text-slate-500 hover:bg-slate-200' : 'bg-slate-800 text-slate-400'
-                }`}
-              >
-                ✕
-              </button>
-            </div>
-
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                onClick={openSleeperConnect}
-                className="py-3 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-black shadow-lg"
-              >
-                Connect Sleeper
-              </button>
-              <button
-                type="button"
-                onClick={openEspnConnect}
-                className="py-3 rounded-2xl bg-red-600 hover:bg-red-500 text-white text-sm font-black shadow-lg"
-              >
-                Connect ESPN
-              </button>
-            </div>
-            <p className={`text-[11px] leading-snug -mt-2 ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
-              Or paste a Yahoo or ESPN matchup below.
-            </p>
-
-            <div>
-              <label className={`text-[11px] font-black uppercase tracking-wider block mb-1 ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
-                League Name
+            <div className={`pt-2 border-t space-y-2 ${isLight ? 'border-slate-100' : 'border-slate-800'}`}>
+              <p className={`text-xs leading-relaxed ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+                Private league fallback: on the matchup page, press Ctrl+A, Ctrl+C, and paste it here.
+              </p>
+              <label className={`text-[11px] font-black uppercase tracking-wider block ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+                League name
               </label>
               <input
                 type="text"
@@ -3766,51 +4379,102 @@ export default function App() {
                 placeholder={`League ${leagues.length + 1}`}
                 className={`w-full px-3 py-2 rounded-xl text-xs font-bold select-text focus:outline-none ${
                   isLight
-                    ? 'bg-slate-50 border border-slate-200 text-slate-800 placeholder-slate-400 focus:border-purple-400'
-                    : 'bg-slate-950 border border-slate-700 text-slate-200 placeholder-slate-500 focus:border-purple-500'
+                    ? 'bg-slate-50 border border-slate-200 text-slate-800 placeholder-slate-400 focus:border-red-400'
+                    : 'bg-slate-950 border border-slate-700 text-slate-200 placeholder-slate-500 focus:border-red-500'
                 }`}
               />
+              <textarea
+                value={yahooPaste}
+                onChange={(e) => {
+                  setYahooPaste(e.target.value);
+                  if (yahooIngestError) setYahooIngestError('');
+                }}
+                placeholder="Paste an ESPN or Yahoo matchup here…"
+                className={`w-full h-32 rounded-2xl p-3 text-xs font-mono leading-relaxed resize-y select-text focus:outline-none ${
+                  isLight
+                    ? 'bg-slate-50 border border-slate-200 text-slate-800 placeholder-slate-400 focus:border-red-400'
+                    : 'bg-slate-950 border border-slate-700 text-slate-200 placeholder-slate-500 focus:border-red-500'
+                }`}
+              />
+              {yahooIngestError && (
+                <div className={`text-xs font-bold rounded-xl px-3 py-2 border ${
+                  isLight ? 'bg-rose-50 text-rose-700 border-rose-200' : 'bg-rose-950/70 text-rose-300 border-rose-800'
+                }`}>
+                  {yahooIngestError}
+                </div>
+              )}
+              <button
+                type="button"
+                onClick={handleImportYahooMatchup}
+                disabled={!yahooPaste.trim()}
+                className="w-full py-2.5 rounded-xl bg-red-600 hover:bg-red-500 disabled:opacity-40 text-white text-xs font-black"
+              >
+                Import pasted matchup
+              </button>
+            </div>
+            {syncPhoneButton}
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {showYahooIngest && (
+        <div
+          onClick={() => !isSyncing && closeConnect()}
+          className="fixed inset-0 z-[85] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
+          role="presentation"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="yahoo-connect-title"
+            className={`rounded-3xl p-5 max-w-md w-full max-h-[85vh] overflow-y-auto space-y-4 shadow-2xl border ${
+              isLight ? 'bg-white border-slate-200' : 'bg-slate-900 border-slate-800'
+            }`}
+          >
+            <div className="flex justify-between items-start gap-3">
+              <div>
+                <h3 id="yahoo-connect-title" className={`text-base font-black ${isLight ? 'text-slate-900' : 'text-white'}`}>
+                  Connect / Import League
+                </h3>
+                <p className={`text-xs mt-1 leading-relaxed ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+                  Sign in with Yahoo to automatically sync all your leagues and live lineups.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={closeConnect}
+                disabled={isSyncing}
+                className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm shrink-0 ${
+                  isLight ? 'bg-slate-100 text-slate-500 hover:bg-slate-200' : 'bg-slate-800 text-slate-400'
+                }`}
+                aria-label="Close connect"
+              >
+                ✕
+              </button>
             </div>
 
-            <textarea
-              value={yahooPaste}
-              onChange={(e) => {
-                setYahooPaste(e.target.value);
-                if (yahooIngestError) setYahooIngestError('');
-              }}
-              placeholder="Paste a Yahoo or ESPN matchup here…"
-              className={`w-full h-48 rounded-2xl p-3 text-xs font-mono leading-relaxed resize-y select-text focus:outline-none ${
-                isLight
-                  ? 'bg-slate-50 border border-slate-200 text-slate-800 placeholder-slate-400 focus:border-purple-400'
-                  : 'bg-slate-950 border border-slate-700 text-slate-200 placeholder-slate-500 focus:border-purple-500'
-              }`}
-            />
+            {connectTabs}
 
-            {yahooIngestError && (
-              <div className={`text-xs font-bold rounded-xl px-3 py-2 border ${
-                isLight ? 'bg-rose-50 text-rose-700 border-rose-200' : 'bg-rose-950/70 text-rose-300 border-rose-800'
+            <button
+              type="button"
+              onClick={handleConnectYahoo}
+              disabled={isSyncing}
+              className="w-full min-h-12 rounded-2xl bg-purple-600 hover:bg-purple-500 disabled:opacity-60 text-white text-sm font-black shadow-lg"
+            >
+              {isSyncing ? 'Connecting...' : 'Sign in with Yahoo'}
+            </button>
+
+            {syncStatus && (
+              <div role="alert" className={`text-xs font-bold rounded-xl px-3 py-2 border ${
+                isLight ? 'bg-rose-50 text-rose-700 border-rose-200' : 'bg-rose-950/70 text-rose-200 border-rose-700'
               }`}>
-                {yahooIngestError}
+                {syncStatus}
               </div>
             )}
 
-            <div className="flex gap-2">
-              <button
-                onClick={() => setShowYahooIngest(false)}
-                className={`flex-1 py-2.5 rounded-xl text-xs font-bold border transition ${
-                  isLight ? 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50' : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'
-                }`}
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleImportYahooMatchup}
-                disabled={!yahooPaste.trim()}
-                className="flex-1 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 disabled:opacity-40 disabled:hover:bg-purple-600 text-white text-xs font-black shadow-lg transition"
-              >
-                Import Matchup
-              </button>
-            </div>
+            {syncPhoneButton}
           </div>
         </div>
       )}
