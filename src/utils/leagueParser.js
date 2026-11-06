@@ -88,7 +88,7 @@ const NICKNAME_TO_TEAM = {
   washington: 'WAS'
 };
 
-const SLOT_ALT = 'D\\/ST|DST|DEF|FLEX|W\\/R\\/T|QB|RB|WR|TE|LB|DL|DB|DE|DT|CB|DP|ED|K|S';
+const SLOT_ALT = 'D\\/ST|DST|DEF|FLEX|RB\\/WR|W\\/R\\/T|QB|RB|WR|TE|LB|DL|DB|DE|DT|CB|DP|ED|K|S';
 const POS_ALT = SLOT_ALT;
 const STATUS_ALT = 'QUESTIONABLE|DOUBTFUL|OUT|DTD|PUP|SSPD|IR|Q|O|D|P';
 const SLOT_ONLY_RE = new RegExp(`^(?:${SLOT_ALT})$`, 'i');
@@ -142,19 +142,45 @@ function normalizeEspnPos(pos) {
   const p = String(pos || '').toUpperCase().trim();
   if (p === 'DST' || p === 'DEF' || p === 'D/ST') return 'D/ST';
   if (p === 'PK') return 'K';
-  if (p === 'W/R/T' || p === 'WR/TE' || p === 'W/R') return 'FLEX';
+  if (p === 'W/R/T' || p === 'WR/TE' || p === 'W/R' || p === 'RB/WR') return 'FLEX';
   return p;
 }
 
+function dedupePlayerName(raw) {
+  const text = String(raw || '').trim();
+  const collapsed = text.replace(/^(.{3,}?)\1$/i, '$1').trim();
+  if (collapsed !== text) return collapsed;
+  return text.replace(/^(.{3,}?)\s+\1$/i, '$1').trim();
+}
+
+function stripKickoffSuffix(raw) {
+  return String(raw || '')
+    .replace(/\s*(?:@|vs\.?|at)\s*[A-Za-z]{2,3}\s+(?:Sun|Mon|Tue|Wed|Thu|Fri|Sat)\s+\d{1,2}:\d{2}\s*(?:AM|PM)?\s*$/i, '')
+    .replace(/\s+(?:Sun|Mon|Tue|Wed|Thu|Fri|Sat)\s+\d{1,2}:\d{2}\s*(?:AM|PM)?\s*$/i, '')
+    .trim();
+}
+
 function cleanPlayerName(raw) {
-  let s = String(raw || '').replace(/\s+/g, ' ').trim();
+  let s = dedupePlayerName(stripKickoffSuffix(String(raw || '').replace(/\s+/g, ' ').trim()));
   const tail = new RegExp(`\\s+(?:\\((?:${STATUS_ALT})\\)|(?:${STATUS_ALT}))\\s*$`, 'i');
   let prev = '';
   while (s && s !== prev) {
     prev = s;
-    s = s.replace(tail, '').trim();
+    s = dedupePlayerName(s.replace(tail, '').trim());
   }
   return s;
+}
+
+function isKickoffLine(line) {
+  const text = String(line || '').trim();
+  if (/^(?:Sun|Mon|Tue|Wed|Thu|Fri|Sat)\b/i.test(text) && /\d{1,2}:\d{2}/.test(text)) return true;
+  if (/^(?:@|vs\.?|v\.?|at)\s*[A-Za-z]{2,3}\b/i.test(text) && /(?:Sun|Mon|Tue|Wed|Thu|Fri|Sat)\b|\d{1,2}:\d{2}/i.test(text)) return true;
+  if (/^(?:@|vs\.?)?[A-Za-z]{2,3}\s+(?:Sun|Mon|Tue|Wed|Thu|Fri|Sat)\s+\d{1,2}:\d{2}\s*(?:AM|PM)?$/i.test(text)) return true;
+  return false;
+}
+
+function isEspnChromeLine(line) {
+  return /in play:|to play:|proj(?:ected)?\s*total|box score|quick box|\bmatchup\b/i.test(String(line || ''));
 }
 
 function defenseDisplayName(name) {
@@ -165,9 +191,18 @@ function defenseDisplayName(name) {
   return cleaned ? `${cleaned} D/ST` : '';
 }
 
-function isRosterStop(line) {
+function isIrSection(line, nextLine) {
+  if (!/^IR$/i.test(String(line || '').trim())) return false;
+  const next = String(nextLine || '').trim();
+  if (!next || SLOT_ONLY_RE.test(next) || STARTERS_RE.test(next) || /^BENCH\b/i.test(next)) return true;
+  if (canonTeam(next) || POS_ONLY_RE.test(next) || STATUS_ONLY_RE.test(next)) return false;
+  return true;
+}
+
+function isRosterStop(line, nextLine) {
   const s = String(line || '').trim();
   if (/^BENCH\b/i.test(s)) return true;
+  if (isIrSection(s, nextLine)) return true;
   if (!/^TOTALS?\b/i.test(s)) return false;
   return !/[A-Za-z]/.test(s.replace(/^TOTALS?\b/i, ''));
 }
@@ -247,7 +282,7 @@ function buildDefenseStarter({ name, team, rest }) {
 
 export function parseEspnPlayerRow(line) {
   const text = String(line || '').trim();
-  if (!text || isTableHeader(text) || isRosterStop(text) || STARTERS_RE.test(text)) return null;
+  if (!text || isKickoffLine(text) || isEspnChromeLine(text) || isTableHeader(text) || isRosterStop(text) || STARTERS_RE.test(text)) return null;
 
   const defenseTeam = text.match(DST_TEAM_RE);
   if (defenseTeam && canonTeam(defenseTeam[2])) {
@@ -298,7 +333,8 @@ export function isEspnPlayerRow(line) {
 
 function isSkippableHeaderLine(line) {
   if (/^week\s+\d+/i.test(line)) return true;
-  if (/^(matchup|espn|fantasy(?:\s+football)?|box\s*score|full\s+box|recap|schedule|starters|bench)$/i.test(line)) return true;
+  if (isEspnChromeLine(line) || isKickoffLine(line)) return true;
+  if (/^(matchup|espn|fantasy(?:\s+football)?|box\s*score|full\s+box|quick\s*box|recap|schedule|starters|bench)$/i.test(line)) return true;
   if (/^\d{1,2}:\d{2}\b/i.test(line)) return true;
   if (/^(am|pm|et|edt|est)$/i.test(line)) return true;
   return false;
@@ -317,6 +353,15 @@ function parseHeader(lines) {
   const teams = [];
   let want = null;
   lines.forEach((line) => {
+    if (/proj(?:ected)?\s*total/i.test(line)) {
+      want = 'proj';
+      const inlineTotal = line.match(/(\d{1,3}(?:\.\d{1,2})?)\s*$/);
+      if (inlineTotal && teams.length && /\d/.test(inlineTotal[1])) {
+        teams[teams.length - 1].projectedScore = parseFloat(inlineTotal[1]);
+        want = null;
+      }
+      return;
+    }
     if (isSkippableHeaderLine(line) || isTableHeader(line) || RECORD_RE.test(line)) return;
     const labeled = line.match(/^(proj(?:ected)?|score|fpts|pts)\s*[:\-]?\s*(\d{1,3}(?:\.\d{1,2})?)$/i);
     if (labeled && teams.length) {
@@ -326,8 +371,13 @@ function parseHeader(lines) {
       else last.score = value;
       return;
     }
-    if (/^proj(?:ected)?$/i.test(line)) {
+    if (/proj(?:ected)?(?:\s*total)?$/i.test(line)) {
       want = 'proj';
+      const inlineTotal = line.match(/(\d{1,3}(?:\.\d{1,2})?)\s*$/);
+      if (inlineTotal && teams.length && /proj/i.test(line)) {
+        teams[teams.length - 1].projectedScore = parseFloat(inlineTotal[1]);
+        want = null;
+      }
       return;
     }
     if (SCORE_RE.test(line)) {
@@ -395,8 +445,19 @@ function parseMultilineSlot(lines, start) {
 
   while (i < lines.length) {
     const line = lines[i];
-    if (STARTERS_RE.test(line) || isRosterStop(line) || SLOT_ONLY_RE.test(line) || isEspnPlayerRow(line)) break;
-    if (isTableHeader(line) || isDash(line) || STATUS_ONLY_RE.test(line)) {
+    if (/^IR$/i.test(line) && !isIrSection(line, lines[i + 1])) {
+      i += 1;
+      continue;
+    }
+    if (STARTERS_RE.test(line) || isRosterStop(line, lines[i + 1]) || SLOT_ONLY_RE.test(line) || isEspnPlayerRow(line)) break;
+    if (isTableHeader(line) || isDash(line) || STATUS_ONLY_RE.test(line) || isEspnChromeLine(line)) {
+      i += 1;
+      continue;
+    }
+    if (isKickoffLine(line)) {
+      const matchup = parseMatchupToken(line);
+      if (matchup && !gameMatchup) gameMatchup = matchup;
+      if (!status) status = line;
       i += 1;
       continue;
     }
@@ -442,7 +503,7 @@ function parseMultilineSlot(lines, start) {
       i += 1;
       continue;
     }
-    if (!name && /[A-Za-z]/.test(line) && !isStatusLine(line) && !STATUS_ONLY_RE.test(line)) {
+    if (!name && !isKickoffLine(line) && /[A-Za-z]/.test(line) && !isStatusLine(line) && !STATUS_ONLY_RE.test(line)) {
       name = /d\/st/i.test(line) ? defenseDisplayName(line) : cleanPlayerName(line);
       nflTeam = nflTeam || nicknameToTeam(name);
       if (/d\/st/i.test(line)) position = 'D/ST';
@@ -482,7 +543,7 @@ function parseStarterSection(lines) {
   let i = 0;
   while (i < lines.length) {
     const line = lines[i];
-    if (isRosterStop(line) || STARTERS_RE.test(line)) break;
+    if (isRosterStop(line, lines[i + 1]) || STARTERS_RE.test(line)) break;
     if (isTableHeader(line)) {
       i += 1;
       continue;
@@ -538,7 +599,9 @@ function finishStarter(player, side, oppName) {
     team: player.team || player.nflTeam,
     gameMatchup: player.gameMatchup || '',
     points: player.points || 0,
-    projPoints: player.projPoints ?? player.points ?? 0,
+    projPoints: player.projPoints != null
+      ? player.projPoints
+      : (Number(player.points) > 0 ? Number(player.points) : null),
     actualPoints: player.actualPoints ?? null,
     isLive: Boolean(player.isLive),
     inRedZone: false,
@@ -640,7 +703,7 @@ export function parseEspnMatchup(rawText) {
           }
 
           if (tokens.length >= 1) {
-            playerName = tokens[0].replace(/\s+(Q|IR|P|O|D)$/, '').trim();
+            playerName = cleanPlayerName(tokens[0]);
 
             if (slotCandidate === 'D/ST') {
               pos = 'D/ST';
@@ -661,7 +724,7 @@ export function parseEspnMatchup(rawText) {
             if (playerName && (team || pos === 'D/ST')) {
               starters.push({
                 id: `${playerName}-${team}-${pos}`.toLowerCase().replace(/[^a-z0-9]/g, '-'),
-                name: playerName.replace(/\s+(Q|IR|P|O|D)$/, '').trim(),
+                name: cleanPlayerName(playerName),
                 team: team || 'NFL',
                 position: pos,
                 opponent: opp || ''
@@ -707,7 +770,7 @@ function adaptFullBoxScore(parsed) {
       gameMatchup: game,
       gameClock: game || 'Scheduled',
       points: 0,
-      projPoints: 0,
+      projPoints: null,
       actualPoints: null,
       isLive: false,
       inRedZone: false,
@@ -733,9 +796,229 @@ function adaptFullBoxScore(parsed) {
   };
 }
 
+const DOUBLED_NAME_RE = /^(.{3,}?)\1$/i;
+const POINTS_LINE_RE = /^(?:--|[-–—]|\d{1,3}(?:\.\d{1,2})?)$/;
+
+function isDoubledName(line) {
+  return DOUBLED_NAME_RE.test(String(line || '').trim());
+}
+
+function isPointsLine(line) {
+  return POINTS_LINE_RE.test(String(line || '').trim());
+}
+
+function parsePointsLine(line) {
+  const text = String(line || '').trim();
+  if (!/^\d/.test(text)) return null;
+  const value = parseFloat(text);
+  return Number.isFinite(value) ? value : null;
+}
+
+function kickoffFields(line) {
+  const text = String(line || '').trim();
+  const match = text.match(/^(@|vs\.?|at)?\s*([A-Za-z]{2,3})\b/i);
+  const team = match ? canonTeam(match[2]) : '';
+  const away = Boolean(match && /^(@|at)$/i.test(match[1] || ''));
+  return {
+    gameMatchup: team ? `${away ? '@' : 'vs'} ${team}` : '',
+    gameClock: text || 'Scheduled'
+  };
+}
+
+function readSidePlayer(lines, start) {
+  const name = cleanPlayerName(lines[start]);
+  let i = start + 1;
+  if (
+    i < lines.length
+    && !isDoubledName(lines[i])
+    && !canonTeam(lines[i])
+    && !STATUS_ONLY_RE.test(lines[i])
+    && !SLOT_ONLY_RE.test(lines[i])
+    && !POS_ONLY_RE.test(lines[i])
+    && !isKickoffLine(lines[i])
+    && !isPointsLine(lines[i])
+    && !/^totals?$/i.test(lines[i])
+  ) {
+    i += 1;
+  }
+  if (i < lines.length && STATUS_ONLY_RE.test(lines[i])) i += 1;
+  let nflTeam = '';
+  let position = '';
+  let kickoff = '';
+  if (i < lines.length && canonTeam(lines[i])) {
+    nflTeam = canonTeam(lines[i]);
+    i += 1;
+  }
+  if (i < lines.length && (POS_ONLY_RE.test(lines[i]) || SLOT_ONLY_RE.test(lines[i]))) {
+    position = normalizeEspnPos(lines[i]);
+    i += 1;
+  }
+  if (i < lines.length && isKickoffLine(lines[i])) {
+    kickoff = lines[i];
+    i += 1;
+  }
+  const clock = kickoffFields(kickoff);
+  const display = /d\/st/i.test(name) ? defenseDisplayName(name) : name;
+  const resolvedTeam = nflTeam || nicknameToTeam(display);
+  const player = display && resolvedTeam
+    ? {
+      name: display,
+      nflTeam: resolvedTeam,
+      team: resolvedTeam,
+      position: position || (resolvedTeam ? 'D/ST' : ''),
+      slot: position || 'D/ST',
+      gameMatchup: clock.gameMatchup,
+      gameClock: kickoff || 'Scheduled',
+      points: 0,
+      projPoints: null,
+      actualPoints: null,
+      isLive: false
+    }
+    : null;
+  return { player, next: i };
+}
+
+function headerNameLike(line) {
+  const text = String(line || '').trim();
+  if (!text || !/[A-Za-z]/.test(text)) return false;
+  if (RECORD_RE.test(text) || SCORE_RE.test(text) || isEspnChromeLine(text)) return false;
+  if (/^chance to win$/i.test(text) || /on field|in red zone/i.test(text) || /^\d{1,3}%$/.test(text)) return false;
+  return true;
+}
+
+function parseSideHeader(lines) {
+  const teams = [];
+  lines.forEach((line, index) => {
+    if (!RECORD_RE.test(line)) return;
+    const prev = lines[index - 1];
+    const prev2 = lines[index - 2];
+    const name = headerNameLike(prev2) && headerNameLike(prev)
+      ? prev2
+      : (headerNameLike(prev) ? prev : '');
+    const recordMatch = line.match(/(\d{1,2})-(\d{1,2})(?:-(\d{1,2}))?/);
+    const record = recordMatch
+      ? {
+        wins: Number(recordMatch[1]),
+        losses: Number(recordMatch[2]),
+        ties: recordMatch[3] == null ? 0 : Number(recordMatch[3])
+      }
+      : null;
+    let score = null;
+    let projectedScore = null;
+    for (let cursor = index + 1; cursor < lines.length; cursor += 1) {
+      if (RECORD_RE.test(lines[cursor])) break;
+      if (score == null && SCORE_RE.test(lines[cursor])) score = parseFloat(lines[cursor]);
+      const proj = String(lines[cursor]).match(/proj(?:ected)?\s*total\s*:?\s*(\d{1,3}(?:\.\d{1,2})?)/i);
+      if (proj) projectedScore = parseFloat(proj[1]);
+    }
+    if (name) teams.push({ name, record, score: score ?? 0, projectedScore });
+  });
+  return {
+    userName: teams[0]?.name || 'My Team',
+    oppName: teams[1]?.name || 'Opponent',
+    myScore: teams[0]?.score ?? 0,
+    oppScore: teams[1]?.score ?? 0,
+    myProjected: teams[0]?.projectedScore ?? null,
+    oppProjected: teams[1]?.projectedScore ?? null,
+    myRecord: teams[0]?.record || null,
+    oppRecord: teams[1]?.record || null
+  };
+}
+
+function applySidePoints(player, value) {
+  if (!player || value == null) return player;
+  return { ...player, points: value, actualPoints: value };
+}
+
+export function isEspnSideBySidePaste(raw) {
+  const lines = splitPasteLines(raw);
+  if (lines.filter((line) => isDoubledName(line)).length < 4) return false;
+  return /proj(?:ected)?\s*total|in play:|chance to win|on field/i.test(String(raw || ''));
+}
+
+function parseEspnSideBySide(raw) {
+  const lines = splitPasteLines(raw);
+  const start = lines.findIndex((line) => isDoubledName(line));
+  const header = parseSideHeader(start > 0 ? lines.slice(0, start) : []);
+  const mine = [];
+  const opp = [];
+  let i = Math.max(start, 0);
+  while (i < lines.length) {
+    if (/^totals?$/i.test(lines[i])) break;
+    if (!isDoubledName(lines[i])) {
+      i += 1;
+      continue;
+    }
+    const left = readSidePlayer(lines, i);
+    i = left.next;
+    let leftPoints = null;
+    if (i < lines.length && isPointsLine(lines[i])) {
+      leftPoints = parsePointsLine(lines[i]);
+      i += 1;
+    }
+    let slot = '';
+    if (i < lines.length && (SLOT_ONLY_RE.test(lines[i]) || POS_ONLY_RE.test(lines[i]))) {
+      slot = normalizeEspnPos(lines[i]);
+      i += 1;
+    }
+    let rightPoints = null;
+    if (i < lines.length && isPointsLine(lines[i])) {
+      rightPoints = parsePointsLine(lines[i]);
+      i += 1;
+    }
+    let right = null;
+    if (i < lines.length && isDoubledName(lines[i])) {
+      right = readSidePlayer(lines, i);
+      i = right.next;
+    }
+    const leftPlayer = applySidePoints(left.player, leftPoints);
+    const rightPlayer = right ? applySidePoints(right.player, rightPoints) : null;
+    if (leftPlayer) mine.push(slot ? { ...leftPlayer, slot } : leftPlayer);
+    if (rightPlayer) opp.push(slot ? { ...rightPlayer, slot } : rightPlayer);
+  }
+  return { header, mine, opp };
+}
+
+function packSideBySide(parsed) {
+  const header = parsed.header;
+  const oppName = header.oppName;
+  const userTeam = {
+    name: header.userName,
+    score: header.myScore,
+    projectedScore: header.myProjected,
+    record: header.myRecord,
+    starters: parsed.mine.map((player) => finishStarter(player, 'mine', oppName))
+  };
+  const oppTeam = {
+    name: oppName,
+    score: header.oppScore,
+    projectedScore: header.oppProjected,
+    record: header.oppRecord,
+    starters: parsed.opp.map((player) => finishStarter(player, 'opp', oppName))
+  };
+  return {
+    id: `espn-${Date.now()}`,
+    name: userTeam.name || 'ESPN League',
+    leagueName: '',
+    platform: 'ESPN',
+    myScore: header.myScore,
+    oppScore: header.oppScore,
+    myProj: header.myProjected,
+    oppProj: header.oppProjected,
+    myRecord: header.myRecord,
+    oppRecord: header.oppRecord,
+    userTeam,
+    oppTeam,
+    myTeamName: userTeam.name,
+    oppTeamName: oppTeam.name,
+    myStarters: userTeam.starters,
+    oppStarters: oppTeam.starters
+  };
+}
+
 export function isEspnMatchupText(raw) {
   const text = String(raw || '');
-  if (isEspnFullBoxScore(text)) return true;
+  if (isEspnFullBoxScore(text) || isEspnSideBySidePaste(text)) return true;
   const lines = splitPasteLines(text);
   const rowHits = lines.filter((line) => isEspnPlayerRow(line)).length;
   if (/\bPLAYER,\s*TEAM\s*POS\b/i.test(text) && (rowHits >= 1 || lines.some((line) => SLOT_ONLY_RE.test(line)))) return true;
@@ -768,7 +1051,11 @@ function collectRosters(lines, teamNames) {
     });
   };
 
-  lines.forEach((line) => {
+  lines.forEach((line, index) => {
+    if (isKickoffLine(line) || isEspnChromeLine(line)) {
+      previous = line;
+      return;
+    }
     if (STARTERS_RE.test(line)) {
       if (mode === 'starters') flush();
       const labeled = teamNames.find((name) => sameTeamName(name, previous));
@@ -779,9 +1066,9 @@ function collectRosters(lines, teamNames) {
       previous = line;
       return;
     }
-    if (isRosterStop(line)) {
+    if (isRosterStop(line, lines[index + 1])) {
       if (mode === 'starters') flush();
-      mode = /^BENCH\b/i.test(line) ? 'bench' : 'after-totals';
+      mode = 'wait';
       pendingName = '';
       previous = line;
       return;
@@ -811,12 +1098,22 @@ function collectRosters(lines, teamNames) {
 }
 
 export function parseEspnMatchupText(raw) {
+  if (isEspnSideBySidePaste(raw)) return packSideBySide(parseEspnSideBySide(raw));
   if (isEspnFullBoxScore(raw)) return adaptFullBoxScore(parseEspnMatchup(raw));
   const lines = splitPasteLines(raw);
   const contentStart = lines.findIndex((line) => STARTERS_RE.test(line) || isEspnPlayerRow(line));
   const header = parseHeader(contentStart > 0 ? lines.slice(0, contentStart) : []);
   const teamNames = [header.userName, header.oppName].filter((name) => name && name !== 'My Team' && name !== 'Opponent');
   let rosters = collectRosters(lines, teamNames);
+  if (rosters.length === 1 && rosters[0].rows.length) {
+    const split = splitSides(rosters[0].rows);
+    if (split.opp.length) {
+      rosters = [
+        { name: rosters[0].name || header.userName, rows: split.mine },
+        { name: header.oppName, rows: split.opp }
+      ];
+    }
+  }
   if (!rosters.length) {
     const fallback = parseStarterSection(lines);
     if (fallback.length) {

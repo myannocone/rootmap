@@ -4,6 +4,7 @@ import RootMapLogo from './components/Logo';
 import { fetchLiveNFLSlate, gamePhase } from './services/espnScoreboard';
 import { FALLBACK_NFL_WEEK, getActiveSlate, getSlateByWeek } from './data/nflSchedule';
 import { isEspnMatchupText, parseEspnMatchupText, resolveNflTeam } from './utils/leagueParser';
+import { cleanYahooPlayerName, parseYahooMatchupText } from './utils/yahooPaste';
 import {
   fetchNflState,
   fetchSleeperLiveScores,
@@ -18,7 +19,8 @@ import { fetchEspnLeague, listEspnTeams, mapEspnLeague } from './utils/espnDirec
 import { openYahooLogin } from './utils/openYahooLogin';
 import { SITE_ORIGIN } from './utils/siteOrigin';
 import { Capacitor } from '@capacitor/core';
-import { notifyCrossFire, prepareCrossFireAlerts, tapHaptic } from './utils/nativeFeedback';
+import { notifyCrossFire, notifyZeroProjectionAlerts, prepareCrossFireAlerts, prepareZeroProjectionAlerts, tapHaptic } from './utils/nativeFeedback';
+import { checkZeroProjectionStarters, starterProjectionStatus } from './utils/zeroProjection';
 import { decodeSetupJson, encodeSetupPayload, linkIsLocalOnly, setupLinkFor } from './utils/setupSync';
 
 const LEAGUES_STORAGE_KEY = 'rootmap_leagues';
@@ -26,7 +28,6 @@ const THEME_STORAGE_KEY = 'rootmap_theme';
 
 const STALE_MOCK_LEAGUE_IDS = new Set(['lg_1', 'l1', 'l2', 'l3', 'l4']);
 const STALE_MOCK_LEAGUE_NAMES = new Set([
-  'yannaconda',
   'family league',
   'high stakes 12-man',
   'high stakes 12 man',
@@ -62,13 +63,6 @@ const TEAM_ALIASES = {
 };
 
 const OFFENSIVE_POSITIONS = new Set(['QB', 'RB', 'WR', 'TE', 'FLEX']);
-
-const SLOT_TOKEN_RE = /^(QB|RB|WR|TE|W\/R\/T|FLEX|K|DEF|D|DB|DL|LB)$/i;
-const STOP_SLOT_RE = /^(BN|IR|BENCH|IL|NA)$/i;
-const TEAM_POS_RE = /^([A-Za-z]{2,3})\s*[-–]\s*([A-Za-z/]+)$/;
-const DASH_RE = /^[-–—]$/;
-const FLOAT_RE = /^\d+\.\d{1,2}$/;
-const NAME_NOISE_SUFFIX_RE = /(?:No new player Notes|Video Forecast|New Player Note|Player Note|PUP|SUSP|IR|[QO])$/i;
 
 function firstPlayerList(...candidates) {
   for (const list of candidates) {
@@ -132,8 +126,9 @@ function formatSeasonRecord(record) {
   const wins = finiteNumber(record.wins ?? record.w);
   const losses = finiteNumber(record.losses ?? record.l);
   if (wins == null || losses == null) return '';
-  const ties = finiteNumber(record.ties ?? record.t);
-  return ties ? `${wins}-${losses}-${ties}` : `${wins}-${losses}`;
+  if (record.ties == null && record.t == null) return `${wins}-${losses}`;
+  const ties = finiteNumber(record.ties ?? record.t) ?? 0;
+  return `${wins}-${losses}-${ties}`;
 }
 
 function teamSeasonLine(name, record, rank) {
@@ -220,7 +215,7 @@ function MatchupLineups({ league, week, isLight }) {
   );
 }
 
-function LeagueScoreboard({ league, isLight }) {
+function LeagueScoreboard({ league, isLight, onRemove }) {
   const myName = getUserTeamName(league);
   const oppName = getLeagueOppName(league);
   const leagueName = getLeagueDisplayName(league);
@@ -265,11 +260,29 @@ function LeagueScoreboard({ league, isLight }) {
         <div className={`min-w-0 text-[10px] font-black uppercase tracking-wider truncate ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
           {showLeague ? leagueName : 'This week'}
         </div>
-        <span className={`shrink-0 text-[10px] font-mono px-2 py-0.5 rounded-full font-bold border ${
-          isLight ? 'bg-purple-50 text-purple-700 border-purple-200' : 'bg-purple-950 text-purple-300 border-purple-800'
-        }`}>
-          {league?.platform || 'League'}
-        </span>
+        <div className="flex items-center gap-1.5 shrink-0">
+          {onRemove && (
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                onRemove();
+              }}
+              aria-label={`Remove ${leagueName}`}
+              title={`Remove ${leagueName}`}
+              className={`w-7 h-7 rounded-lg flex items-center justify-center ${
+                isLight ? 'text-rose-600 hover:bg-rose-50' : 'text-rose-300 hover:bg-rose-950/70'
+              }`}
+            >
+              <TrashIcon />
+            </button>
+          )}
+          <span className={`text-[10px] font-mono px-2 py-0.5 rounded-full font-bold border ${
+            isLight ? 'bg-purple-50 text-purple-700 border-purple-200' : 'bg-purple-950 text-purple-300 border-purple-800'
+          }`}>
+            {league?.platform || 'League'}
+          </span>
+        </div>
       </div>
       <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
         {teamSide(myName, mine.record, mine.rank, myScore, league?.myProj, myMark, myScore > oppScore || myScore === oppScore, 'end')}
@@ -297,13 +310,22 @@ function getLeagueOppName(lg) {
 
 function scoreText(value) {
   const number = finiteNumber(value);
-  return number == null ? '—' : number.toFixed(1);
+  if (number == null) return '—';
+  const hundredths = number.toFixed(2);
+  return hundredths.endsWith('0') ? number.toFixed(1) : hundredths;
+}
+
+function cleanListedPlayer(player) {
+  if (!player || typeof player !== 'object') return player;
+  const name = cleanYahooPlayerName(player.name);
+  if (!name || name === player.name) return player;
+  return { ...player, name };
 }
 
 function normalizeLeague(lg, index = 0) {
   if (!lg || typeof lg !== 'object') return null;
-  const portfolio = getLeaguePortfolio(lg);
-  const threats = getLeagueThreats(lg);
+  const portfolio = getLeaguePortfolio(lg).map(cleanListedPlayer);
+  const threats = getLeagueThreats(lg).map(cleanListedPlayer);
   const name = getLeagueDisplayName(lg) || `League ${index + 1}`;
   const oppTeamName = getLeagueOppName(lg);
   return {
@@ -658,6 +680,7 @@ function applyLiveToPlayer(player, games, liveScores, now = new Date()) {
   }
   const live = sleeperLiveNumbers(player, liveScores);
   if (live?.proj != null) player.projPoints = live.proj;
+  player.zeroProjection = Boolean(starterProjectionStatus(player, { games, liveScores, now })?.zero);
   const storedActual = finiteNumber(player.actualPoints);
   const needsPublicLine = !player.sleeperId && (storedActual == null || storedActual === 0);
   if (live?.actual != null && live.started && phase !== 'UPCOMING' && (player.sleeperId || needsPublicLine)) {
@@ -806,7 +829,12 @@ function LivePoints({ player, isLight, tone = 'for', layout = 'inline' }) {
   );
 }
 
-function rosterCardSurface(isLight, isLive, isConflict, isHovered, inRedZone) {
+function rosterCardSurface(isLight, isLive, isConflict, isHovered, inRedZone, zeroProj) {
+  if (zeroProj && !isLive) {
+    return isLight
+      ? 'border-rose-500 bg-amber-50 ring-2 ring-inset ring-amber-400'
+      : 'border-rose-400 bg-rose-950/40 ring-2 ring-inset ring-amber-400';
+  }
   const zone = inRedZone ? 'rootmap-redzone' : '';
   if (isConflict) {
     const pulse = inRedZone ? zone : 'rootmap-crossfire';
@@ -859,7 +887,7 @@ function RosterCard({
       onClick={onSelect}
       onMouseEnter={onHoverStart}
       onMouseLeave={onHoverEnd}
-      className={`relative w-full min-w-0 overflow-hidden rounded-xl p-2 pl-3 transition active:scale-[0.98] cursor-pointer border shadow-sm touch-manipulation ${rosterCardSurface(isLight, live, isConflict, isHovered, player.inRedZone)}`}
+      className={`relative w-full min-w-0 overflow-hidden rounded-xl p-2 pl-3 transition active:scale-[0.98] cursor-pointer border shadow-sm touch-manipulation ${rosterCardSurface(isLight, live, isConflict, isHovered, player.inRedZone, player.zeroProjection)}`}
     >
       <span
         aria-hidden="true"
@@ -879,6 +907,13 @@ function RosterCard({
             {player.position} · {player.nflTeam}
           </div>
           <ConnotationBadge player={player} isLight={isLight} />
+          {player.zeroProjection && (
+            <div className="mt-1">
+              <span className="inline-flex px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-wide bg-amber-400 text-slate-950">
+                ⚠️ 0.0 PROJ - CHECK STATUS
+              </span>
+            </div>
+          )}
         </div>
       </div>
 
@@ -1119,258 +1154,6 @@ function normalizeSlot(slot) {
   return s;
 }
 
-function isDash(line) {
-  return DASH_RE.test(String(line || '').trim());
-}
-
-function isFloatLine(line) {
-  return FLOAT_RE.test(String(line || '').trim());
-}
-
-function isGameLine(line) {
-  return /^(Sun|Mon|Tue|Wed|Thu|Fri|Sat|Final|Bye)\b/i.test(String(line || '').trim());
-}
-
-function isStatLine(line) {
-  return /\b(Yds|TD|Rec|Rush|INT|Sack|Tackles?|Fum|Pass)\b/i.test(String(line || '').trim());
-}
-
-function isTeamPosLine(line) {
-  return TEAM_POS_RE.test(String(line || '').trim());
-}
-
-function stripNameNoise(raw) {
-  let s = String(raw || '').trim();
-  let prev = '';
-  while (s && s !== prev) {
-    prev = s;
-    s = s.replace(NAME_NOISE_SUFFIX_RE, '').trim();
-  }
-  return s.replace(/\s+/g, ' ').trim();
-}
-
-function isNameLine(line) {
-  const s = String(line || '').trim();
-  if (!s || isDash(s) || isFloatLine(s) || SLOT_TOKEN_RE.test(s) || STOP_SLOT_RE.test(s) || isTeamPosLine(s)) return false;
-  if (isGameLine(s) || isStatLine(s)) return false;
-  const cleaned = stripNameNoise(s);
-  if (cleaned.length < 2 || cleaned.length > 48) return false;
-  return /[A-Za-z]/.test(cleaned);
-}
-
-function parseTeamPos(line) {
-  const match = String(line || '').trim().match(TEAM_POS_RE);
-  if (!match) return { nflTeam: '', position: '' };
-  return {
-    nflTeam: match[1].toUpperCase(),
-    position: normalizePosition(match[2])
-  };
-}
-
-function toStarterRecord(player, side) {
-  const isMine = side === 'mine';
-  const gameClock = player.gameClock || 'Scheduled';
-  return {
-    name: player.name,
-    nflTeam: player.nflTeam,
-    position: player.position,
-    slot: player.slot || player.position,
-    points: player.points || 0,
-    projPoints: player.points || 0,
-    actualPoints: player.actualPoints ?? null,
-    isLive: /^(1st|2nd|3rd|4th|OT|Q)/i.test(gameClock),
-    inRedZone: false,
-    gameClock,
-    bigPlay: null,
-    isStarter: isMine,
-    ownership: isMine ? 1.0 : 0,
-    isThreat: !isMine,
-    opponent: null
-  };
-}
-
-function parseMySlotBlock(linesBeforeSlot, slotToken) {
-  const lines = (linesBeforeSlot || []).map((l) => String(l).trim()).filter(Boolean);
-  let idx = lines.length - 1;
-  while (idx >= 0 && isDash(lines[idx])) idx -= 1;
-
-  let points = 0;
-  if (idx >= 0 && isFloatLine(lines[idx])) {
-    points = parseFloat(lines[idx]);
-    idx -= 1;
-  }
-  while (idx >= 0 && isDash(lines[idx])) idx -= 1;
-
-  let gameClock = 'Scheduled';
-  if (idx >= 0 && isGameLine(lines[idx])) {
-    gameClock = lines[idx];
-    idx -= 1;
-  }
-
-  let nflTeam = '';
-  let position = normalizeSlot(slotToken);
-  if (idx >= 0 && isTeamPosLine(lines[idx])) {
-    const parsed = parseTeamPos(lines[idx]);
-    nflTeam = parsed.nflTeam;
-    position = parsed.position || position;
-    idx -= 1;
-  }
-
-  let name = '';
-  while (idx >= 0) {
-    if (isNameLine(lines[idx])) {
-      name = stripNameNoise(lines[idx]);
-      break;
-    }
-    idx -= 1;
-  }
-
-  return {
-    name,
-    nflTeam,
-    position,
-    slot: normalizeSlot(slotToken),
-    points,
-    gameClock
-  };
-}
-
-function parseOppSlotBlock(lines, startIndex, slotToken) {
-  let i = startIndex;
-  while (i < lines.length && isDash(lines[i])) i += 1;
-
-  const nums = [];
-  while (i < lines.length && (isFloatLine(lines[i]) || isDash(lines[i]))) {
-    if (isFloatLine(lines[i])) nums.push(parseFloat(lines[i]));
-    i += 1;
-  }
-
-  let actualPoints = null;
-  let points = 0;
-  if (nums.length >= 2) {
-    actualPoints = nums[0];
-    points = nums[1];
-  } else if (nums.length === 1) {
-    points = nums[0];
-  }
-
-  let name = '';
-  if (i < lines.length && isNameLine(lines[i])) {
-    name = stripNameNoise(lines[i]);
-    i += 1;
-  }
-
-  let nflTeam = '';
-  let position = normalizeSlot(slotToken);
-  if (i < lines.length && isTeamPosLine(lines[i])) {
-    const parsed = parseTeamPos(lines[i]);
-    nflTeam = parsed.nflTeam;
-    position = parsed.position || position;
-    i += 1;
-  }
-
-  let gameClock = 'Scheduled';
-  if (i < lines.length && isGameLine(lines[i])) {
-    gameClock = lines[i];
-    i += 1;
-  }
-  while (i < lines.length && isStatLine(lines[i])) i += 1;
-
-  return {
-    player: {
-      name,
-      nflTeam,
-      position,
-      slot: normalizeSlot(slotToken),
-      points,
-      actualPoints,
-      gameClock
-    },
-    nextIndex: i
-  };
-}
-
-function isYahooChromeLine(line) {
-  return /^(week\b.*|starters|bench|projected|projection|proj\b.*|matchup|yahoo|fantasy|points|pts|vs\.?|edit|live|recap)$/i.test(String(line || '').trim());
-}
-
-function parseYahooHeader(lines) {
-  const firstSlot = lines.findIndex((line) => SLOT_TOKEN_RE.test(line));
-  const header = firstSlot === -1 ? lines.slice(0, 16) : lines.slice(0, firstSlot);
-  const teams = [];
-  header.forEach((line, index) => {
-    if (teams.length >= 2 || !isNameLine(line) || isYahooChromeLine(line)) return;
-    let score = null;
-    let proj = null;
-    let sawProj = false;
-    for (let cursor = index + 1; cursor < Math.min(index + 5, header.length); cursor += 1) {
-      const next = header[cursor];
-      if (isYahooChromeLine(next) && /proj/i.test(next)) {
-        sawProj = true;
-        const inline = next.match(/(\d+\.\d{1,2})/);
-        if (inline) proj = parseFloat(inline[1]);
-        continue;
-      }
-      if (isFloatLine(next)) {
-        if (sawProj && proj == null) proj = parseFloat(next);
-        else if (score == null) score = parseFloat(next);
-        continue;
-      }
-      if (isNameLine(next)) break;
-    }
-    teams.push({ name: stripNameNoise(line), score, proj });
-  });
-  return {
-    myTeamName: teams[0]?.name || '',
-    oppTeamName: teams[1]?.name || '',
-    myScore: teams[0]?.score,
-    oppScore: teams[1]?.score,
-    myProj: teams[0]?.proj ?? null,
-    oppProj: teams[1]?.proj ?? null
-  };
-}
-
-function parseYahooMatchupText(raw) {
-  const lines = String(raw || '')
-    .replace(/\r/g, '')
-    .split('\n')
-    .map((l) => l.trim())
-    .filter(Boolean);
-
-  const header = parseYahooHeader(lines);
-  const myStarters = [];
-  const oppStarters = [];
-  let cursor = 0;
-
-  while (cursor < lines.length) {
-    if (STOP_SLOT_RE.test(lines[cursor])) break;
-
-    const slotIdx = lines.findIndex((line, idx) => idx >= cursor && SLOT_TOKEN_RE.test(line));
-    if (slotIdx === -1) break;
-
-    const slotToken = lines[slotIdx];
-    const mine = parseMySlotBlock(lines.slice(cursor, slotIdx), slotToken);
-    const { player: opp, nextIndex } = parseOppSlotBlock(lines, slotIdx + 1, slotToken);
-
-    if (mine.name) myStarters.push(toStarterRecord(mine, 'mine'));
-    if (opp.name) oppStarters.push(toStarterRecord(opp, 'opp'));
-
-    cursor = Math.max(nextIndex, slotIdx + 1);
-    if (cursor <= slotIdx) cursor = slotIdx + 1;
-  }
-
-  return {
-    myTeamName: header.myTeamName || 'My Team',
-    oppTeamName: header.oppTeamName || MISSING_OPPONENT_NAME,
-    myScore: header.myScore,
-    oppScore: header.oppScore,
-    myProj: header.myProj,
-    oppProj: header.oppProj,
-    myStarters,
-    oppStarters
-  };
-}
-
 const HEADSHOT_INDEX_KEY = 'rootmap_sleeper_headshot_index_v1';
 const HEADSHOT_INDEX_AT_KEY = 'rootmap_sleeper_headshot_index_at';
 const HEADSHOT_INDEX_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -1415,7 +1198,7 @@ const NFL_TEAM_SECONDARY = {
 let headshotIndexMemory = null;
 
 function normalizePlayerName(name) {
-  return String(name || '')
+  return cleanYahooPlayerName(name)
     .toLowerCase()
     .replace(/['’.]/g, '')
     .replace(/\b(jr|sr|ii|iii|iv|v)\b/g, '')
@@ -1425,7 +1208,7 @@ function normalizePlayerName(name) {
 }
 
 function getPlayerInitials(playerName) {
-  const parts = String(playerName || '')
+  const parts = cleanYahooPlayerName(playerName)
     .replace(/\b(Jr|Sr|II|III|IV)\.?/g, '')
     .trim()
     .split(/\s+/)
@@ -1609,9 +1392,19 @@ export default function App() {
   });
   const [view, setView] = useState('matchups');
   const [leagueSort, setLeagueSort] = useState('closest');
+  const [leagueMenuOpen, setLeagueMenuOpen] = useState(false);
   const [sortMode, setSortMode] = useState('slate');
   const [boardFilters, setBoardFilters] = useState({ liveOnly: false, redZoneOnly: false, hideFinal: false });
   const [showSortSheet, setShowSortSheet] = useState(false);
+  const [zeroProjAlerts, setZeroProjAlerts] = useState(() => {
+    try {
+      const stored = localStorage.getItem('rootmap_zero_proj_alerts');
+      if (stored == null) return true;
+      return stored !== '0';
+    } catch {
+      return true;
+    }
+  });
   const [leagues, setLeagues] = useState(loadStoredLeagues);
   const [selectedWeek, setSelectedWeek] = useState(() => getActiveSlate()?.week || FALLBACK_NFL_WEEK);
   const [showWeekPicker, setShowWeekPicker] = useState(false);
@@ -1959,15 +1752,19 @@ export default function App() {
 
   const confirmRemoveLeague = () => {
     if (!leaguePendingDelete) return;
-    const id = leaguePendingDelete.id;
-    setLeagues((prev) => prev.filter((lg) => lg.id !== id));
+    const ids = leaguePendingDelete.bulk ? leaguePendingDelete.ids : [leaguePendingDelete.id];
+    const drop = new Set(ids.filter(Boolean));
+    if (!drop.size) {
+      setLeaguePendingDelete(null);
+      return;
+    }
+    setLeagues((prev) => prev.filter((lg) => !drop.has(lg.id)));
     setHiddenLeagueIds((prev) => {
-      if (!prev.has(id)) return prev;
       const next = new Set(prev);
-      next.delete(id);
+      drop.forEach((id) => next.delete(id));
       return next;
     });
-    if (activeLeagueDrawer?.id === id) setActiveLeagueDrawer(null);
+    if (activeLeagueDrawer && drop.has(activeLeagueDrawer.id)) setActiveLeagueDrawer(null);
     setLeaguePendingDelete(null);
   };
 
@@ -2405,7 +2202,7 @@ export default function App() {
     const oppStarters = parsed.oppTeam?.starters || parsed.oppStarters || [];
     if (!myStarters.length && !oppStarters.length) {
       setYahooIngestError(espnPaste
-        ? 'No starters found. Paste the ESPN matchup through the bench, including the STARTERS table.'
+        ? 'No starters found. Copy the full ESPN matchup page (both lineups) and paste again.'
         : 'No players found. Copy the full Yahoo or ESPN Matchup page (Ctrl+A, Ctrl+C) and paste again.');
       return;
     }
@@ -2419,10 +2216,11 @@ export default function App() {
       : (parsed.myTeamName && parsed.myTeamName !== 'My Team' ? parsed.myTeamName : autoName);
     const leagueName = typedName && typedName !== autoName ? typedName : fallbackName;
     const oppTeamName = parsed.oppTeam?.name || parsed.oppTeamName || MISSING_OPPONENT_NAME;
+    const myTeamName = espnPaste ? (espnTeamName || leagueName) : (parsed.myTeamName || leagueName);
     const imported = normalizeLeague({
       id: espnPaste ? (parsed.id || `espn-${Date.now()}`) : `lg_${Date.now()}`,
       name: leagueName,
-      myTeamName: espnPaste ? (espnTeamName || leagueName) : leagueName,
+      myTeamName,
       oppTeamName,
       opponent: oppTeamName,
       platform: espnPaste ? 'ESPN' : 'Yahoo',
@@ -2430,10 +2228,17 @@ export default function App() {
       oppScore: parsed.oppScore ?? parsed.oppTeam?.score ?? 0,
       myProj: parsed.myProj ?? parsed.userTeam?.projectedScore ?? null,
       oppProj: parsed.oppProj ?? parsed.oppTeam?.projectedScore ?? null,
-      ...(espnPaste ? {
-        userTeam: { ...parsed.userTeam, name: espnTeamName || leagueName, starters: myStarters },
-        oppTeam: { ...parsed.oppTeam, name: oppTeamName, starters: oppStarters }
-      } : {}),
+      myRecord: parsed.myRecord || parsed.userTeam?.record || null,
+      oppRecord: parsed.oppRecord || parsed.oppTeam?.record || null,
+      myRank: parsed.myRank ?? parsed.userTeam?.rank ?? null,
+      oppRank: parsed.oppRank ?? parsed.oppTeam?.rank ?? null,
+      lineupWeek: Number(selectedWeek) || null,
+      userTeam: espnPaste
+        ? { ...parsed.userTeam, name: myTeamName, starters: myStarters }
+        : { name: myTeamName, starters: myStarters, record: parsed.myRecord || null, rank: parsed.myRank ?? null },
+      oppTeam: espnPaste
+        ? { ...parsed.oppTeam, name: oppTeamName, starters: oppStarters }
+        : { name: oppTeamName, starters: oppStarters, record: parsed.oppRecord || null, rank: parsed.oppRank ?? null },
       portfolio: myStarters,
       threats: oppStarters
     }, leagues.length);
@@ -2464,6 +2269,21 @@ export default function App() {
   useEffect(() => {
     prepareCrossFireAlerts();
   }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('rootmap_zero_proj_alerts', zeroProjAlerts ? '1' : '0');
+    } catch {
+      // preference storage is optional
+    }
+  }, [zeroProjAlerts]);
+
+  useEffect(() => {
+    if (!zeroProjAlerts || !liveScores) return undefined;
+    const found = checkZeroProjectionStarters(leagues, { games, liveScores });
+    notifyZeroProjectionAlerts(found);
+    return undefined;
+  }, [zeroProjAlerts, leagues, games, liveScores]);
 
   useEffect(() => {
     const next = new Map();
@@ -3106,8 +2926,8 @@ export default function App() {
               <div className={`text-xs font-black uppercase tracking-wider ${isLight ? 'text-slate-700' : 'text-slate-300'}`}>
                 Connected Leagues ({leagues.length})
               </div>
-              <label className="shrink-0">
-                <span className="sr-only">Sort leagues</span>
+              <label className="shrink-0 flex items-center">
+                <span className="text-xs uppercase tracking-wider text-slate-400 font-medium mr-1.5">Sort by:</span>
                 <select
                   value={leagueSort}
                   onChange={(event) => {
@@ -3124,6 +2944,69 @@ export default function App() {
                 </select>
               </label>
             </div>
+
+            {leagues.length > 0 && (
+              <div className="relative w-fit max-w-full">
+                <button
+                  type="button"
+                  aria-expanded={leagueMenuOpen}
+                  aria-haspopup="listbox"
+                  onClick={() => {
+                    setLeagueMenuOpen((open) => !open);
+                    tapHaptic();
+                  }}
+                  className={`min-h-9 px-3 rounded-xl text-[11px] font-black border inline-flex items-center gap-1.5 ${
+                    isLight
+                      ? 'bg-white text-slate-700 border-slate-200'
+                      : 'bg-slate-950 text-slate-200 border-slate-700'
+                  }`}
+                >
+                  Manage Leagues
+                  <span aria-hidden="true">{leagueMenuOpen ? '▴' : '▾'}</span>
+                </button>
+                {leagueMenuOpen && (
+                  <div
+                    role="listbox"
+                    aria-label="Manage leagues"
+                    className={`absolute left-0 top-full z-20 mt-1 w-56 max-h-64 overflow-y-auto rounded-xl border shadow-xl p-1 ${
+                      isLight ? 'bg-white border-slate-200' : 'bg-slate-950 border-slate-700'
+                    }`}
+                  >
+                    {leagues.map((lg) => {
+                      const leagueName = getLeagueDisplayName(lg);
+                      const onBoard = !hiddenLeagueIds.has(lg.id);
+                      return (
+                        <div key={lg.id} className="flex items-center gap-1 rounded-lg">
+                          <label className="flex items-center gap-2 min-w-0 flex-1 px-2 py-1.5 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={onBoard}
+                              onChange={() => toggleLeagueVisibility(lg.id)}
+                              aria-label={`${onBoard ? 'Hide' : 'Show'} ${leagueName} on the board`}
+                              className="accent-emerald-500 w-3.5 h-3.5 shrink-0"
+                            />
+                            <span className={`truncate text-xs font-bold ${isLight ? 'text-slate-800' : 'text-slate-100'}`}>
+                              {leagueName}
+                            </span>
+                          </label>
+                          <button
+                            type="button"
+                            aria-label={`Remove ${leagueName}`}
+                            title={`Remove ${leagueName}`}
+                            onClick={() => setLeaguePendingDelete(lg)}
+                            className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${
+                              isLight ? 'text-rose-600 hover:bg-rose-50' : 'text-rose-400 hover:bg-rose-950/70'
+                            }`}
+                          >
+                            <TrashIcon />
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
 
             {leagues.length === 0 && (
               <div className={`rounded-2xl p-5 border text-center space-y-3 shadow-sm ${
@@ -3146,6 +3029,8 @@ export default function App() {
                 key={lg.id}
                 onClick={() => setActiveLeagueDrawer(lg)}
                 className={`rounded-3xl p-4 space-y-3 cursor-pointer border shadow-sm transition ${
+                  hiddenLeagueIds.has(lg.id) ? 'opacity-60' : ''
+                } ${
                   nailbiter
                     ? 'rootmap-nailbiter border-amber-400'
                     : ahead
@@ -3166,7 +3051,11 @@ export default function App() {
                     Nailbiter
                   </div>
                 )}
-                <LeagueScoreboard league={lg} isLight={isLight} />
+                <LeagueScoreboard
+                  league={lg}
+                  isLight={isLight}
+                  onRemove={() => setLeaguePendingDelete(lg)}
+                />
                 <MatchupLineups league={lg} week={selectedWeek} isLight={isLight} />
                 <div className={`flex justify-between items-center gap-2 pt-2 border-t text-[11px] ${
                   isLight ? 'border-slate-100 text-slate-500' : 'border-white/10 text-slate-400'
@@ -3402,10 +3291,12 @@ export default function App() {
             }`}
           >
             <h3 id="remove-league-title" className={`text-base font-black ${isLight ? 'text-slate-900' : 'text-white'}`}>
-              Remove {getLeagueDisplayName(leaguePendingDelete)} from RootMap?
+              {leaguePendingDelete.bulk
+                ? `Remove ${leaguePendingDelete.count} league${leaguePendingDelete.count === 1 ? '' : 's'} from RootMap?`
+                : `Remove ${getLeagueDisplayName(leaguePendingDelete)} from RootMap?`}
             </h3>
             <p className={`text-xs leading-relaxed ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
-              Combined Rooting updates as soon as this league is removed. You can import it again later.
+              The RootMap board updates as soon as {leaguePendingDelete.bulk ? 'these leagues are' : 'this league is'} removed. You can import again later.
             </p>
             <div className="flex gap-2">
               <button
@@ -3541,6 +3432,31 @@ export default function App() {
                 );
               })}
             </div>
+            <h3 className={`text-base font-black ${isLight ? 'text-slate-900' : 'text-white'}`}>Push Notifications</h3>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={zeroProjAlerts}
+              onClick={() => {
+                const next = !zeroProjAlerts;
+                setZeroProjAlerts(next);
+                if (next) prepareZeroProjectionAlerts({ request: true });
+                tapHaptic();
+              }}
+              className={`w-full flex items-center justify-between gap-3 rounded-2xl border px-3 py-2.5 text-left ${
+                isLight ? 'bg-slate-50 border-slate-200 text-slate-900' : 'bg-slate-950 border-slate-800 text-white'
+              }`}
+            >
+              <span className="min-w-0">
+                <span className="block text-xs font-black">Zero Projection / Inactive Starter Alerts</span>
+                <span className={`block text-[11px] mt-0.5 font-semibold ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+                  Warns when a starter is projected at 0.0 before kickoff.
+                </span>
+              </span>
+              <span className={`w-10 h-6 rounded-full p-0.5 transition shrink-0 ${zeroProjAlerts ? 'bg-emerald-500' : isLight ? 'bg-slate-300' : 'bg-slate-700'}`}>
+                <span className={`block w-5 h-5 rounded-full bg-white shadow transition ${zeroProjAlerts ? 'translate-x-4' : 'translate-x-0'}`} />
+              </span>
+            </button>
             <button
               type="button"
               onClick={openMobileSync}
