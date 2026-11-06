@@ -47,6 +47,23 @@ function yahooAuthDev() {
   }
 }
 
+function devNetworkHint() {
+  const attach = (server) => {
+    server.middlewares.use((req, res, next) => {
+      const path = String(req.url || '').split('?')[0]
+      if (path !== '/api/dev-network') return next()
+      const origins = server.resolvedUrls?.network || []
+      res.setHeader('content-type', 'application/json')
+      res.end(JSON.stringify({ origins }))
+    })
+  }
+  return {
+    name: 'dev-network-hint',
+    configureServer: attach,
+    configurePreviewServer: attach
+  }
+}
+
 function privacyRoute() {
   const sendPrivacy = (req, _res, next) => {
     const path = String(req.url || '').split('?')[0]
@@ -65,7 +82,7 @@ function privacyRoute() {
 }
 
 export default defineConfig({
-  plugins: [yahooAuthDev(), react(), tailwindcss(), privacyRoute()],
+  plugins: [yahooAuthDev(), devNetworkHint(), react(), tailwindcss(), privacyRoute()],
   server: {
     host: true,
     port: 5173,

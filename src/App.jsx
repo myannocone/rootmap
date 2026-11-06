@@ -21,7 +21,7 @@ import { SITE_ORIGIN } from './utils/siteOrigin';
 import { Capacitor } from '@capacitor/core';
 import { notifyCrossFire, notifyZeroProjectionAlerts, prepareCrossFireAlerts, prepareZeroProjectionAlerts, tapHaptic } from './utils/nativeFeedback';
 import { checkZeroProjectionStarters, starterProjectionStatus } from './utils/zeroProjection';
-import { decodeSetupJson, encodeSetupPayload, linkIsLocalOnly, setupLinkFor } from './utils/setupSync';
+import { decodeSetupJson, encodeSetupPayload, linkIsLocalOnly, phoneSyncOrigin, setupLinkFor } from './utils/setupSync';
 
 const LEAGUES_STORAGE_KEY = 'rootmap_leagues';
 const THEME_STORAGE_KEY = 'rootmap_theme';
@@ -1880,14 +1880,21 @@ export default function App() {
       return;
     }
     const code = await encodeSetupPayload(json);
-    const link = setupLinkFor(window.location.origin, window.location.pathname, code);
-    const local = linkIsLocalOnly(window.location.hostname);
+    const origin = await phoneSyncOrigin(window.location.origin);
+    const link = setupLinkFor(origin, window.location.pathname, code);
+    let phoneHost = '';
+    try {
+      phoneHost = new URL(origin).hostname;
+    } catch {
+      phoneHost = '';
+    }
+    const local = linkIsLocalOnly(phoneHost);
     setMobileSyncCode(code);
     setMobileSyncLink(link);
     setMobileSyncNote(local
       ? 'This link only opens on this computer. Copy the code and paste it into Import on the phone.'
       : link
-        ? 'Open the link on the phone and the leagues load immediately.'
+        ? `Open this link on the phone while it is on the same Wi-Fi as this computer (${phoneHost}).`
         : 'This setup is too long for a link. Copy the code and paste it on the phone.');
     setShowMobileSync(true);
   };

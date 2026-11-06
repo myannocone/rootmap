@@ -1,5 +1,5 @@
 {
-  "appId": "com.myannocone.rootmap",
+  "appId": "com.rootmap.app",
   "appName": "RootMap",
   "webDir": "dist",
   "ios": {
@@ -7,7 +7,11 @@
   },
   "plugins": {
     "LocalNotifications": {
-      "presentationOptions": ["badge", "sound", "banner"]
+      "presentationOptions": [
+        "badge",
+        "sound",
+        "banner"
+      ]
     }
   }
 }
