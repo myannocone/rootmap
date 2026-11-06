@@ -19,7 +19,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: 'npm'
+          cache: npm
 
       - name: Install Dependencies
         run: npm ci
@@ -30,10 +30,13 @@ jobs:
       - name: Sync Capacitor iOS
         run: npx cap sync ios
 
-      - name: Setup App Store Connect Private Key
+      - name: Setup App Store Connect Key
+        env:
+          KEY_CONTENT: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
+          KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
         run: |
           mkdir -p ~/.appstoreconnect/private_keys
-          echo "${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}" > ~/.appstoreconnect/private_keys/AuthKey_${{ secrets.APP_STORE_CONNECT_KEY_ID }}.p8
+          printf "%s" "$KEY_CONTENT" > ~/.appstoreconnect/private_keys/AuthKey_${KEY_ID}.p8
 
       - name: Install Fastlane
         run: gem install fastlane --no-document
@@ -43,18 +46,6 @@ jobs:
           APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
           APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
         run: |
-          fastlane run app_store_connect_api_key \
-            key_id:"$APP_STORE_CONNECT_KEY_ID" \
-            issuer_id:"$APP_STORE_CONNECT_ISSUER_ID" \
-            key_filepath:"$HOME/.appstoreconnect/private_keys/AuthKey_${APP_STORE_CONNECT_KEY_ID}.p8"
-
-          fastlane run build_app \
-            workspace:"ios/App/App.xcworkspace" \
-            scheme:"App" \
-            export_method:"app-store" \
-            output_directory:"./build" \
-            output_name:"RootMap.ipa"
-
-          fastlane run upload_to_testflight \
-            ipa:"./build/RootMap.ipa" \
-            skip_waiting_for_build_processing:true
+          fastlane run app_store_connect_api_key key_id:"$APP_STORE_CONNECT_KEY_ID" issuer_id:"$APP_STORE_CONNECT_ISSUER_ID" key_filepath:"$HOME/.appstoreconnect/private_keys/AuthKey_${APP_STORE_CONNECT_KEY_ID}.p8"
+          fastlane run build_app workspace:"ios/App/App.xcworkspace" scheme:"App" export_method:"app-store" output_directory:"./build" output_name:"RootMap.ipa"
+          fastlane run upload_to_testflight ipa:"./build/RootMap.ipa" skip_waiting_for_build_processing:true
