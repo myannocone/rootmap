@@ -43,10 +43,6 @@ jobs:
           APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
           APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
         run: |
-          xcrun altool --validate-app -f /dev/null \
-            --apiKey "$APP_STORE_CONNECT_KEY_ID" \
-            --apiIssuer "$APP_STORE_CONNECT_ISSUER_ID" || true
-
           fastlane run app_store_connect_api_key \
             key_id:"$APP_STORE_CONNECT_KEY_ID" \
             issuer_id:"$APP_STORE_CONNECT_ISSUER_ID" \
