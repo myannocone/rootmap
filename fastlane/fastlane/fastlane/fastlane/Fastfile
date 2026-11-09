@@ -21,9 +21,11 @@ platform :ios do
       key_filepath: "#{ENV['HOME']}/.appstoreconnect/private_keys/AuthKey_#{ENV['APP_STORE_CONNECT_KEY_ID']}.p8"
     )
 
+    keychain_file = File.expand_path("~/Library/Keychains/ci_keychain-db")
+
     get_certificates(
       api_key: api_key,
-      keychain_name: keychain_name,
+      keychain_path: keychain_file,
       keychain_password: keychain_password,
       skip_set_partition_list: true
     )
