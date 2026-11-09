@@ -16,7 +16,7 @@ platform :ios do
     )
 
     build_app(
-      project: "ios/App/App.xcodeproj",
+      project: File.expand_path("ios/App/App.xcodeproj", ENV["GITHUB_WORKSPACE"] || Dir.pwd),
       scheme: "App",
       export_method: "app-store"
     )
