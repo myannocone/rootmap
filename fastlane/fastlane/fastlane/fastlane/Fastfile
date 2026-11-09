@@ -3,7 +3,17 @@ default_platform(:ios)
 platform :ios do
   desc "Build and upload to TestFlight"
   lane :beta do
-    setup_ci
+    keychain_name = "ci_keychain"
+    keychain_password = "password123"
+
+    create_keychain(
+      name: keychain_name,
+      password: keychain_password,
+      default_keychain: true,
+      unlock: true,
+      timeout: 3600,
+      lock_when_sleeps: false
+    )
 
     api_key = app_store_connect_api_key(
       key_id: ENV["APP_STORE_CONNECT_KEY_ID"],
@@ -13,7 +23,8 @@ platform :ios do
 
     get_certificates(
       api_key: api_key,
-      keychain_path: ENV["KEYCHAIN_PATH"],
+      keychain_name: keychain_name,
+      keychain_password: keychain_password,
       skip_set_partition_list: true
     )
 
