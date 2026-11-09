@@ -11,7 +11,11 @@ platform :ios do
       key_filepath: "#{ENV['HOME']}/.appstoreconnect/private_keys/AuthKey_#{ENV['APP_STORE_CONNECT_KEY_ID']}.p8"
     )
 
-    get_certificates(api_key: api_key)
+    get_certificates(
+      api_key: api_key,
+      keychain_path: ENV["KEYCHAIN_PATH"],
+      skip_set_partition_list: true
+    )
 
     get_provisioning_profile(
       api_key: api_key,
