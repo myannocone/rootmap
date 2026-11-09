@@ -38,7 +38,8 @@ platform :ios do
     build_app(
       project: File.expand_path("ios/App/App.xcodeproj", ENV["GITHUB_WORKSPACE"] || Dir.pwd),
       scheme: "App",
-      export_method: "app-store"
+      export_method: "app-store",
+      xcargs: "DEVELOPMENT_TEAM=WNDJWH8GJS"
     )
 
     upload_to_testflight(
