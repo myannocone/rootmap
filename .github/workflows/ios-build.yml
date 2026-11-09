@@ -50,6 +50,5 @@ jobs:
           APPLE_TEAM_ID: "WNDJWH8GJS"
         run: |
           fastlane run app_store_connect_api_key key_id:"$APP_STORE_CONNECT_KEY_ID" issuer_id:"$APP_STORE_CONNECT_ISSUER_ID" key_filepath:"$HOME/.appstoreconnect/private_keys/AuthKey_${APP_STORE_CONNECT_KEY_ID}.p8"
-          fastlane run get_provisioning_profile app_identifier:"com.myannocone.rootmap"
-          fastlane run build_app project:"ios/App/App.xcodeproj" scheme:"App" export_method:"app-store" xcargs:"DEVELOPMENT_TEAM=$APPLE_TEAM_ID -allowProvisioningUpdates"
+          fastlane run build_app project:"ios/App/App.xcodeproj" scheme:"App" export_method:"app-store" xcargs:"CODE_SIGNING_ALLOWED=NO"
           fastlane run upload_to_testflight ipa:"./build/RootMap.ipa" skip_waiting_for_build_processing:true
