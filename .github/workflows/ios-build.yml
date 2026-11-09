@@ -27,8 +27,11 @@ jobs:
       - name: Build Web Production Assets
         run: npm run build
 
-      - name: Sync Capacitor iOS
-        run: npx cap sync ios
+      - - name: Sync Capacitor iOS
+  run: |
+    npx cap sync ios
+    cd ios/App && pod install || true
+
 
       - name: Setup App Store Connect Key
         env:
