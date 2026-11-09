@@ -49,18 +49,8 @@ jobs:
           APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
         run: |
           KEY_PATH="$HOME/.appstoreconnect/private_keys/AuthKey_${APP_STORE_CONNECT_KEY_ID}.p8"
-        
-          # 1. Authenticate API Key
           fastlane run app_store_connect_api_key key_id:"$APP_STORE_CONNECT_KEY_ID" issuer_id:"$APP_STORE_CONNECT_ISSUER_ID" key_filepath:"$KEY_PATH"
-        
-          # 2. Fetch/create distribution certificate and install to runner keychain
-          fastlane run get_certificates api_key_path:"$KEY_PATH"
-        
-          # 3. Fetch/create App Store provisioning profile
-          fastlane run get_provisioning_profile api_key_path:"$KEY_PATH" app_identifier:"com.myannocone.rootmap"
-        
-          # 4. Build and package the archive into an IPA
+          fastlane run get_certificates
+          fastlane run get_provisioning_profile app_identifier:"com.myannocone.rootmap"
           fastlane run build_app project:"ios/App/App.xcodeproj" scheme:"App" export_method:"app-store"
-        
-          # 5. Upload to TestFlight
-          fastlane run upload_to_testflight api_key_path:"$KEY_PATH" ipa:"./build/RootMap.ipa" skip_waiting_for_build_processing:true
+          fastlane run upload_to_testflight ipa:"./build/RootMap.ipa" skip_waiting_for_build_processing:true 
