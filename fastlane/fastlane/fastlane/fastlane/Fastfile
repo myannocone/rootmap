@@ -9,6 +9,12 @@ platform :ios do
       key_filepath: "#{ENV['HOME']}/.appstoreconnect/private_keys/AuthKey_#{ENV['APP_STORE_CONNECT_KEY_ID']}.p8"
     )
 
+    produce(
+      api_key: api_key,
+      app_identifier: "com.myannocone.rootmap",
+      app_name: "RootMap"
+    )
+
     get_certificates(api_key: api_key)
     get_provisioning_profile(
       api_key: api_key,
