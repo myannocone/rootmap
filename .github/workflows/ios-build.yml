@@ -47,4 +47,9 @@ jobs:
         env:
           APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
           APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
-        run: fastlane beta
+        run: |
+          # Find wherever Fastfile is located and run beta from its parent directory
+          FASTFILE_DIR=$(dirname $(find . -name "Fastfile" | head -n 1))
+          cd "$FASTFILE_DIR/.."
+          fastlane beta        env:
+          
