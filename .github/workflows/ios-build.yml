@@ -29,8 +29,8 @@ jobs:
 
       - name: Sync Capacitor iOS
         run: |
-    npx cap sync ios
-    cd ios/App && pod install || true
+          npx cap sync ios
+          cd ios/App && pod install || true
 
 
       - name: Setup App Store Connect Key
