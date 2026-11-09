@@ -30,7 +30,7 @@ platform :ios do
       skip_set_partition_list: true
     )
 
-    get_provisioning_profile(
+    profile = get_provisioning_profile(
       api_key: api_key,
       app_identifier: "com.myannocone.rootmap"
     )
@@ -39,7 +39,7 @@ platform :ios do
       project: File.expand_path("ios/App/App.xcodeproj", ENV["GITHUB_WORKSPACE"] || Dir.pwd),
       scheme: "App",
       export_method: "app-store",
-      xcargs: "DEVELOPMENT_TEAM=WNDJWH8GJS"
+      xcargs: "-allowProvisioningUpdates DEVELOPMENT_TEAM=WNDJWH8GJS CODE_SIGN_STYLE=Manual PROVISIONING_PROFILE_SPECIFIER=\"#{ENV['SIGH_NAME']}\""
     )
 
     upload_to_testflight(
