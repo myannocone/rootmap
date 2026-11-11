@@ -3,16 +3,30 @@ default_platform(:ios)
 platform :ios do
   desc "Push a new build to TestFlight with automatic build numbering"
   lane :beta do
-    # 1. Use the GitHub Actions run number as build version (falls back to 2 locally)
+    # 1. Authenticate with App Store Connect API
+    key_content = ENV["APP_STORE_CONNECT_API_KEY"] || 
+                  ENV["APP_STORE_CONNECT_KEY_CONTENT"] || 
+                  ENV["APP_STORE_CONNECT_PRIVATE_KEY"] || 
+                  ENV["APP_STORE_CONNECT_API_KEY_KEY"]
+
+    app_store_connect_api_key(
+      key_id: ENV["APP_STORE_CONNECT_KEY_ID"] || ENV["APP_STORE_CONNECT_API_KEY_KEY_ID"],
+      issuer_id: ENV["APP_STORE_CONNECT_ISSUER_ID"] || ENV["APP_STORE_CONNECT_API_KEY_ISSUER_ID"],
+      key_content: key_content,
+      is_key_content_base64: true,
+      in_house: false
+    )
+
+    # 2. Get GitHub Actions run number for build versioning
     build_num = ENV["GITHUB_RUN_NUMBER"] || "2"
 
-    # 2. Code signing & provisioning
+    # 3. Code signing & provisioning
     get_certificates
     get_provisioning_profile(
       app_identifier: "com.myannocone.rootmap"
     )
 
-    # 3. Build and archive passing the build number directly into xcargs
+    # 4. Build and archive passing the build number directly to Xcode
     build_app(
       workspace: "App.xcworkspace",
       scheme: "App",
@@ -26,7 +40,7 @@ platform :ios do
       }
     )
 
-    # 4. Distribute to TestFlight
+    # 5. Distribute to TestFlight
     upload_to_testflight(
       skip_waiting_for_build_processing: true
     )
