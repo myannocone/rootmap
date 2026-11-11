@@ -3,11 +3,8 @@ default_platform(:ios)
 platform :ios do
   desc "Push a new build to TestFlight with automatic build numbering"
   lane :beta do
-    # 1. Automatically set build number using GitHub Actions run number
+    # 1. Use the GitHub Actions run number as build version (falls back to 2 locally)
     build_num = ENV["GITHUB_RUN_NUMBER"] || "2"
-    increment_build_number(
-      build_number: build_num
-    )
 
     # 2. Code signing & provisioning
     get_certificates
@@ -15,11 +12,12 @@ platform :ios do
       app_identifier: "com.myannocone.rootmap"
     )
 
-    # 3. Build and archive the iOS app
+    # 3. Build and archive passing the build number directly into xcargs
     build_app(
       workspace: "App.xcworkspace",
       scheme: "App",
       export_method: "app-store",
+      xcargs: "CURRENT_PROJECT_VERSION=#{build_num}",
       export_options: {
         signingStyle: "manual",
         provisioningProfiles: {
