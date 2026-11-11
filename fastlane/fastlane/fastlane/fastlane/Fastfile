@@ -1,53 +1,46 @@
 default_platform(:ios)
 
 platform :ios do
-  desc "Build and upload to TestFlight"
+  desc "Push a new build to TestFlight with automatic build numbering"
   lane :beta do
-    keychain_name = "ci_keychain"
-    keychain_password = "password123"
-
-    create_keychain(
-      name: keychain_name,
-      password: keychain_password,
-      default_keychain: true,
-      unlock: true,
-      timeout: 3600,
-      lock_when_sleeps: false
-    )
-
+    # 1. Authenticate with App Store Connect API
     api_key = app_store_connect_api_key(
       key_id: ENV["APP_STORE_CONNECT_KEY_ID"],
       issuer_id: ENV["APP_STORE_CONNECT_ISSUER_ID"],
-      key_filepath: "#{ENV['HOME']}/.appstoreconnect/private_keys/AuthKey_#{ENV['APP_STORE_CONNECT_KEY_ID']}.p8"
+      key_content: ENV["APP_STORE_CONNECT_API_KEY"],
+      is_key_content_base64: true,
+      in_house: false
     )
 
-    keychain_file = File.expand_path("~/Library/Keychains/ci_keychain-db")
-
-    get_certificates(
-      api_key: api_key,
-      keychain_path: keychain_file,
-      keychain_password: keychain_password,
-      skip_set_partition_list: false
+    # 2. Automatically sync build number using GitHub Actions run number or TestFlight increment
+    build_num = ENV["GITHUB_RUN_NUMBER"] || (latest_testflight_build_number(api_key: api_key) + 1).to_s
+    increment_build_number(
+      build_number: build_num,
+      xcodeproj: "App.xcodeproj"
     )
 
-    sh("security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k #{keychain_password} #{keychain_file}")
-
+    # 3. Code signing & provisioning
+    get_certificates
     get_provisioning_profile(
-      api_key: api_key,
       app_identifier: "com.myannocone.rootmap"
     )
 
+    # 4. Build and archive the iOS app
     build_app(
-      project: File.expand_path("ios/App/App.xcodeproj", ENV["GITHUB_WORKSPACE"] || Dir.pwd),
+      workspace: "App.xcworkspace",
       scheme: "App",
-      configuration: "Release",
       export_method: "app-store",
-      xcargs: "DEVELOPMENT_TEAM=WNDJWH8GJS CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY=\"Apple Distribution\" PROVISIONING_PROFILE_SPECIFIER=\"#{ENV['SIGH_NAME']}\""
+      export_options: {
+        signingStyle: "manual",
+        provisioningProfiles: {
+          "com.myannocone.rootmap" => ENV["sigh_com.myannocone.rootmap_appstore_profile-name"]
+        }
+      }
     )
 
+    # 5. Distribute to TestFlight
     upload_to_testflight(
       api_key: api_key,
-      app_identifier: "com.myannocone.rootmap",
       skip_waiting_for_build_processing: true
     )
   end
