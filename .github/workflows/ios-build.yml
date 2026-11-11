@@ -28,9 +28,7 @@ jobs:
         run: npm run build
 
       - name: Sync Capacitor iOS
-        run: |
-          npx cap sync ios
-
+        run: npx cap sync ios
 
       - name: Setup App Store Connect Key
         env:
@@ -38,18 +36,20 @@ jobs:
           KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
         run: |
           mkdir -p ~/.appstoreconnect/private_keys
-          printf "%s" "$KEY_CONTENT" > ~/.appstoreconnect/private_keys/AuthKey_${KEY_ID}.p8
+          if printf '%s' "$KEY_CONTENT" | grep -q "BEGIN PRIVATE KEY"; then
+            printf '%s' "$KEY_CONTENT" > ~/.appstoreconnect/private_keys/AuthKey_${KEY_ID}.p8
+          else
+            printf '%s' "$KEY_CONTENT" | openssl base64 -d -A > ~/.appstoreconnect/private_keys/AuthKey_${KEY_ID}.p8
+          fi
 
       - name: Install Fastlane
-        run: gem install fastlane --no-document
+        run: |
+          cd ios/App
+          bundle install
 
       - name: Build and Upload to TestFlight
         env:
           APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
           APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
-        run: |
-          # Find wherever Fastfile is located and run beta from its parent directory
-          FASTFILE_DIR=$(dirname $(find . -name "Fastfile" | head -n 1))
-          cd "$FASTFILE_DIR/.."
-          fastlane beta        env:
-          
+          APP_STORE_CONNECT_API_KEY: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
+        run: cd ios/App && bundle exec fastlane beta
