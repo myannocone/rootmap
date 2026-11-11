@@ -30,7 +30,7 @@ public class EspnLoginPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 }
 
-final class EspnLoginSheet: UIViewController, WKNavigationDelegate, WKHTTPCookieStoreObserver {
+final class EspnLoginSheet: UIViewController, WKNavigationDelegate, WKUIDelegate, WKHTTPCookieStoreObserver {
     var onFinish: (([String: Any]) -> Void)?
     var onCancel: (() -> Void)?
 
@@ -54,10 +54,11 @@ final class EspnLoginSheet: UIViewController, WKNavigationDelegate, WKHTTPCookie
         config.websiteDataStore = .default()
         webView = WKWebView(frame: view.bounds, configuration: config)
         webView.navigationDelegate = self
+        webView.uiDelegate = self
         webView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         view.addSubview(webView)
 
-        if let url = URL(string: "https://registerdisney.go.com/jfc/v5/web/client/ESPN-ONESITE.WEB-PROD/guest/login?langPref=en-US") {
+        if let url = URL(string: "https://www.espn.com/login") {
             webView.load(URLRequest(url: url))
         }
     }
@@ -74,6 +75,18 @@ final class EspnLoginSheet: UIViewController, WKNavigationDelegate, WKHTTPCookie
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         refreshCookies()
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        createWebViewWith configuration: WKWebViewConfiguration,
+        for navigationAction: WKNavigationAction,
+        windowFeatures: WKWindowFeatures
+    ) -> WKWebView? {
+        if navigationAction.targetFrame == nil, let url = navigationAction.request.url {
+            webView.load(URLRequest(url: url))
+        }
+        return nil
     }
 
     private func refreshCookies() {
