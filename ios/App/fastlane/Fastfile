@@ -16,7 +16,11 @@ platform :ios do
 
     build_num = ENV["GITHUB_RUN_NUMBER"] || "2"
 
-    get_certificates(api_key: api_key)
+    get_certificates(
+      api_key: api_key,
+      create: false,
+      keychain_path: ENV["KEYCHAIN_PATH"]
+    )
     get_provisioning_profile(
       api_key: api_key,
       app_identifier: "com.myannocone.rootmap"
