@@ -17,9 +17,9 @@
   try {
     // 1. Try fetching current NFL metadata & games
     const testEndpoints = [
-      'https://fantasysports.yahooapis.com/fantasy/v2/game/nfl?format=json',
       'https://fantasysports.yahooapis.com/fantasy/v2/users;use_login=1/games;game_keys=nfl/leagues?format=json',
-      'https://fantasysports.yahooapis.com/fantasy/v2/users;use_login=1/games/teams?format=json'
+      'https://fantasysports.yahooapis.com/fantasy/v2/users;use_login=1/games;game_keys=nfl/teams?format=json',
+      'https://fantasysports.yahooapis.com/fantasy/v2/game/nfl?format=json'
     ];
 
     let result = null;

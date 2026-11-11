@@ -6,12 +6,11 @@
   }
 
   try {
-    // Query root user games to avoid strict subresource authorization blocks
     const gamesResponse = await fetch(
-      'https://fantasysports.yahooapis.com/fantasy/v2/users;use_login=1/games?format=json',
+      'https://fantasysports.yahooapis.com/fantasy/v2/users;use_login=1/games;game_keys=nfl?format=json',
       {
         headers: {
-          'Authorization': authHeader,
+          'Authorization': authHeader.startsWith('Bearer ') ? authHeader : `Bearer ${authHeader}`,
           'Accept': 'application/json'
         }
       }
@@ -35,10 +34,10 @@
 
     // Query active user leagues
     const leaguesResponse = await fetch(
-      'https://fantasysports.yahooapis.com/fantasy/v2/users;use_login=1/games/leagues?format=json',
+      'https://fantasysports.yahooapis.com/fantasy/v2/users;use_login=1/games;game_keys=nfl/leagues?format=json',
       {
         headers: {
-          'Authorization': authHeader,
+          'Authorization': authHeader.startsWith('Bearer ') ? authHeader : `Bearer ${authHeader}`,
           'Accept': 'application/json'
         }
       }
