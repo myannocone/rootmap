@@ -16,6 +16,7 @@ import {
   syncSleeperLeagues
 } from './utils/sleeperApi';
 import { fetchEspnLeague, listEspnTeams, mapEspnLeague } from './utils/espnDirectApi';
+import { ESPN_LOGIN_URL } from './utils/espnLogin';
 import { openYahooLogin } from './utils/openYahooLogin';
 import { SITE_ORIGIN } from './utils/siteOrigin';
 import { Capacitor } from '@capacitor/core';
@@ -4122,7 +4123,6 @@ export default function App() {
               </p>
             )}
 
-            {!Capacitor.isNativePlatform() && (
             <div>
               <button
                 type="button"
@@ -4130,7 +4130,7 @@ export default function App() {
                 onClick={() => setEspnPrivateOpen((open) => !open)}
                 className={`w-full text-left text-[11px] font-black ${isLight ? 'text-slate-700' : 'text-slate-200'}`}
               >
-                {espnPrivateOpen ? '▾' : '▸'} Advanced: Sync Private League (SWID & espn_s2)
+                {espnPrivateOpen ? '▾' : '▸'} Private league: SWID and espn_s2
               </button>
               {espnPrivateOpen && (
                 <div className="mt-2 space-y-2">
@@ -4181,12 +4181,19 @@ export default function App() {
                     />
                   </div>
                   <p className={`text-[11px] leading-snug ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
-                    Found in Chrome/Edge under DevTools (F12) -&gt; Application -&gt; Cookies -&gt; espn.com.
+                    Sign in at ESPN, then copy SWID and espn_s2 from the espn.com cookies. Both are sent with the league request and are not stored after this screen closes.
                   </p>
+                  <a
+                    href={ESPN_LOGIN_URL}
+                    target="_blank"
+                    rel="noreferrer"
+                    className={`inline-flex text-[11px] font-black underline ${isLight ? 'text-red-700' : 'text-red-300'}`}
+                  >
+                    Open ESPN sign-in
+                  </a>
                 </div>
               )}
             </div>
-            )}
 
             <div className="grid grid-cols-2 gap-2">
               <div>

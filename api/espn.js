@@ -8,6 +8,12 @@ function decodeOnce(value) {
   }
 }
 
+function headerValue(req, name) {
+  const value = req.headers?.[name] ?? req.headers?.[name.toLowerCase()];
+  if (Array.isArray(value)) return value[0] || '';
+  return value || '';
+}
+
 function queryValue(req, name) {
   const fromQuery = req.query?.[name];
   if (Array.isArray(fromQuery)) return fromQuery[0] || '';
@@ -24,8 +30,8 @@ export default async function handler(req, res) {
   const leagueId = String(queryValue(req, 'leagueId')).trim();
   const season = String(queryValue(req, 'season') || '2026').trim();
   const week = String(queryValue(req, 'week') || '9').trim();
-  const swid = decodeOnce(queryValue(req, 'swid')).trim();
-  const espnS2 = decodeOnce(queryValue(req, 'espn_s2')).trim();
+  const swid = decodeOnce(queryValue(req, 'swid') || headerValue(req, 'x-swid')).trim();
+  const espnS2 = decodeOnce(queryValue(req, 'espn_s2') || headerValue(req, 'x-espn-s2')).trim();
 
   if (!/^\d+$/.test(leagueId)) {
     res.statusCode = 400;

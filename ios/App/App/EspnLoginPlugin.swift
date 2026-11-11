@@ -57,7 +57,7 @@ final class EspnLoginSheet: UIViewController, WKNavigationDelegate, WKHTTPCookie
         webView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         view.addSubview(webView)
 
-        if let url = URL(string: "https://fantasy.espn.com/football/") {
+        if let url = URL(string: "https://registerdisney.go.com/jfc/v5/web/client/ESPN-ONESITE.WEB-PROD/guest/login?langPref=en-US") {
             webView.load(URLRequest(url: url))
         }
     }
@@ -78,9 +78,9 @@ final class EspnLoginSheet: UIViewController, WKNavigationDelegate, WKHTTPCookie
 
     private func refreshCookies() {
         webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { [weak self] cookies in
-            let espn = cookies.filter { $0.domain.contains("espn.com") }
-            let swid = espn.first { $0.name == "SWID" }?.value ?? ""
-            let s2 = espn.first { $0.name == "espn_s2" }?.value ?? ""
+            let session = EspnLoginSheet.sessionPair(cookies)
+            let swid = session.swid
+            let s2 = session.s2
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 let ready = !swid.isEmpty && !s2.isEmpty
@@ -106,9 +106,9 @@ final class EspnLoginSheet: UIViewController, WKNavigationDelegate, WKHTTPCookie
         guard !finished else { return }
         webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { [weak self] cookies in
             guard let self = self else { return }
-            let espn = cookies.filter { $0.domain.contains("espn.com") }
-            let swid = espn.first { $0.name == "SWID" }?.value ?? ""
-            let s2 = espn.first { $0.name == "espn_s2" }?.value ?? ""
+            let session = EspnLoginSheet.sessionPair(cookies)
+            let swid = session.swid
+            let s2 = session.s2
             self.webView.evaluateJavaScript(
                 "(function(){var ids=[];var re=/leagueId=(\\d+)/g;var html=document.documentElement.innerHTML;var m;while((m=re.exec(html))&&ids.length<12){if(ids.indexOf(m[1])===-1)ids.push(m[1]);}return ids;})();"
             ) { [weak self] value, _ in
@@ -142,7 +142,8 @@ final class EspnLoginSheet: UIViewController, WKNavigationDelegate, WKHTTPCookie
         let store = webView.configuration.websiteDataStore.httpCookieStore
         store.getAllCookies { cookies in
             let session = cookies.filter {
-                $0.domain.contains("espn.com") && ($0.name == "SWID" || $0.name == "espn_s2")
+                ($0.name == "SWID" || $0.name == "espn_s2")
+                    && ($0.domain.contains("espn.com") || $0.domain.contains("go.com") || $0.domain.contains("disney.com"))
             }
             let group = DispatchGroup()
             for cookie in session {
@@ -151,6 +152,15 @@ final class EspnLoginSheet: UIViewController, WKNavigationDelegate, WKHTTPCookie
             }
             group.notify(queue: .main, execute: completion)
         }
+    }
+
+    private static func sessionPair(_ cookies: [HTTPCookie]) -> (swid: String, s2: String) {
+        func pick(_ name: String) -> String {
+            let matches = cookies.filter { $0.name == name }
+            let espn = matches.first { $0.domain.contains("espn.com") }
+            return (espn ?? matches.first)?.value ?? ""
+        }
+        return (pick("SWID"), pick("espn_s2"))
     }
 
     private func leagueId(from url: URL?) -> String? {
