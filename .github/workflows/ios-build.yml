@@ -1,14 +1,81 @@
-- name: Install distribution certificate
+name: Build and Deploy to TestFlight
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    name: Build & Upload iOS App
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Build Web Production Assets
+        run: npm run build
+
+      - name: Sync Capacitor iOS
+        run: npx cap sync ios
+
+      - name: Setup App Store Connect Key
+        env:
+          KEY_CONTENT: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
+          KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+        run: |
+          mkdir -p ~/.appstoreconnect/private_keys
+          if printf '%s' "$KEY_CONTENT" | grep -q "BEGIN PRIVATE KEY"; then
+            printf '%s' "$KEY_CONTENT" > ~/.appstoreconnect/private_keys/AuthKey_${KEY_ID}.p8
+          else
+            printf '%s' "$KEY_CONTENT" | openssl base64 -d -A > ~/.appstoreconnect/private_keys/AuthKey_${KEY_ID}.p8
+          fi
+
+      - name: Install Fastlane
+        run: |
+          cd ios/App
+          bundle install
+
+      - name: Install distribution certificate
         env:
           BUILD_CERT_PEM: ${{ secrets.BUILD_CERT_PEM }}
           BUILD_KEY_PEM: ${{ secrets.BUILD_KEY_PEM }}
-          KEYCHAIN_PASSWORD: temp_ci_password_123
         run: |
-          echo "$BUILD_CERT_PEM" > "$RUNNER_TEMP/cert.pem"
-          echo "$BUILD_KEY_PEM" > "$RUNNER_TEMP/key.pem"
-          openssl pkcs12 -export -inkey "$RUNNER_TEMP/key.pem" -in "$RUNNER_TEMP/cert.pem" -out "$RUNNER_TEMP/build_certificate.p12" -passout pass:"$KEYCHAIN_PASSWORD"
-          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
-          security default-keychain -s build.keychain
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
-          security import "$RUNNER_TEMP/build_certificate.p12" -k build.keychain -P "$KEYCHAIN_PASSWORD" -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" build.keychain
+          CERT_PEM_PATH="$RUNNER_TEMP/cert.pem"
+          KEY_PEM_PATH="$RUNNER_TEMP/key.pem"
+          CERTIFICATE_PATH="$RUNNER_TEMP/build_certificate.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 24)"
+
+          printf '%s\n' "$BUILD_CERT_PEM" > "$CERT_PEM_PATH"
+          printf '%s\n' "$BUILD_KEY_PEM" > "$KEY_PEM_PATH"
+          openssl pkcs12 -export -inkey "$KEY_PEM_PATH" -in "$CERT_PEM_PATH" -out "$CERTIFICATE_PATH" -passout pass:"$KEYCHAIN_PASSWORD"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" -P "$KEYCHAIN_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" "$HOME/Library/Keychains/login.keychain-db"
+          security default-keychain -s "$KEYCHAIN_PATH"
+
+          rm -f "$CERT_PEM_PATH" "$KEY_PEM_PATH" "$CERTIFICATE_PATH"
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+
+      - name: Build and Upload to TestFlight
+        env:
+          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          APP_STORE_CONNECT_API_KEY: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
+        run: cd ios/App && bundle exec fastlane beta
