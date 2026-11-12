@@ -58,8 +58,12 @@ jobs:
           KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
           KEYCHAIN_PASSWORD="$(openssl rand -base64 24)"
 
-          printf '%s\n' "$BUILD_CERT_PEM" | tr -d '\r' > "$CERT_PEM_PATH"
-          printf '%s\n' "$BUILD_KEY_PEM" | tr -d '\r' > "$KEY_PEM_PATH"
+          printf '%s' "$BUILD_CERT_PEM" | base64 --decode | tr -d '\r' > "$CERT_PEM_PATH"
+          printf '%s' "$BUILD_KEY_PEM" | base64 --decode | tr -d '\r' > "$KEY_PEM_PATH"
+
+          echo "Cert bytes: $(wc -c < "$CERT_PEM_PATH"), header: $(head -n 1 "$CERT_PEM_PATH")"
+          echo "Key bytes: $(wc -c < "$KEY_PEM_PATH"), header: $(head -n 1 "$KEY_PEM_PATH")"
+
           openssl pkcs12 -export -inkey "$KEY_PEM_PATH" -in "$CERT_PEM_PATH" -out "$CERTIFICATE_PATH" -passout pass:"$KEYCHAIN_PASSWORD"
 
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
