@@ -1,4 +1,4 @@
-import UIKit
+﻿import UIKit
 import WebKit
 import Capacitor
 
@@ -157,7 +157,7 @@ final class EspnLoginSheet: UIViewController, WKNavigationDelegate, WKUIDelegate
                     let current = self.leagueId(from: self.webView.url)
                     var result: [String: Any] = ["swid": swid, "espnS2": s2, "leagueIds": ids]
                     if let current = current {
-                        result["leagueId") = current
+                        result["leagueId"] = current
                     } else if let first = ids.first {
                         result["leagueId"] = first
                     }
