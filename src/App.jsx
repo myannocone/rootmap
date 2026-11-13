@@ -21,7 +21,7 @@ import { openYahooLogin } from './utils/openYahooLogin';
 import {
   isYahooSessionExpired,
   leagueFromYahooCapture,
-  readYahooSession,
+  readYahooSessions,
   writeYahooSession,
   YahooLogin
 } from './utils/yahooNative';
@@ -139,9 +139,14 @@ function formatSeasonRecord(record) {
   return `${wins}-${losses}-${ties}`;
 }
 
-function teamSeasonLine(name, record, rank) {
-  const bits = [formatSeasonRecord(record), ordinalRank(rank)].filter(Boolean);
-  return bits.length ? `${name} (${bits.join(' • ')})` : name;
+function teamSeasonDetail(record, rank) {
+  return [formatSeasonRecord(record), ordinalRank(rank)].filter(Boolean).join(' • ');
+}
+
+function starterActualLabel(player) {
+  const actual = finiteNumber(player?.actualPoints);
+  if (actual == null) return '—';
+  return scoreText(actual);
 }
 
 function leagueSideRecord(league, side) {
@@ -197,12 +202,17 @@ function MatchupLineups({ league, week, isLight }) {
           No Week {week} starters saved
         </p>
       ) : (
-        <ul className="mt-1 space-y-0.5">
-          {players.map((player) => (
-            <li key={`${player.name}-${player.nflTeam || ''}`} className="min-w-0">
-              <div className={`truncate text-[11px] font-black ${isLight ? 'text-slate-900' : 'text-white'}`}>{player.name}</div>
-              <div className={`truncate text-[9px] font-bold ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
-                {player.position || player.slot}{player.nflTeam ? ` · ${player.nflTeam}` : ''}
+        <ul className="mt-1 space-y-1">
+          {players.map((player, index) => (
+            <li key={`${player.name}-${player.slot || index}`} className="flex items-center justify-between gap-2 min-w-0">
+              <div className={`min-w-0 flex-1 ${align === 'end' ? 'text-right' : 'text-left'}`}>
+                <div className={`truncate text-[11px] font-black ${isLight ? 'text-slate-900' : 'text-white'}`}>{player.name}</div>
+                <div className={`truncate text-[9px] font-bold ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+                  {player.position || player.slot}{player.nflTeam ? ` · ${player.nflTeam}` : ''}
+                </div>
+              </div>
+              <div className={`w-10 shrink-0 text-right text-[11px] font-black tabular-nums ${isLight ? 'text-slate-900' : 'text-white'}`}>
+                {starterActualLabel(player)}
               </div>
             </li>
           ))}
@@ -249,9 +259,14 @@ function LeagueScoreboard({ league, isLight, onRemove }) {
       >
         {mark.initials}
       </div>
-      <div className={`w-full font-black text-[13px] leading-tight break-words ${isLight ? 'text-slate-900' : 'text-white'}`}>
-        {teamSeasonLine(name, record, rank)}
+      <div className={`w-full min-w-0 font-black text-[13px] leading-tight truncate ${isLight ? 'text-slate-900' : 'text-white'}`}>
+        {name}
       </div>
+      {teamSeasonDetail(record, rank) ? (
+        <div className={`w-full min-w-0 truncate text-[10px] font-bold leading-tight ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+          {teamSeasonDetail(record, rank)}
+        </div>
+      ) : null}
       <div className={`font-black text-3xl leading-none tabular-nums ${scoreClass(leading)}`}>
         {scoreText(score)}
       </div>
@@ -1563,7 +1578,9 @@ export default function App() {
         setLeagues((prev) => [
           ...prev.filter((league) => {
             if (league.id === normalized.id) return false;
-            if (normalized.yahooLeagueId && league.yahooLeagueId === normalized.yahooLeagueId) return false;
+            if (normalized.yahooLeagueId && league.yahooLeagueId === normalized.yahooLeagueId) {
+              if (!normalized.yahooTeamId || !league.yahooTeamId || league.yahooTeamId === normalized.yahooTeamId) return false;
+            }
             return true;
           }),
           normalized
@@ -1717,15 +1734,23 @@ export default function App() {
       }
       if (Capacitor.isNativePlatform()) {
         try {
-          const saved = readYahooSession();
-          if (saved?.matchupUrl) {
-            let captured;
+          const sessions = readYahooSessions().filter((saved) => saved?.matchupUrl);
+          let expired = false;
+          for (const saved of sessions) {
+            if (cancelled || expired) break;
             try {
-              captured = await YahooLogin.refresh({ matchupUrl: saved.matchupUrl, week: String(week) });
+              const captured = await YahooLogin.refresh({ matchupUrl: saved.matchupUrl, week: String(week) });
+              if (cancelled || !captured) continue;
+              writeYahooSession({ ...saved, ...captured });
+              const imported = leagueFromYahooCapture({ ...saved, ...captured }, week);
+              if (imported) updates.set(imported.id, imported);
             } catch (error) {
-              if (!isYahooSessionExpired(error) || cancelled) throw error;
-              captured = await YahooLogin.login();
+              if (!isYahooSessionExpired(error)) throw error;
+              expired = true;
             }
+          }
+          if (expired && !cancelled) {
+            const captured = await YahooLogin.login();
             if (!cancelled && captured) {
               writeYahooSession(captured);
               const imported = leagueFromYahooCapture(captured, week);
@@ -1742,7 +1767,11 @@ export default function App() {
         const next = prev.map((lg) => {
           let updated = updates.get(lg.id);
           if (!updated && lg.yahooLeagueId) {
-            updated = [...updates.values()].find((item) => item.yahooLeagueId && item.yahooLeagueId === lg.yahooLeagueId);
+            updated = [...updates.values()].find((item) => {
+              if (!item.yahooLeagueId || item.yahooLeagueId !== lg.yahooLeagueId) return false;
+              if (item.yahooTeamId && lg.yahooTeamId) return item.yahooTeamId === lg.yahooTeamId;
+              return !item.yahooTeamId || !lg.yahooTeamId;
+            });
           }
           if (!updated) return lg;
           used.add(updated.id);
@@ -1750,7 +1779,11 @@ export default function App() {
         });
         updates.forEach((updated, id) => {
           if (used.has(id) || !String(id).startsWith('yahoo-')) return;
-          if (next.some((lg) => lg.id === id || (updated.yahooLeagueId && lg.yahooLeagueId === updated.yahooLeagueId))) return;
+          if (next.some((lg) => lg.id === id || (
+            updated.yahooLeagueId
+            && lg.yahooLeagueId === updated.yahooLeagueId
+            && (!updated.yahooTeamId || !lg.yahooTeamId || lg.yahooTeamId === updated.yahooTeamId)
+          ))) return;
           next.push(normalizeLeague(updated));
         });
         return next;
@@ -2072,6 +2105,10 @@ export default function App() {
     setShowYahooIngest(tab === 'yahoo');
     setShowSleeper(tab === 'sleeper');
     setShowEspn(tab === 'espn');
+    if (tab === 'espn') {
+      const savedId = readEspnSession()?.leagueId || '';
+      if (savedId) setEspnLeagueId((current) => String(current || '').trim() || savedId);
+    }
   };
 
   const closeConnect = () => {
@@ -4166,7 +4203,7 @@ export default function App() {
                   Connect / Import League
                 </h3>
                 <p className={`text-xs mt-1 leading-relaxed ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
-                  Load a public ESPN league, pick your team, and RootMap reads that week’s starters.
+                  Public leagues load from an ID. Sign in on ESPN and this phone can also open private leagues.
                 </p>
               </div>
               <button
@@ -4332,7 +4369,7 @@ export default function App() {
             </div>
 
             <p className={`text-[11px] leading-snug ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
-              Works instantly for public leagues. (If your league is private, ensure your commissioner has toggled &apos;Viewable to Public&apos; in League Settings, or use the RootMap Desktop Extension).
+              Public leagues load with the league ID. Private leagues load after you sign in on ESPN, and this phone keeps that session for weekly refreshes.
             </p>
 
             <button

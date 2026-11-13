@@ -40,6 +40,7 @@ final class EspnLoginSheet: UIViewController, WKNavigationDelegate, WKUIDelegate
     private var sawCookies = false
     private var finished = false
     private var autoTriggered = false
+    private var seenLeagueId: String?
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -84,7 +85,13 @@ final class EspnLoginSheet: UIViewController, WKNavigationDelegate, WKUIDelegate
         refreshCookies()
     }
 
+    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        noteLeague(from: navigationAction.request.url)
+        decisionHandler(.allow)
+    }
+
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        noteLeague(from: webView.url)
         refreshCookies()
     }
 
@@ -154,7 +161,7 @@ final class EspnLoginSheet: UIViewController, WKNavigationDelegate, WKUIDelegate
                     self.finished = true
                     self.pollTimer?.invalidate()
                     let ids = value as? [String] ?? []
-                    let current = self.leagueId(from: self.webView.url)
+                    let current = self.leagueId(from: self.webView.url) ?? self.seenLeagueId
                     var result: [String: Any] = ["swid": swid, "espnS2": s2, "leagueIds": ids]
                     if let current = current {
                         result["leagueId"] = current
@@ -197,11 +204,27 @@ final class EspnLoginSheet: UIViewController, WKNavigationDelegate, WKUIDelegate
         return (pick("SWID"), pick("espn_s2"))
     }
 
+    private func noteLeague(from url: URL?) {
+        if let id = leagueId(from: url) {
+            seenLeagueId = id
+        }
+    }
+
     private func leagueId(from url: URL?) -> String? {
         guard let url else { return nil }
-        return URLComponents(url: url, resolvingAgainstBaseURL: false)?
+        if let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?
             .queryItems?
-            .first { $0.name == "leagueId" }?
-            .value
+            .first(where: { $0.name == "leagueId" })?
+            .value,
+           query.range(of: #"^\d+$"#, options: .regularExpression) != nil {
+            return query
+        }
+        let absolute = url.absoluteString
+        guard let regex = try? NSRegularExpression(pattern: "leagueId=(\\d+)"),
+              let match = regex.firstMatch(in: absolute, range: NSRange(absolute.startIndex..., in: absolute)),
+              let piece = Range(match.range(at: 1), in: absolute) else {
+            return nil
+        }
+        return String(absolute[piece])
     }
 }

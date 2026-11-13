@@ -5,6 +5,8 @@ const DASH_RE = /^[-–—]$/;
 const FLOAT_RE = /^\d+\.\d{1,2}$/;
 const YAHOO_UI_NOISE_RE = /(Video\s*Forecast|New\s*Player\s*Note|No\s*new\s*player\s*Notes|Player\s*Note)/gi;
 const NAME_NOISE_LINE_RE = /^(?:No new player Notes|Video Forecast|New Player Note|Player Note|PUP|SUSP|IR|Q|O)$/i;
+const OPPONENT_MARK_RE = /^(?:@|vs\.?|at)\s+[A-Za-z]{2,3}$/i;
+const LEAGUE_LINE_RE = /^League:\s*(.+)$/i;
 const NAME_NOISE_SUFFIX_RE = /(?:\s+(?:PUP|SUSP|IR|Q|O))+$/i;
 const RECORD_RE = /^(\d{1,2})-(\d{1,2})-(\d{1,2})(?:\s*\|\s*(\d+)(?:st|nd|rd|th)?)?$/i;
 const RANK_RE = /^(\d+)(?:st|nd|rd|th)$/i;
@@ -50,6 +52,14 @@ function isYahooStarterStop(line) {
   return STOP_SLOT_RE.test(text) || /bench players/i.test(text) || /^bench$/i.test(text) || /^total\b/i.test(text);
 }
 
+function isOpponentMark(line) {
+  return OPPONENT_MARK_RE.test(String(line || '').trim());
+}
+
+function isLeagueLine(line) {
+  return LEAGUE_LINE_RE.test(String(line || '').trim());
+}
+
 function isYahooChromeLine(line) {
   return /^(week\b.*|starters|bench|projected|projection|proj\b.*|matchup|yahoo|fantasy|points|pts|vs\.?|edit|live|recap)$/i.test(String(line || '').trim());
 }
@@ -74,6 +84,7 @@ function isNameLine(line) {
   const text = String(line || '').trim();
   if (!text || isDash(text) || isFloatLine(text) || SLOT_TOKEN_RE.test(text) || isYahooStarterStop(text) || isTeamPosLine(text)) return false;
   if (isGameLine(text) || isStatLine(text) || RECORD_RE.test(text) || RANK_RE.test(text) || isYahooChromeLine(text)) return false;
+  if (isOpponentMark(text) || isLeagueLine(text)) return false;
   const cleaned = stripNameNoise(text);
   if (cleaned.length < 2 || cleaned.length > 48) return false;
   return /[A-Za-z]/.test(cleaned);
@@ -127,7 +138,7 @@ function yahooLines(raw) {
   String(raw || '').replace(/\r/g, '').split('\n').forEach((row) => {
     explodeYahooLine(row).forEach((piece) => {
       const text = String(piece || '').trim();
-      if (text) lines.push(text);
+      if (text && !isOpponentMark(text)) lines.push(text);
     });
   });
   return lines;
@@ -151,6 +162,7 @@ function teamNameBefore(header, index) {
   for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
     const prev = header[cursor];
     if (RECORD_RE.test(prev)) break;
+    if (isLeagueLine(prev) || isOpponentMark(prev)) continue;
     if (isNameLine(prev)) names.unshift(stripNameNoise(prev));
   }
   return names[0] || '';
@@ -167,6 +179,8 @@ function projectionAfter(header, index) {
 }
 
 function parseYahooHeader(lines) {
+  const leagueLine = lines.find((line) => isLeagueLine(line));
+  const leagueName = leagueLine ? (leagueLine.match(LEAGUE_LINE_RE)?.[1] || '').trim() : '';
   const startersAt = lines.findIndex((line) => /^starters$/i.test(line));
   const firstSlot = lines.findIndex((line) => SLOT_TOKEN_RE.test(line));
   const end = startersAt >= 0 ? startersAt : (firstSlot >= 0 ? firstSlot : lines.length);
@@ -190,6 +204,7 @@ function parseYahooHeader(lines) {
     });
   }
   return {
+    leagueName,
     myTeamName: teams[0]?.name || '',
     oppTeamName: teams[1]?.name || '',
     myRecord: teams[0]?.record || null,
@@ -357,6 +372,7 @@ export function parseYahooMatchupText(raw) {
   }
 
   return {
+    leagueName: header.leagueName || '',
     myTeamName: header.myTeamName || 'My Team',
     oppTeamName: header.oppTeamName || 'Opponent',
     myRecord: header.myRecord,
