@@ -26,7 +26,22 @@ function queryValue(req, name) {
   }
 }
 
+const BROWSER_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+
+function applyCors(res) {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept, X-SWID, X-ESPN-S2');
+}
+
 export default async function handler(req, res) {
+  applyCors(res);
+  if (req.method === 'OPTIONS') {
+    res.statusCode = 204;
+    res.end();
+    return;
+  }
+
   const leagueId = String(queryValue(req, 'leagueId')).trim();
   const season = String(queryValue(req, 'season') || '2026').trim();
   const week = String(queryValue(req, 'week') || '9').trim();
@@ -41,7 +56,10 @@ export default async function handler(req, res) {
   }
 
   const target = `https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/${encodeURIComponent(season)}/segments/0/leagues/${leagueId}?view=mMatchup&view=mRoster&view=mTeam&view=mSettings&scoringPeriodId=${encodeURIComponent(week)}&matchupPeriodId=${encodeURIComponent(week)}`;
-  const headers = { Accept: 'application/json' };
+  const headers = {
+    Accept: 'application/json',
+    'User-Agent': BROWSER_USER_AGENT
+  };
   if (swid && espnS2) {
     headers.Cookie = `SWID=${swid}; espn_s2=${espnS2};`;
   }

@@ -90,16 +90,14 @@ export function espnLeagueUrl({ season, leagueId, week }) {
   return `${ESPN_ORIGIN}/apis/v3/games/ffl/seasons/${season}/segments/0/leagues/${leagueId}?${espnViewQuery(week)}`;
 }
 
-function clientEspnUrl({ season, leagueId, week, session }) {
+function clientEspnUrl({ season, leagueId, week }) {
   if (import.meta.env.DEV) {
     return `/api/espn/apis/v3/games/ffl/seasons/${season}/segments/0/leagues/${leagueId}?${espnViewQuery(week)}`;
   }
   const params = new URLSearchParams({
     leagueId: String(leagueId),
     season: String(season),
-    week: String(week),
-    swid: session?.swid || '',
-    espn_s2: session?.espnS2 || ''
+    week: String(week)
   });
   const path = `/api/espn?${params.toString()}`;
   return Capacitor.isNativePlatform() ? `${SITE_ORIGIN}${path}` : path;
@@ -149,9 +147,9 @@ export async function fetchEspnLeague({ leagueId, season = 2026, week = 9, swid 
   if (!/^\d+$/.test(id)) throw new Error('Enter an ESPN league ID.');
   const { year, weekNumber } = assertSeasonAndWeek(season, week);
   const session = espnSessionCookies(swid, espnS2);
-  const url = clientEspnUrl({ season: year, leagueId: id, week: weekNumber, session });
+  const url = clientEspnUrl({ season: year, leagueId: id, week: weekNumber });
   const headers = { Accept: 'application/json' };
-  if (session && import.meta.env.DEV) {
+  if (session) {
     headers['X-SWID'] = encodeURIComponent(session.swid);
     headers['X-ESPN-S2'] = encodeURIComponent(session.espnS2);
   }

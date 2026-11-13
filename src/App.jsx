@@ -16,8 +16,15 @@ import {
   syncSleeperLeagues
 } from './utils/sleeperApi';
 import { fetchEspnLeague, listEspnTeams, mapEspnLeague } from './utils/espnDirectApi';
-import { ESPN_LOGIN_URL } from './utils/espnLogin';
+import { ESPN_LOGIN_URL, openNativeEspnLogin, readEspnSession, writeEspnSession } from './utils/espnLogin';
 import { openYahooLogin } from './utils/openYahooLogin';
+import {
+  isYahooSessionExpired,
+  leagueFromYahooCapture,
+  readYahooSession,
+  writeYahooSession,
+  YahooLogin
+} from './utils/yahooNative';
 import { SITE_ORIGIN } from './utils/siteOrigin';
 import { Capacitor } from '@capacitor/core';
 import { notifyCrossFire, notifyZeroProjectionAlerts, prepareCrossFireAlerts, prepareZeroProjectionAlerts, tapHaptic } from './utils/nativeFeedback';
@@ -1446,18 +1453,21 @@ export default function App() {
   const [sleeperBusy, setSleeperBusy] = useState('');
   const [sleeperError, setSleeperError] = useState('');
   const [showEspn, setShowEspn] = useState(false);
-  const [espnLeagueId, setEspnLeagueId] = useState('');
+  const [espnLeagueId, setEspnLeagueId] = useState(() => readEspnSession()?.leagueId || '');
   const [espnWeek, setEspnWeek] = useState(() => String(getActiveSlate()?.week || FALLBACK_NFL_WEEK));
   const [espnSeason, setEspnSeason] = useState('2026');
   const [espnLeague, setEspnLeague] = useState(null);
   const [espnTeams, setEspnTeams] = useState([]);
-  const [espnTeamId, setEspnTeamId] = useState('');
+  const [espnTeamId, setEspnTeamId] = useState(() => readEspnSession()?.teamId || '');
   const [espnBusy, setEspnBusy] = useState('');
   const [espnError, setEspnError] = useState('');
   const [espnPrivateOpen, setEspnPrivateOpen] = useState(false);
-  const [espnSwid, setEspnSwid] = useState('');
-  const [espnS2, setEspnS2] = useState('');
-  const [espnNativeSession, setEspnNativeSession] = useState(null);
+  const [espnSwid, setEspnSwid] = useState(() => readEspnSession()?.swid || '');
+  const [espnS2, setEspnS2] = useState(() => readEspnSession()?.espnS2 || '');
+  const [espnNativeSession, setEspnNativeSession] = useState(() => {
+    const saved = readEspnSession();
+    return saved ? { swid: saved.swid, espnS2: saved.espnS2 } : null;
+  });
   const [rootView, setRootView] = useState('both');
   const [yahooPaste, setYahooPaste] = useState('');
   const [yahooIngestError, setYahooIngestError] = useState('');
@@ -1539,10 +1549,37 @@ export default function App() {
     setIsSyncing(true);
     setSyncStatus('');
     try {
+      if (Capacitor.isNativePlatform()) {
+        const result = await openYahooLogin();
+        const week = selectedWeek;
+        writeYahooSession(result);
+        const imported = leagueFromYahooCapture(result, week);
+        if (!imported) {
+          setIsSyncing(false);
+          setSyncStatus('Yahoo session saved. Open your matchup once so this week’s starters can be read.');
+          return;
+        }
+        const normalized = normalizeLeague(imported, leaguesRef.current.length);
+        setLeagues((prev) => [
+          ...prev.filter((league) => {
+            if (league.id === normalized.id) return false;
+            if (normalized.yahooLeagueId && league.yahooLeagueId === normalized.yahooLeagueId) return false;
+            return true;
+          }),
+          normalized
+        ]);
+        setView('matchups');
+        setIsSyncing(false);
+        closeConnect();
+        setSyncStatus(`Synced ${imported.name} from Yahoo for Week ${week}.`);
+        return;
+      }
       await openYahooLogin();
     } catch (err) {
       setIsSyncing(false);
-      setSyncStatus(err?.message || 'Missing Yahoo Client ID in .env');
+      const message = String(err?.message || '');
+      if (message.toLowerCase().includes('cancel')) return;
+      setSyncStatus(message || 'Missing Yahoo Client ID in .env');
     }
   };
 
@@ -1655,13 +1692,16 @@ export default function App() {
       } catch (err) {
         console.warn('Sleeper lineup refresh failed', err);
       }
+      const espnSession = readEspnSession();
       for (const lg of current) {
         if (cancelled || !lg?.espnLeagueId || !lg?.espnTeamId) continue;
         try {
           const raw = await fetchEspnLeague({
             leagueId: lg.espnLeagueId,
             season: lg.season || 2026,
-            week
+            week,
+            swid: espnSession?.swid || '',
+            espnS2: espnSession?.espnS2 || ''
           });
           const mapped = mapEspnLeague({
             league: raw,
@@ -1675,11 +1715,46 @@ export default function App() {
           console.warn('ESPN lineup refresh failed', err);
         }
       }
+      if (Capacitor.isNativePlatform()) {
+        try {
+          const saved = readYahooSession();
+          if (saved?.matchupUrl) {
+            let captured;
+            try {
+              captured = await YahooLogin.refresh({ matchupUrl: saved.matchupUrl, week: String(week) });
+            } catch (error) {
+              if (!isYahooSessionExpired(error) || cancelled) throw error;
+              captured = await YahooLogin.login();
+            }
+            if (!cancelled && captured) {
+              writeYahooSession(captured);
+              const imported = leagueFromYahooCapture(captured, week);
+              if (imported) updates.set(imported.id, imported);
+            }
+          }
+        } catch (err) {
+          console.warn('Yahoo lineup refresh failed', err);
+        }
+      }
       if (cancelled || !updates.size) return;
-      setLeagues((prev) => prev.map((lg) => {
-        const next = updates.get(lg.id);
-        return next ? normalizeLeague({ ...lg, ...next }) : lg;
-      }));
+      setLeagues((prev) => {
+        const used = new Set();
+        const next = prev.map((lg) => {
+          let updated = updates.get(lg.id);
+          if (!updated && lg.yahooLeagueId) {
+            updated = [...updates.values()].find((item) => item.yahooLeagueId && item.yahooLeagueId === lg.yahooLeagueId);
+          }
+          if (!updated) return lg;
+          used.add(updated.id);
+          return normalizeLeague({ ...lg, ...updated, id: lg.id });
+        });
+        updates.forEach((updated, id) => {
+          if (used.has(id) || !String(id).startsWith('yahoo-')) return;
+          if (next.some((lg) => lg.id === id || (updated.yahooLeagueId && lg.yahooLeagueId === updated.yahooLeagueId))) return;
+          next.push(normalizeLeague(updated));
+        });
+        return next;
+      });
     };
     refreshStoredLineups();
     return () => {
@@ -1719,9 +1794,6 @@ export default function App() {
         setShowSleeper(false);
         setShowYahooIngest(false);
         setEspnPrivateOpen(false);
-        setEspnSwid('');
-        setEspnS2('');
-        setEspnNativeSession(null);
         return;
       }
       if (showMobileSync) {
@@ -2008,9 +2080,6 @@ export default function App() {
     setShowSleeper(false);
     setShowEspn(false);
     setEspnPrivateOpen(false);
-    setEspnSwid('');
-    setEspnS2('');
-    setEspnNativeSession(null);
   };
 
   const openYahooIngest = () => {
@@ -2103,27 +2172,33 @@ export default function App() {
     setEspnBusy('');
     setEspnLeague(null);
     setEspnTeams([]);
-    setEspnTeamId('');
     setEspnPrivateOpen(false);
-    setEspnSwid('');
-    setEspnS2('');
-    setEspnNativeSession(null);
     setEspnWeek(String(slateMeta.week || FALLBACK_NFL_WEEK));
     setEspnSeason('2026');
     if (Capacitor.isNativePlatform()) {
       try {
-        const { openNativeEspnLogin } = await import('./utils/espnLogin');
         const result = await openNativeEspnLogin();
-        const swid = String(result?.swid || '');
-        const espnS2 = String(result?.espnS2 || '');
-        if (!swid || !espnS2) {
+        const swid = String(result?.swid || '').trim();
+        const espnS2Value = String(result?.espnS2 || '').trim();
+        if (!swid || !espnS2Value) {
           setSyncStatus('ESPN sign-in did not finish. Open Connect ESPN and sign in on ESPN’s page.');
           return;
         }
-        setEspnNativeSession({ swid, espnS2 });
-        if (result.leagueId) setEspnLeagueId(String(result.leagueId));
+        const saved = readEspnSession();
+        const leagueId = String(result?.leagueId || saved?.leagueId || '').trim();
+        const sameLeague = Boolean(leagueId) && saved?.leagueId === leagueId;
+        const teamId = sameLeague ? String(saved?.teamId || '').trim() : '';
+        setEspnSwid(swid);
+        setEspnS2(espnS2Value);
+        setEspnNativeSession({ swid, espnS2: espnS2Value });
+        if (leagueId) setEspnLeagueId(leagueId);
+        setEspnTeamId(teamId);
+        writeEspnSession({ swid, espnS2: espnS2Value, leagueId, teamId });
         selectConnectTab('espn');
-        setSyncStatus('Signed in on ESPN’s page. Pick your team. That sign-in is used once, then discarded.');
+        setSyncStatus('Signed in on ESPN. This phone will refresh that league each week.');
+        if (leagueId) {
+          await loadEspnLeague({ leagueId, swid, espnS2: espnS2Value, teamId });
+        }
       } catch (error) {
         const message = String(error?.message || '');
         if (!message.toLowerCase().includes('cancel')) {
@@ -2135,7 +2210,15 @@ export default function App() {
     selectConnectTab('espn');
   };
 
-  const loadEspnLeague = async () => {
+  const loadEspnLeague = async (overrides = null) => {
+    const options = overrides && typeof overrides === 'object' && typeof overrides.preventDefault !== 'function'
+      ? overrides
+      : {};
+    const leagueId = options.leagueId ?? espnLeagueId;
+    const season = options.season ?? espnSeason;
+    const week = options.week ?? espnWeek;
+    const swid = options.swid ?? (espnPrivateOpen ? espnSwid : (espnNativeSession?.swid || espnSwid));
+    const s2 = options.espnS2 ?? (espnPrivateOpen ? espnS2 : (espnNativeSession?.espnS2 || espnS2));
     setEspnError('');
     setEspnBusy('Loading that ESPN league…');
     setEspnLeague(null);
@@ -2143,20 +2226,22 @@ export default function App() {
     setEspnTeamId('');
     try {
       const league = await fetchEspnLeague({
-        leagueId: espnLeagueId,
-        season: espnSeason,
-        week: espnWeek,
-        swid: espnNativeSession?.swid || (espnPrivateOpen ? espnSwid : ''),
-        espnS2: espnNativeSession?.espnS2 || (espnPrivateOpen ? espnS2 : '')
+        leagueId,
+        season,
+        week,
+        swid,
+        espnS2: s2
       });
       const teams = listEspnTeams(league);
       if (!teams.length) {
         setEspnError('That league has no teams yet.');
         return;
       }
+      const preferred = String(options.teamId ?? espnTeamId ?? '');
+      const match = teams.find((team) => team.id === preferred);
       setEspnLeague(league);
       setEspnTeams(teams);
-      setEspnTeamId(teams[0].id);
+      setEspnTeamId(match ? match.id : teams[0].id);
     } catch (error) {
       setEspnError(error?.message || 'Could not reach ESPN.');
     } finally {
@@ -2193,6 +2278,12 @@ export default function App() {
         setEspnError('Could not save this league on this device.');
         return;
       }
+      writeEspnSession({
+        swid: espnNativeSession?.swid || espnSwid,
+        espnS2: espnNativeSession?.espnS2 || espnS2,
+        leagueId: espnLeagueId.trim(),
+        teamId: String(espnTeamId || '')
+      });
       setLeagues(next);
       setHiddenLeagueIds(new Set());
       setView('matchups');
@@ -4119,7 +4210,7 @@ export default function App() {
 
             {espnNativeSession && (
               <p className={`text-xs leading-relaxed ${isLight ? 'text-slate-600' : 'text-slate-300'}`}>
-                Signed in on ESPN’s page for this sync. The password is not saved. Close this screen and the session is discarded.
+                Signed in on ESPN. This phone keeps that session and refreshes the league each week. The password is not saved.
               </p>
             )}
 
@@ -4181,7 +4272,7 @@ export default function App() {
                     />
                   </div>
                   <p className={`text-[11px] leading-snug ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
-                    Sign in at ESPN, then copy SWID and espn_s2 from the espn.com cookies. Both are sent with the league request and are not stored after this screen closes.
+                    Sign in at ESPN, then copy SWID and espn_s2 from the espn.com cookies. Both are sent with the league request and stay on this phone so weekly refreshes can sign in for you.
                   </p>
                   <a
                     href={ESPN_LOGIN_URL}
@@ -4369,7 +4460,9 @@ export default function App() {
                   Connect / Import League
                 </h3>
                 <p className={`text-xs mt-1 leading-relaxed ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
-                  Sign in with Yahoo to automatically sync all your leagues and live lineups.
+                  {Capacitor.isNativePlatform()
+                    ? 'Sign in once. This phone keeps the Yahoo session and refreshes your matchup each week.'
+                    : 'Sign in with Yahoo to automatically sync all your leagues and live lineups.'}
                 </p>
               </div>
               <button
@@ -4393,7 +4486,7 @@ export default function App() {
               disabled={isSyncing}
               className="w-full min-h-12 rounded-2xl bg-purple-600 hover:bg-purple-500 disabled:opacity-60 text-white text-sm font-black shadow-lg"
             >
-              {isSyncing ? 'Connecting...' : 'Sign in with Yahoo'}
+              {isSyncing ? 'Connecting...' : (Capacitor.isNativePlatform() ? 'Connect Yahoo' : 'Sign in with Yahoo')}
             </button>
 
             {syncStatus && (

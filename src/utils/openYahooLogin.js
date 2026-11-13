@@ -1,11 +1,9 @@
 import { Capacitor } from '@capacitor/core';
-import { SITE_ORIGIN } from './siteOrigin';
+import { YahooLogin } from './yahooNative';
 
 export async function openYahooLogin() {
   if (Capacitor.isNativePlatform()) {
-    const { Browser } = await import('@capacitor/browser');
-    await Browser.open({ url: `${SITE_ORIGIN}/api/auth/yahoo/login?app=1` });
-    return;
+    return YahooLogin.login();
   }
   const response = await fetch('/api/auth/yahoo/login?format=json', {
     headers: { Accept: 'application/json' }

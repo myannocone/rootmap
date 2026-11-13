@@ -18,6 +18,7 @@
 		9582B6832FE993A70072D4E8 /* SceneDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9582B6822FE993A50072D4E8 /* SceneDelegate.swift */; };
 		E5A11A020FED796500168501 /* EspnLoginPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5A11A010FED796500168501 /* EspnLoginPlugin.swift */; };
 		E5A11A040FED796500168501 /* RootMapBridgeViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5A11A030FED796500168501 /* RootMapBridgeViewController.swift */; };
+		A4B00A020FED796500168501 /* YahooLoginPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4B00A010FED796500168501 /* YahooLoginPlugin.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -33,6 +34,7 @@
 		9582B6822FE993A50072D4E8 /* SceneDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneDelegate.swift; sourceTree = "<group>"; };
 		E5A11A010FED796500168501 /* EspnLoginPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EspnLoginPlugin.swift; sourceTree = "<group>"; };
 		E5A11A030FED796500168501 /* RootMapBridgeViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootMapBridgeViewController.swift; sourceTree = "<group>"; };
+		A4B00A010FED796500168501 /* YahooLoginPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = YahooLoginPlugin.swift; sourceTree = "<group>"; };
 		958DCC722DB07C7200EA8C5F /* debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = debug.xcconfig; path = ../debug.xcconfig; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
@@ -70,6 +72,7 @@
 			children = (
 				9582B6822FE993A50072D4E8 /* SceneDelegate.swift */,
 				E5A11A010FED796500168501 /* EspnLoginPlugin.swift */,
+				A4B00A010FED796500168501 /* YahooLoginPlugin.swift */,
 				E5A11A030FED796500168501 /* RootMapBridgeViewController.swift */,
 				50379B222058CBB4000EE86E /* capacitor.config.json */,
 				504EC3071FED79650016851F /* AppDelegate.swift */,
@@ -167,6 +170,7 @@
 				504EC3081FED79650016851F /* AppDelegate.swift in Sources */,
 				9582B6832FE993A70072D4E8 /* SceneDelegate.swift in Sources */,
 				E5A11A020FED796500168501 /* EspnLoginPlugin.swift in Sources */,
+				A4B00A020FED796500168501 /* YahooLoginPlugin.swift in Sources */,
 				E5A11A040FED796500168501 /* RootMapBridgeViewController.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
