@@ -1,3 +1,4 @@
+﻿@'
 import UIKit
 import WebKit
 import Capacitor
@@ -36,8 +37,10 @@ final class EspnLoginSheet: UIViewController, WKNavigationDelegate, WKUIDelegate
 
     private var webView: WKWebView!
     private var useButton: UIBarButtonItem!
+    private var pollTimer: Timer?
     private var sawCookies = false
     private var finished = false
+    private var autoTriggered = false
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -66,7 +69,17 @@ final class EspnLoginSheet: UIViewController, WKNavigationDelegate, WKUIDelegate
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         webView.configuration.websiteDataStore.httpCookieStore.add(self)
+        pollTimer?.invalidate()
+        pollTimer = Timer.scheduledTimer(withTimeInterval: 0.75, repeats: true) { [weak self] _ in
+            self?.refreshCookies()
+        }
         refreshCookies()
+    }
+
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        pollTimer?.invalidate()
+        pollTimer = nil
     }
 
     func cookiesDidChange(in cookieStore: WKHTTPCookieStore) {
@@ -90,16 +103,23 @@ final class EspnLoginSheet: UIViewController, WKNavigationDelegate, WKUIDelegate
     }
 
     private func refreshCookies() {
+        guard !finished else { return }
         webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { [weak self] cookies in
             let session = EspnLoginSheet.sessionPair(cookies)
             let swid = session.swid
             let s2 = session.s2
             DispatchQueue.main.async {
-                guard let self = self else { return }
+                guard let self = self, !self.finished else { return }
                 let ready = !swid.isEmpty && !s2.isEmpty
                 self.sawCookies = ready
                 self.useButton.isEnabled = ready
                 self.navigationItem.title = ready ? "ESPN connected" : "Sign in to ESPN"
+                if ready && !self.autoTriggered {
+                    self.autoTriggered = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                        self.useTapped()
+                    }
+                }
             }
         }
     }
@@ -107,6 +127,7 @@ final class EspnLoginSheet: UIViewController, WKNavigationDelegate, WKUIDelegate
     @objc private func cancelTapped() {
         guard !finished else { return }
         finished = true
+        pollTimer?.invalidate()
         let cancel = onCancel
         clearEspnSession {
             self.dismiss(animated: true) {
@@ -128,10 +149,12 @@ final class EspnLoginSheet: UIViewController, WKNavigationDelegate, WKUIDelegate
                 DispatchQueue.main.async {
                     guard let self = self, !self.finished else { return }
                     if swid.isEmpty || s2.isEmpty {
+                        self.autoTriggered = false
                         self.navigationItem.title = "Finish ESPN sign-in"
                         return
                     }
                     self.finished = true
+                    self.pollTimer?.invalidate()
                     let ids = value as? [String] ?? []
                     let current = self.leagueId(from: self.webView.url)
                     var result: [String: Any] = ["swid": swid, "espnS2": s2, "leagueIds": ids]
@@ -184,3 +207,4 @@ final class EspnLoginSheet: UIViewController, WKNavigationDelegate, WKUIDelegate
             .value
     }
 }
+'@ | Set-Content -Path "ios\App\App\EspnLoginPlugin.swift" -Encoding UTF8
