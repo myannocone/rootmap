@@ -2,7 +2,7 @@
 import WebKit
 import Capacitor
 
-@ijc(EspnLoginPlugin)
+@objc(EspnLoginPlugin)
 public class EspnLoginPlugin: CAPPlugin, CAPBridgedPlugin {
     public let identifier = "EspnLoginPlugin"
     public let jsName = "EspnLogin"
@@ -10,7 +10,7 @@ public class EspnLoginPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "login", returnType: CAPPluginReturnPromise)
     ]
 
-    @ijc func login(_ call: CAPPluginCall) {
+    @objc func login(_ call: CAPPluginCall) {
         DispatchQueue.main.async {
             guard let presenter = self.bridge?.viewController else {
                 call.reject("ESPN sign-in could not open.")
@@ -122,7 +122,7 @@ final class EspnLoginSheet: UIViewController, WKNavigationDelegate, WKUIDelegate
         }
     }
 
-    @ijc private func cancelTapped() {
+    @objc private func cancelTapped() {
         guard !finished else { return }
         finished = true
         pollTimer?.invalidate()
@@ -134,7 +134,7 @@ final class EspnLoginSheet: UIViewController, WKNavigationDelegate, WKUIDelegate
         }
     }
 
-    @ijc private func useTapped() {
+    @objc private func useTapped() {
         guard !finished else { return }
         webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { [weak self] cookies in
             guard let self = self else { return }
