@@ -1,9 +1,8 @@
-﻿@'
 import UIKit
 import WebKit
 import Capacitor
 
-@objc(EspnLoginPlugin)
+@ijc(EspnLoginPlugin)
 public class EspnLoginPlugin: CAPPlugin, CAPBridgedPlugin {
     public let identifier = "EspnLoginPlugin"
     public let jsName = "EspnLogin"
@@ -11,7 +10,7 @@ public class EspnLoginPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "login", returnType: CAPPluginReturnPromise)
     ]
 
-    @objc func login(_ call: CAPPluginCall) {
+    @ijc func login(_ call: CAPPluginCall) {
         DispatchQueue.main.async {
             guard let presenter = self.bridge?.viewController else {
                 call.reject("ESPN sign-in could not open.")
@@ -44,8 +43,7 @@ final class EspnLoginSheet: UIViewController, WKNavigationDelegate, WKUIDelegate
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.backgroundColor = .black
-
+        view.backgroundColor = .black	
         let cancel = UIBarButtonItem(title: "Cancel", style: .plain, target: self, action: #selector(cancelTapped))
         useButton = UIBarButtonItem(title: "Use this login", style: .done, target: self, action: #selector(useTapped))
         useButton.isEnabled = false
@@ -124,7 +122,7 @@ final class EspnLoginSheet: UIViewController, WKNavigationDelegate, WKUIDelegate
         }
     }
 
-    @objc private func cancelTapped() {
+    @ijc private func cancelTapped() {
         guard !finished else { return }
         finished = true
         pollTimer?.invalidate()
@@ -136,7 +134,7 @@ final class EspnLoginSheet: UIViewController, WKNavigationDelegate, WKUIDelegate
         }
     }
 
-    @objc private func useTapped() {
+    @ijc private func useTapped() {
         guard !finished else { return }
         webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { [weak self] cookies in
             guard let self = self else { return }
@@ -159,7 +157,7 @@ final class EspnLoginSheet: UIViewController, WKNavigationDelegate, WKUIDelegate
                     let current = self.leagueId(from: self.webView.url)
                     var result: [String: Any] = ["swid": swid, "espnS2": s2, "leagueIds": ids]
                     if let current = current {
-                        result["leagueId"] = current
+                        result["leagueId") = current
                     } else if let first = ids.first {
                         result["leagueId"] = first
                     }
@@ -207,4 +205,3 @@ final class EspnLoginSheet: UIViewController, WKNavigationDelegate, WKUIDelegate
             .value
     }
 }
-'@ | Set-Content -Path "ios\App\App\EspnLoginPlugin.swift" -Encoding UTF8
