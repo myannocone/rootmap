@@ -54,8 +54,8 @@ public class YahooLoginPlugin: CAPPlugin, CAPBridgedPlugin {
                 switch result {
                 case .success(let payload):
                     call.resolve(payload)
-                case .failure(let message):
-                    call.reject(message)
+                case .failure(let error):
+                    call.reject(error.localizedDescription)
                 }
             }
         }
@@ -418,9 +418,9 @@ final class YahooSilentRefresh: NSObject, WKNavigationDelegate {
     private var webView: WKWebView?
     private var timeout: Timer?
     private var done = false
-    private var completion: ((Result<[String: Any], String>) -> Void)?
+    private var completion: ((Result<[String: Any], Error>) -> Void)?
 
-    func start(in host: UIView, url: URL, completion: @escaping (Result<[String: Any], String>) -> Void) {
+    func start(in host: UIView, url: URL, completion: @escaping (Result<[String: Any], Error>) -> Void) {
         self.completion = completion
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .default()
@@ -473,14 +473,15 @@ final class YahooSilentRefresh: NSObject, WKNavigationDelegate {
     }
 
     private func succeed(_ payload: [String: Any]) {
-        finish(.success(payload))
+        finish(Result<[String: Any], Error>.success(payload))
     }
 
     private func fail(_ message: String) {
-        finish(.failure(message))
+        let error = NSError(domain: "YahooLogin", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
+        finish(Result<[String: Any], Error>.failure(error))
     }
 
-    private func finish(_ result: Result<[String: Any], String>) {
+    private func finish(_ result: Result<[String: Any], Error>) {
         guard !done else { return }
         done = true
         timeout?.invalidate()
