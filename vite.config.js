@@ -1,6 +1,7 @@
 import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
 import { defineConfig, loadEnv } from 'vite'
+import espnHandler from './api/espn.js'
 import { completeYahooOAuth, startYahooLogin } from './lib/yahooFantasy.js'
 
 function headerValue(req, name) {
@@ -47,6 +48,27 @@ function yahooAuthDev() {
   }
 }
 
+function espnDiscoverDev() {
+  const attach = (server) => {
+    server.middlewares.use(async (req, res, next) => {
+      const url = new URL(req.url || '/', 'http://localhost')
+      if (url.pathname !== '/api/discover-espn') return next()
+      req.query = Object.fromEntries(url.searchParams.entries())
+      req.query.discover = '1'
+      try {
+        return await espnHandler(req, res)
+      } catch (err) {
+        return next(err)
+      }
+    })
+  }
+  return {
+    name: 'espn-discover-dev',
+    configureServer: attach,
+    configurePreviewServer: attach
+  }
+}
+
 function devNetworkHint() {
   const attach = (server) => {
     server.middlewares.use((req, res, next) => {
@@ -82,7 +104,7 @@ function privacyRoute() {
 }
 
 export default defineConfig({
-  plugins: [yahooAuthDev(), devNetworkHint(), react(), tailwindcss(), privacyRoute()],
+  plugins: [yahooAuthDev(), espnDiscoverDev(), devNetworkHint(), react(), tailwindcss(), privacyRoute()],
   server: {
     host: true,
     port: 5173,

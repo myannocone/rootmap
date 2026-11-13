@@ -80,10 +80,23 @@ enum YahooLinks {
       function slotToken(value) {
         var key = clean(value).toUpperCase();
         if (key === 'W/R/T' || key === 'WR/TE' || key === 'W/R') return 'FLEX';
-        if (key === 'D/ST' || key === 'DST') return 'DEF';
-        if (key === 'D') return 'IDP';
-        if (/^(QB|RB|WR|TE|FLEX|K|DEF|DB|DL|LB|IDP)$/.test(key)) return key;
+        if (key === 'DEF' || key === 'D/ST' || key === 'DST') return 'D/ST';
+        if (key === 'D' || key === 'DB' || key === 'DL' || key === 'LB') return 'IDP';
+        if (/^(QB|RB|WR|TE|FLEX|K|D\\/ST|IDP)$/.test(key)) return key;
         return '';
+      }
+      function isGenericName(value) {
+        return /^(my team|league|matchup|players|standings|home|fantasy|yahoo)$/i.test(clean(value));
+      }
+      function isHeaderLabel(value) {
+        return /^(stats|player|proj|pts|projected|points|pos)$/i.test(clean(value));
+      }
+      function isBenchStop(value) {
+        var key = clean(value).toUpperCase();
+        return key === 'BN' || key === 'IR' || key === 'IL' || key === 'INJURED RESERVE' || /^BENCH\\b/.test(key);
+      }
+      function isStatBlurb(value) {
+        return /\\d/.test(value) && /\\b(rush|rec|pass|yds|yards|td|int|sack|tgt|att)\\b/i.test(value);
       }
       function teamPos(value) {
         var match = clean(value).match(/^([A-Za-z]{2,3})\\s*[-–]\\s*([A-Za-z\\/]+)$/);
@@ -127,33 +140,33 @@ enum YahooLinks {
         }
         return out;
       }
-      function playerFrom(node) {
-        if (!node) return null;
-        var name = '';
-        var nflTeam = '';
-        var position = '';
-        var anchors = node.querySelectorAll('a[href]');
-        for (var i = 0; i < anchors.length; i++) {
-          var href = anchors[i].href || '';
-          if (!/\\/players?\\//i.test(href) && !/playerId=/i.test(href) && !/\\/athlete\\//i.test(href)) continue;
-          var split = splitName(anchors[i].innerText || anchors[i].textContent || '');
-          if (!split.name || slotToken(split.name) || teamPos(split.name) || isOppMark(split.name)) continue;
-          name = split.name;
-          nflTeam = split.nflTeam;
-          position = split.position;
-          break;
-        }
-        var parts = pieces(node);
-        if (!name) {
-          for (var n = 0; n < parts.length; n++) {
-            if (slotToken(parts[n]) || teamPos(parts[n]) || pointsOf(parts[n]) || clockOf(parts[n]) || isOppMark(parts[n])) continue;
-            if (/[A-Za-z]/.test(parts[n]) && parts[n].length >= 2 && parts[n].length < 40) {
-              name = splitName(parts[n]).name;
-              break;
-            }
+      function playerLink(node) {
+        return node.querySelector('a[href*="/nfl/players/"], .ysf-player-name a, a.ysf-player-name');
+      }
+      function anchorName(anchor) {
+        var parts = [];
+        var kids = anchor.childNodes || [];
+        for (var i = 0; i < kids.length; i++) {
+          if (kids[i].nodeType === 3) {
+            var bit = clean(kids[i].textContent || '');
+            if (bit) parts.push(bit);
           }
         }
-        if (!name || isOppMark(name) || /^(bench|starters|total|projected)$/i.test(name)) return null;
+        var name = clean(parts.join(' ')) || clean(anchor.textContent || '');
+        var glued = name.match(/^(.*[a-z.])([A-Z])$/);
+        if (glued && glued[1].length >= 2) name = clean(glued[1]);
+        return name;
+      }
+      function playerFrom(node) {
+        if (!node) return null;
+        var anchor = playerLink(node);
+        if (!anchor) return null;
+        var split = splitName(anchorName(anchor));
+        var name = split.name;
+        var nflTeam = split.nflTeam;
+        var position = split.position;
+        if (!name || isGenericName(name) || isHeaderLabel(name) || isOppMark(name) || isStatBlurb(name) || slotToken(name)) return null;
+        var parts = pieces(node).filter(function(part) { return !isStatBlurb(part) && !isHeaderLabel(part); });
         var slot = '';
         var points = '';
         var gameClock = '';
@@ -183,8 +196,8 @@ enum YahooLinks {
         return {
           name: name,
           nflTeam: nflTeam,
-          position: position || slot || 'FLEX',
-          slot: slot || position || 'FLEX',
+          position: position || slot || '',
+          slot: slot || position || '',
           points: points,
           actualPoints: points,
           gameClock: gameClock || 'Scheduled'
@@ -202,7 +215,7 @@ enum YahooLinks {
           var bench = false;
           for (var r = 0; r < rows.length; r++) {
             var rowText = clean(rows[r].innerText || '');
-            if (/^bench\\b/i.test(rowText)) {
+            if (isBenchStop(rowText)) {
               bench = true;
               continue;
             }
@@ -210,20 +223,36 @@ enum YahooLinks {
             var cells = rows[r].children || [];
             var found = [];
             var rowSlot = '';
+            var headerCells = 0;
+            var labeledCells = 0;
             for (var c = 0; c < cells.length; c++) {
               var cellText = clean(cells[c].innerText || '');
-              if (/^bench\\b/i.test(cellText)) {
+              if (!cellText || isOppMark(cellText)) continue;
+              if (isBenchStop(cellText)) {
                 bench = true;
                 break;
               }
-              if (isOppMark(cellText)) continue;
+              labeledCells += 1;
+              if (isHeaderLabel(cellText)) {
+                headerCells += 1;
+                continue;
+              }
+              if (isStatBlurb(cellText)) continue;
               var directSlot = slotToken(cellText);
-              if (directSlot && cellText.length <= 8) rowSlot = directSlot;
+              if (directSlot && cellText.length <= 8) {
+                rowSlot = directSlot;
+                continue;
+              }
               var player = playerFrom(cells[c]);
               if (player) found.push(player);
             }
-            if (bench) continue;
-            if (rowSlot) found.forEach(function(player) { player.slot = rowSlot; });
+            if (bench || (labeledCells > 0 && headerCells === labeledCells)) continue;
+            if (rowSlot) {
+              found.forEach(function(player) {
+                player.slot = rowSlot;
+                if (!player.position || player.position === 'FLEX') player.position = rowSlot;
+              });
+            }
             if (found.length >= 2) paired.push(found);
             else if (found.length === 1) singles.push(found[0]);
           }
@@ -264,50 +293,82 @@ enum YahooLinks {
       var pathMatch = href.match(/\\/f1\\/(\\d+)(?:\\/(\\d+))?/);
       var leagueId = pathMatch ? (pathMatch[1] || '') : '';
       var teamId = pathMatch && pathMatch[2] ? pathMatch[2] : '';
-      var teamLinks = [];
-      var seenTeams = {};
-      var anchors = document.querySelectorAll('a[href]');
-      for (var a = 0; a < anchors.length; a++) {
-        var teamHref = anchors[a].href || '';
-        var teamMatch = teamHref.match(/\\/f1\\/(\\d+)\\/(\\d+)(?:\\/|$|\\?)/);
-        if (!teamMatch) continue;
-        var teamKey = teamMatch[1] + ':' + teamMatch[2];
-        if (seenTeams[teamKey]) continue;
-        seenTeams[teamKey] = true;
-        var label = clean(anchors[a].innerText || '').replace(/\\d+\\s*-\\s*\\d+\\s*-\\s*\\d+.*/, '').trim();
-        if (!label || label.length > 40 || slotToken(label)) continue;
-        teamLinks.push({ leagueId: teamMatch[1], teamId: teamMatch[2], name: label, context: contextOf(anchors[a]) });
+      function readableName(value) {
+        var text = clean(value).replace(/\\d+\\s*-\\s*\\d+\\s*-\\s*\\d+.*/, '').trim();
+        if (!text || text.length > 40 || isGenericName(text) || slotToken(text) || isHeaderLabel(text)) return '';
+        return text;
       }
-      var mineLink = teamLinks.filter(function(link) { return teamId && link.teamId === teamId; })[0] || teamLinks[0] || null;
-      var oppLink = teamLinks.filter(function(link) { return !mineLink || link.teamId !== mineLink.teamId; })[0] || null;
-      if (!teamId && mineLink) teamId = mineLink.teamId;
-      if (!leagueId && mineLink) leagueId = mineLink.leagueId;
-      var title = clean(document.title || '');
-      var titleParts = title.split(/\\s[-|–]\\s/).map(clean).filter(Boolean);
-      var leagueName = '';
-      for (var n = 0; n < titleParts.length; n++) {
-        if (titleParts[n].length < 3 || titleParts[n].length > 48) continue;
-        if (/yahoo|fantasy|football|matchup|week\\s+\\d+/i.test(titleParts[n])) continue;
-        leagueName = titleParts[n];
-        break;
+      function realLeagueName() {
+        var nodes = document.querySelectorAll('h1, h2, [class*="league-name"], [class*="LeagueName"], .Navmain-title');
+        for (var i = 0; i < nodes.length; i++) {
+          var text = readableName(nodes[i].innerText || '');
+          if (!text || /yahoo|fantasy football|week\\s+\\d+/i.test(text)) continue;
+          return text;
+        }
+        var title = clean(document.title || '');
+        var titleParts = title.split(/\\s[-|–]\\s/).map(clean).filter(Boolean);
+        for (var n = 0; n < titleParts.length; n++) {
+          var part = readableName(titleParts[n]);
+          if (part && !/yahoo|fantasy|football|week\\s+\\d+/i.test(part)) return part;
+        }
+        return '';
       }
-      var heading = document.querySelector('h1');
-      if (!leagueName && heading) {
-        var headingText = clean(heading.innerText || '');
-        if (headingText && !/yahoo|matchup/i.test(headingText)) leagueName = headingText;
-      }
-      var rosters = harvest();
-      function sideLine(link) {
-        var context = link ? link.context : '';
+      function describeSide(node) {
+        var container = node;
+        for (var i = 0; i < 3 && container && container.parentElement; i++) {
+          var parentText = clean(container.parentElement.innerText || '');
+          if (parentText.length < 140 && recordOf(parentText)) container = container.parentElement;
+          else break;
+        }
+        var text = clean(container.innerText || '');
+        var nameNode = container.querySelector('a[href*="/f1/"]');
+        var name = readableName(nameNode ? (nameNode.innerText || '') : '');
+        if (!name) {
+          var lines = String(container.innerText || '').split(/\\n/).map(clean).filter(Boolean);
+          for (var n = 0; n < lines.length; n++) {
+            if (recordOf(lines[n]) || rankOf(lines[n]) || scoreOf(lines[n]) || isStatBlurb(lines[n])) continue;
+            name = readableName(lines[n]);
+            if (name) break;
+          }
+        }
+        var link = nameNode ? (nameNode.href || '') : '';
+        var idMatch = link.match(/\\/f1\\/(\\d+)\\/(\\d+)/);
         return {
-          name: link ? link.name : '',
-          record: recordOf(context),
-          rank: rankOf(context),
-          score: scoreOf(context)
+          name: name,
+          record: recordOf(text),
+          rank: rankOf(text),
+          score: scoreOf(text),
+          leagueId: idMatch ? idMatch[1] : '',
+          teamId: idMatch ? idMatch[2] : ''
         };
       }
-      var mineSide = sideLine(mineLink);
-      var oppSide = sideLine(oppLink);
+      function scoreboardSides() {
+        var hits = [];
+        var nodes = document.querySelectorAll('a, div, span, h2, h3, p');
+        for (var i = 0; i < nodes.length; i++) {
+          var value = clean(nodes[i].innerText || '');
+          if (!recordOf(value) || value.length > 90 || nodes[i].querySelector('table')) continue;
+          var rect = nodes[i].getBoundingClientRect();
+          if (!rect.width || rect.top > 520) continue;
+          hits.push({ node: nodes[i], top: rect.top, left: rect.left });
+        }
+        hits.sort(function(a, b) { return a.top - b.top || a.left - b.left; });
+        if (!hits.length) return { mine: describeSide(document.body), opp: { name: '', record: '', rank: '', score: '', leagueId: '', teamId: '' } };
+        var top = hits[0].top;
+        var band = hits.filter(function(item) { return Math.abs(item.top - top) < 90; });
+        band.sort(function(a, b) { return a.left - b.left; });
+        return {
+          mine: describeSide(band[0].node),
+          opp: band.length > 1 ? describeSide(band[band.length - 1].node) : { name: '', record: '', rank: '', score: '', leagueId: '', teamId: '' }
+        };
+      }
+      var leagueName = realLeagueName();
+      var board = scoreboardSides();
+      var mineSide = board.mine;
+      var oppSide = board.opp;
+      if (!teamId && mineSide.teamId) teamId = mineSide.teamId;
+      if (!leagueId && mineSide.leagueId) leagueId = mineSide.leagueId;
+      var rosters = harvest();
       var lines = [];
       if (leagueName) lines.push('League: ' + leagueName);
       lines.push(mineSide.name || 'My Team');
@@ -327,7 +388,8 @@ enum YahooLinks {
           if (minePlayer.gameClock) lines.push(minePlayer.gameClock);
           if (minePlayer.points) lines.push(minePlayer.points);
         }
-        lines.push((minePlayer && minePlayer.slot) || (oppPlayer && oppPlayer.slot) || 'FLEX');
+        var rowSlot = (minePlayer && minePlayer.slot) || (oppPlayer && oppPlayer.slot) || '';
+        if (rowSlot) lines.push(rowSlot);
         if (oppPlayer && !isOppMark(oppPlayer.name)) {
           if (oppPlayer.points) lines.push(oppPlayer.points);
           lines.push(oppPlayer.name);

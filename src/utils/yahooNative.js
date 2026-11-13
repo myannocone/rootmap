@@ -34,10 +34,10 @@ export function writeYahooSession(session) {
   if (!identity.matchupUrl && !identity.leagueId) return;
   const next = readYahooSessions().filter((item) => {
     if (identity.matchupUrl && item.matchupUrl === identity.matchupUrl) return false;
-    if (identity.leagueId && item.leagueId === identity.leagueId) {
-      if (!identity.teamId || !item.teamId || item.teamId === identity.teamId) return false;
-    }
-    return true;
+    const sameLeague = identity.leagueId && item.leagueId === identity.leagueId;
+    const sameTeam = Boolean(identity.teamId && item.teamId && item.teamId === identity.teamId);
+    const bothUntagged = Boolean(sameLeague && !identity.teamId && !item.teamId);
+    return !(sameTeam || bothUntagged);
   });
   next.push(identity);
   try {
@@ -99,7 +99,7 @@ function rankFrom(value) {
 
 function usableName(value, fallback) {
   const text = cleanYahooPlayerName(value) || String(value || '').trim();
-  if (!text || /^(my team|opponent|yahoo(?:\s+\d+)?)$/i.test(text)) return fallback;
+  if (!text || /^(my team|opponent|league|matchup|players|standings|yahoo(?:\s+\d+)?)$/i.test(text)) return fallback;
   return text;
 }
 
@@ -126,8 +126,8 @@ function starterFromStructured(player, side) {
   return {
     name,
     nflTeam: String(player.nflTeam || '').toUpperCase(),
-    position: player.position || player.slot || 'FLEX',
-    slot: player.slot || player.position || 'FLEX',
+    position: player.position || player.slot || '',
+    slot: player.slot || player.position || '',
     points: actualPoints ?? 0,
     projPoints: null,
     actualPoints,

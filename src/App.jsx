@@ -15,7 +15,7 @@ import {
   sleeperScoreSignature,
   syncSleeperLeagues
 } from './utils/sleeperApi';
-import { fetchEspnLeague, listEspnTeams, mapEspnLeague } from './utils/espnDirectApi';
+import { fetchEspnFanLeagues, fetchEspnLeague, listEspnTeams, mapEspnLeague } from './utils/espnDirectApi';
 import { ESPN_LOGIN_URL, openNativeEspnLogin, readEspnSession, writeEspnSession } from './utils/espnLogin';
 import { openYahooLogin } from './utils/openYahooLogin';
 import {
@@ -208,7 +208,7 @@ function MatchupLineups({ league, week, isLight }) {
               <div className={`min-w-0 flex-1 ${align === 'end' ? 'text-right' : 'text-left'}`}>
                 <div className={`truncate text-[11px] font-black ${isLight ? 'text-slate-900' : 'text-white'}`}>{player.name}</div>
                 <div className={`truncate text-[9px] font-bold ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
-                  {player.position || player.slot}{player.nflTeam ? ` · ${player.nflTeam}` : ''}
+                  {[player.slot || player.position, String(player.nflTeam || player.team || '').toUpperCase()].filter(Boolean).join(' • ')}
                 </div>
               </div>
               <div className={`w-10 shrink-0 text-right text-[11px] font-black tabular-nums ${isLight ? 'text-slate-900' : 'text-white'}`}>
@@ -1469,6 +1469,7 @@ export default function App() {
   const [sleeperError, setSleeperError] = useState('');
   const [showEspn, setShowEspn] = useState(false);
   const [espnLeagueId, setEspnLeagueId] = useState(() => readEspnSession()?.leagueId || '');
+  const [espnLeagueChoices, setEspnLeagueChoices] = useState([]);
   const [espnWeek, setEspnWeek] = useState(() => String(getActiveSlate()?.week || FALLBACK_NFL_WEEK));
   const [espnSeason, setEspnSeason] = useState('2026');
   const [espnLeague, setEspnLeague] = useState(null);
@@ -1682,6 +1683,24 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    const saved = readEspnSession();
+    if (!saved?.swid || !saved?.espnS2) return undefined;
+    let cancelled = false;
+    fetchEspnFanLeagues(saved)
+      .then((choices) => {
+        if (cancelled) return;
+        setEspnLeagueChoices(choices);
+        if (choices.length === 1) {
+          setEspnLeagueId((current) => String(current || '').trim() || choices[0].id);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
     const week = Number(selectedWeek);
     if (!week || lineupRefreshRef.current === week) return undefined;
     lineupRefreshRef.current = week;
@@ -1741,9 +1760,26 @@ export default function App() {
             try {
               const captured = await YahooLogin.refresh({ matchupUrl: saved.matchupUrl, week: String(week) });
               if (cancelled || !captured) continue;
-              writeYahooSession({ ...saved, ...captured });
-              const imported = leagueFromYahooCapture({ ...saved, ...captured }, week);
-              if (imported) updates.set(imported.id, imported);
+              const stable = {
+                ...captured,
+                leagueId: saved.leagueId || captured.leagueId || '',
+                teamId: saved.teamId || captured.teamId || '',
+                matchupUrl: saved.matchupUrl || captured.matchupUrl || ''
+              };
+              writeYahooSession(stable);
+              const imported = leagueFromYahooCapture(stable, week);
+              if (imported) {
+                const id = stable.leagueId
+                  ? `yahoo-${stable.leagueId}${stable.teamId ? `-${stable.teamId}` : ''}`
+                  : imported.id;
+                updates.set(id, {
+                  ...imported,
+                  id,
+                  yahooLeagueId: stable.leagueId,
+                  yahooTeamId: stable.teamId,
+                  yahooMatchupUrl: stable.matchupUrl
+                });
+              }
             } catch (error) {
               if (!isYahooSessionExpired(error)) throw error;
               expired = true;
@@ -1767,22 +1803,30 @@ export default function App() {
         const next = prev.map((lg) => {
           let updated = updates.get(lg.id);
           if (!updated && lg.yahooLeagueId) {
-            updated = [...updates.values()].find((item) => {
-              if (!item.yahooLeagueId || item.yahooLeagueId !== lg.yahooLeagueId) return false;
-              if (item.yahooTeamId && lg.yahooTeamId) return item.yahooTeamId === lg.yahooTeamId;
-              return !item.yahooTeamId || !lg.yahooTeamId;
-            });
+            const candidates = [...updates.values()].filter((item) => item.yahooLeagueId === lg.yahooLeagueId);
+            updated = candidates.find((item) => item.yahooTeamId && lg.yahooTeamId && item.yahooTeamId === lg.yahooTeamId)
+              || (candidates.length === 1 && !lg.yahooTeamId ? candidates[0] : null)
+              || candidates.find((item) => !item.yahooTeamId && !lg.yahooTeamId)
+              || null;
           }
           if (!updated) return lg;
           used.add(updated.id);
-          return normalizeLeague({ ...lg, ...updated, id: lg.id });
+          return normalizeLeague({
+            ...lg,
+            ...updated,
+            id: lg.id,
+            yahooLeagueId: lg.yahooLeagueId || updated.yahooLeagueId,
+            yahooTeamId: lg.yahooTeamId || updated.yahooTeamId,
+            yahooMatchupUrl: updated.yahooMatchupUrl || lg.yahooMatchupUrl
+          });
         });
         updates.forEach((updated, id) => {
           if (used.has(id) || !String(id).startsWith('yahoo-')) return;
           if (next.some((lg) => lg.id === id || (
             updated.yahooLeagueId
             && lg.yahooLeagueId === updated.yahooLeagueId
-            && (!updated.yahooTeamId || !lg.yahooTeamId || lg.yahooTeamId === updated.yahooTeamId)
+            && ((updated.yahooTeamId && lg.yahooTeamId && lg.yahooTeamId === updated.yahooTeamId)
+              || (!updated.yahooTeamId && !lg.yahooTeamId))
           ))) return;
           next.push(normalizeLeague(updated));
         });
@@ -2106,8 +2150,21 @@ export default function App() {
     setShowSleeper(tab === 'sleeper');
     setShowEspn(tab === 'espn');
     if (tab === 'espn') {
-      const savedId = readEspnSession()?.leagueId || '';
+      const saved = readEspnSession();
+      const savedId = saved?.leagueId || '';
       if (savedId) setEspnLeagueId((current) => String(current || '').trim() || savedId);
+      const swid = saved?.swid || espnSwid;
+      const s2 = saved?.espnS2 || espnS2;
+      if (swid && s2) {
+        fetchEspnFanLeagues({ swid, espnS2: s2 })
+          .then((choices) => {
+            setEspnLeagueChoices(choices);
+            if (choices.length === 1) {
+              setEspnLeagueId((current) => String(current || '').trim() || choices[0].id);
+            }
+          })
+          .catch(() => {});
+      }
     }
   };
 
@@ -2232,9 +2289,26 @@ export default function App() {
         setEspnTeamId(teamId);
         writeEspnSession({ swid, espnS2: espnS2Value, leagueId, teamId });
         selectConnectTab('espn');
-        setSyncStatus('Signed in on ESPN. This phone will refresh that league each week.');
-        if (leagueId) {
-          await loadEspnLeague({ leagueId, swid, espnS2: espnS2Value, teamId });
+        const choices = await fetchEspnFanLeagues({ swid, espnS2: espnS2Value }).catch(() => []);
+        setEspnLeagueChoices(choices);
+        const known = choices.find((league) => league.id === leagueId);
+        const picked = known?.id || (choices.length === 1 ? choices[0].id : leagueId);
+        if (picked) setEspnLeagueId(picked);
+        if (picked && picked !== leagueId) {
+          writeEspnSession({ swid, espnS2: espnS2Value, leagueId: picked, teamId: '' });
+        }
+        if (picked) {
+          setSyncStatus('Signed in on ESPN. This phone will refresh that league each week.');
+          await loadEspnLeague({
+            leagueId: picked,
+            swid,
+            espnS2: espnS2Value,
+            teamId: picked === leagueId ? teamId : ''
+          });
+        } else {
+          setSyncStatus(choices.length > 1
+            ? 'Signed in on ESPN. Choose one of your leagues, or enter an ID.'
+            : 'Signed in on ESPN. Enter a league ID to load it.');
         }
       } catch (error) {
         const message = String(error?.message || '');
@@ -4220,6 +4294,36 @@ export default function App() {
             </div>
 
             {connectTabs}
+
+            {espnLeagueChoices.length > 1 && (
+              <div>
+                <label className={`text-[11px] font-black uppercase tracking-wider block mb-1 ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+                  Your ESPN leagues
+                </label>
+                <select
+                  value={espnLeagueChoices.some((league) => league.id === espnLeagueId.trim()) ? espnLeagueId.trim() : ''}
+                  onChange={(e) => {
+                    setEspnLeagueId(e.target.value);
+                    setEspnLeague(null);
+                    setEspnTeams([]);
+                    setEspnTeamId('');
+                    if (espnError) setEspnError('');
+                  }}
+                  className={`w-full px-3 py-2 rounded-xl text-xs font-bold focus:outline-none ${
+                    isLight
+                      ? 'bg-slate-50 border border-slate-200 text-slate-900 focus:border-red-400'
+                      : 'bg-slate-950 border border-slate-700 text-slate-100 focus:border-red-500'
+                  }`}
+                >
+                  <option value="">Choose a league</option>
+                  {espnLeagueChoices.map((league) => (
+                    <option key={league.id} value={league.id}>
+                      {league.name ? `${league.name} (${league.id})` : league.id}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
 
             <div>
               <label className={`text-[11px] font-black uppercase tracking-wider block mb-1 ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>

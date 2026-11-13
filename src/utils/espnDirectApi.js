@@ -138,6 +138,41 @@ export function espnSessionCookies(swid, espnS2) {
   return { swid: swidValue, espnS2: s2Value };
 }
 
+export async function fetchEspnFanLeagues({ swid = '', espnS2 = '' } = {}) {
+  let session = null;
+  try {
+    session = espnSessionCookies(swid, espnS2);
+  } catch {
+    return [];
+  }
+  if (!session) return [];
+  const path = '/api/discover-espn';
+  const url = import.meta.env.DEV || !Capacitor.isNativePlatform()
+    ? path
+    : `${SITE_ORIGIN}${path}`;
+  let response;
+  try {
+    response = await fetch(url, {
+      headers: {
+        Accept: 'application/json',
+        'X-SWID': encodeURIComponent(session.swid),
+        'X-ESPN-S2': encodeURIComponent(session.espnS2)
+      }
+    });
+  } catch {
+    return [];
+  }
+  if (!response.ok) return [];
+  const body = await response.json().catch(() => null);
+  const leagues = Array.isArray(body?.leagues) ? body.leagues : [];
+  return leagues
+    .map((league) => ({
+      id: String(league?.id || '').trim(),
+      name: String(league?.name || '').trim()
+    }))
+    .filter((league) => /^\d+$/.test(league.id));
+}
+
 export function espnCookieHeader(swid, espnS2) {
   return `SWID=${swid}; espn_s2=${espnS2};`;
 }
@@ -193,21 +228,53 @@ function sideTeamId(side) {
   return String(side.teamId);
 }
 
-function opponentIdFor(league, team, weekNumber) {
+function finiteNumber(value) {
+  if (value == null || value === '') return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function matchupGame(league, team, weekNumber) {
   const games = [
     ...(Array.isArray(team?.schedule) ? team.schedule : []),
     ...(Array.isArray(league?.schedule) ? league.schedule : [])
   ];
   const mine = String(team?.id ?? '');
-  const game = games.find((entry) => entry && Number(entry.matchupPeriodId) === weekNumber && (
+  return games.find((entry) => entry && Number(entry.matchupPeriodId) === weekNumber && (
     sideTeamId(entry.home) === mine || sideTeamId(entry.away) === mine
-  ));
+  )) || null;
+}
+
+function opponentIdFor(league, team, weekNumber) {
+  const game = matchupGame(league, team, weekNumber);
   if (!game) return null;
+  const mine = String(team?.id ?? '');
   const home = sideTeamId(game.home);
   const away = sideTeamId(game.away);
   if (home === mine) return away;
   if (away === mine) return home;
   return null;
+}
+
+function sideWeeklyPoints(side) {
+  if (!side || typeof side !== 'object' || Array.isArray(side)) return null;
+  const live = finiteNumber(side.totalPointsLive);
+  if (live != null) return live;
+  const total = finiteNumber(side.totalPoints);
+  if (total != null) return total;
+  return finiteNumber(side.rosterForCurrentScoringPeriod?.appliedStatTotal);
+}
+
+function weeklyMatchupScore(game, teamId, starters) {
+  const fallback = (starters || []).reduce((sum, player) => {
+    const number = Number(player?.actualPoints);
+    return sum + (Number.isFinite(number) ? number : 0);
+  }, 0);
+  if (teamId == null || teamId === '') return fallback;
+  const mine = String(teamId);
+  const side = game && sideTeamId(game.home) === mine ? game.home : (game && sideTeamId(game.away) === mine ? game.away : null);
+  const live = sideWeeklyPoints(side);
+  return live != null ? live : fallback;
 }
 
 function playerName(player, defense, nflTeam) {
@@ -312,6 +379,7 @@ export function mapEspnLeague({ league, leagueId, teamId, week, season = 2026 })
   const teams = league?.teams || [];
   const team = teams.find((entry) => String(entry.id) === String(teamId));
   if (!team) throw new Error('Select your team.');
+  const game = matchupGame(league, team, weekNumber);
   const opponentKey = opponentIdFor(league, team, weekNumber);
   const opponent = opponentKey == null
     ? null
@@ -345,8 +413,8 @@ export function mapEspnLeague({ league, leagueId, teamId, week, season = 2026 })
     name: String(league?.settings?.name || '').trim() || `ESPN ${id}`,
     platform: 'ESPN',
     season: String(season),
-    myScore: Number(team?.points) || mine.reduce((sum, player) => sum + (player.points || 0), 0),
-    oppScore: Number(opponent?.points) || opp.reduce((sum, player) => sum + (player.points || 0), 0),
+    myScore: weeklyMatchupScore(game, team.id, mine),
+    oppScore: weeklyMatchupScore(game, opponent?.id, opp),
     myTeamName: userTeamName,
     oppTeamName,
     opponent: oppTeamName,

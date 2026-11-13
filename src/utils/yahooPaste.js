@@ -1,4 +1,7 @@
-const SLOT_TOKEN_RE = /^(QB|RB|WR|TE|W\/R\/T|FLEX|K|DEF|D|DB|DL|LB)$/i;
+const SLOT_TOKEN_RE = /^(QB|RB|WR|TE|W\/R\/T|FLEX|K|DEF|D\/ST|DST|IDP|D|DB|DL|LB)$/i;
+const HEADER_CELL_RE = /^(stats|player|proj|pts|projected|points|pos)$/i;
+const GENERIC_YAHOO_RE = /^(my team|league|matchup|players|standings)$/i;
+const STAT_BLURB_RE = /\d.*\b(rush|rec|pass|yds|yards|td|int|sack)\b/i;
 const STOP_SLOT_RE = /^(BN|IR|BENCH|IL|NA)$/i;
 const TEAM_POS_RE = /^([A-Za-z]{2,3})\s*[-–]\s*([A-Za-z/]+)$/;
 const DASH_RE = /^[-–—]$/;
@@ -14,7 +17,8 @@ const DUAL_ROW_RE = /^(.+?)\s+([A-Za-z]{2,3})\s*[-–]\s*([A-Za-z/]+)\s+(\d+\.\d
 
 function normalizePosition(pos) {
   const key = String(pos || '').toUpperCase();
-  if (key === 'D/ST' || key === 'DST') return 'DEF';
+  if (key === 'DEF' || key === 'D/ST' || key === 'DST') return 'D/ST';
+  if (key === 'D' || key === 'DB' || key === 'DL' || key === 'LB') return 'IDP';
   if (key === 'PK') return 'K';
   return key;
 }
@@ -22,8 +26,8 @@ function normalizePosition(pos) {
 function normalizeSlot(slot) {
   const key = String(slot || '').toUpperCase();
   if (key === 'W/R/T' || key === 'WR/TE' || key === 'W/R') return 'FLEX';
-  if (key === 'D/ST' || key === 'DST') return 'DEF';
-  if (key === 'D') return 'IDP';
+  if (key === 'DEF' || key === 'D/ST' || key === 'DST') return 'D/ST';
+  if (key === 'D' || key === 'DB' || key === 'DL' || key === 'LB') return 'IDP';
   return key;
 }
 
@@ -84,7 +88,7 @@ function isNameLine(line) {
   const text = String(line || '').trim();
   if (!text || isDash(text) || isFloatLine(text) || SLOT_TOKEN_RE.test(text) || isYahooStarterStop(text) || isTeamPosLine(text)) return false;
   if (isGameLine(text) || isStatLine(text) || RECORD_RE.test(text) || RANK_RE.test(text) || isYahooChromeLine(text)) return false;
-  if (isOpponentMark(text) || isLeagueLine(text)) return false;
+  if (isOpponentMark(text) || isLeagueLine(text) || HEADER_CELL_RE.test(text) || GENERIC_YAHOO_RE.test(text) || STAT_BLURB_RE.test(text)) return false;
   const cleaned = stripNameNoise(text);
   if (cleaned.length < 2 || cleaned.length > 48) return false;
   return /[A-Za-z]/.test(cleaned);
@@ -138,7 +142,7 @@ function yahooLines(raw) {
   String(raw || '').replace(/\r/g, '').split('\n').forEach((row) => {
     explodeYahooLine(row).forEach((piece) => {
       const text = String(piece || '').trim();
-      if (text && !isOpponentMark(text)) lines.push(text);
+      if (text && !isOpponentMark(text) && !HEADER_CELL_RE.test(text) && !STAT_BLURB_RE.test(text)) lines.push(text);
     });
   });
   return lines;
