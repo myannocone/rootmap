@@ -33,6 +33,14 @@ import { decodeSetupJson, encodeSetupPayload, linkIsLocalOnly, phoneSyncOrigin, 
 
 const LEAGUES_STORAGE_KEY = 'rootmap_leagues';
 const THEME_STORAGE_KEY = 'rootmap_theme';
+const ALERT_PREFS_KEY = 'rootmap_gameday_alerts';
+const DEFAULT_ALERT_PREFS = {
+  lineupRescue: true,
+  redZoneTv: true,
+  fourthQuarterSweat: true,
+  spoilerFreeDelay: false
+};
+const REMAINING_STARTER_FALLBACK = 12.5;
 
 const STALE_MOCK_LEAGUE_IDS = new Set(['lg_1', 'l1', 'l2', 'l3', 'l4']);
 const STALE_MOCK_LEAGUE_NAMES = new Set([
@@ -102,23 +110,6 @@ function getUserTeamName(lg) {
   return lg?.myTeamName || lg?.userTeam?.name || getLeagueDisplayName(lg);
 }
 
-function fantasyMark(name) {
-  const palette = [
-    ['#14532d', '#bbf7d0'],
-    ['#4c1d95', '#ddd6fe'],
-    ['#7f1d1d', '#fecaca'],
-    ['#1e3a8a', '#bfdbfe'],
-    ['#78350f', '#fde68a'],
-    ['#134e4a', '#99f6e4']
-  ];
-  const words = String(name || '').trim().split(/\s+/).filter(Boolean);
-  const initials = `${words[0]?.[0] || 'T'}${words[1]?.[0] || words[0]?.[1] || ''}`.toUpperCase();
-  let hash = 0;
-  for (const char of String(name || '')) hash = (hash * 33 + char.charCodeAt(0)) >>> 0;
-  const [bg, fg] = palette[hash % palette.length];
-  return { initials, bg, fg };
-}
-
 function ordinalRank(value) {
   const rank = Number(value);
   if (!Number.isInteger(rank) || rank < 1) return '';
@@ -160,19 +151,138 @@ function leagueSideRecord(league, side) {
   return { record, rank };
 }
 
+function starterIsFinal(player) {
+  return player?.gameStatus === 'FINAL' || Boolean(player?.isFinal);
+}
+
+function starterIsLive(player) {
+  return Boolean(player?.isLive || player?.gameStatus === 'IN_PROGRESS' || clockIsLive(player?.gameClock));
+}
+
+function starterRemainingProjected(player) {
+  if (!player || starterIsFinal(player)) return 0;
+  const actual = finiteNumber(player.actualPoints) ?? 0;
+  const proj = finiteNumber(player.projPoints)
+    ?? finiteNumber(player.projectedPoints)
+    ?? finiteNumber(player.projected)
+    ?? finiteNumber(player.points);
+  if (starterIsLive(player)) {
+    if (proj != null) return Math.max(0, proj - actual);
+    return Math.max(0, REMAINING_STARTER_FALLBACK - actual);
+  }
+  if (proj != null) return Math.max(0, proj);
+  return REMAINING_STARTER_FALLBACK;
+}
+
+function sideLiveProjection(starters, liveScore, leagueProj) {
+  const list = listedStarters(starters);
+  const live = finiteNumber(liveScore) ?? 0;
+  if (list.length) {
+    const remaining = list.reduce((sum, player) => sum + starterRemainingProjected(player), 0);
+    return { live, remaining, projected: live + remaining };
+  }
+  const full = finiteNumber(leagueProj);
+  if (full != null) {
+    const remaining = Math.max(0, full - live);
+    return { live, remaining, projected: live + remaining };
+  }
+  return { live, remaining: 0, projected: live };
+}
+
 function matchupOutlook(league) {
   const myLive = finiteNumber(league?.myScore) ?? 0;
   const oppLive = finiteNumber(league?.oppScore) ?? 0;
-  const myFull = finiteNumber(league?.myProj);
-  const oppFull = finiteNumber(league?.oppProj);
-  const myRem = myFull == null ? 0 : Math.max(0, myFull - myLive);
-  const oppRem = oppFull == null ? 0 : Math.max(0, oppFull - oppLive);
-  const myTotal = myLive + myRem;
-  const oppTotal = oppLive + oppRem;
+  const mySide = sideLiveProjection(getLeaguePortfolio(league), myLive, league?.myProj ?? league?.myProjected);
+  const oppSide = sideLiveProjection(getLeagueThreats(league), oppLive, league?.oppProj ?? league?.oppProjected);
+  const myTotal = mySide.projected;
+  const oppTotal = oppSide.projected;
   const sum = myTotal + oppTotal;
   const myPct = sum > 0 ? Math.round((myTotal / sum) * 100) : 50;
   const oppPct = 100 - myPct;
-  return { myLive, oppLive, myRem, oppRem, myTotal, oppTotal, myPct, oppPct };
+  return {
+    myLive,
+    oppLive,
+    myRem: mySide.remaining,
+    oppRem: oppSide.remaining,
+    myTotal,
+    oppTotal,
+    myPct,
+    oppPct
+  };
+}
+
+function slotLabel(slot, position) {
+  const raw = normalizeSlot(slot) || normalizePosition(position);
+  if (!raw) return '—';
+  if (raw === 'DEF') return 'D/ST';
+  if (raw === 'IDP' || raw === 'D') return 'DP';
+  return raw;
+}
+
+function lineupMatchupRows(mine, opp) {
+  const left = listedStarters(mine);
+  const right = listedStarters(opp);
+  const max = Math.max(left.length, right.length);
+  return Array.from({ length: max }, (_, index) => {
+    const minePlayer = left[index] || null;
+    const oppPlayer = right[index] || null;
+    return {
+      key: `${minePlayer?.name || 'empty'}-${oppPlayer?.name || 'empty'}-${index}`,
+      slot: slotLabel(
+        minePlayer?.slot || oppPlayer?.slot,
+        minePlayer?.position || oppPlayer?.position
+      ),
+      mine: minePlayer,
+      opp: oppPlayer
+    };
+  });
+}
+
+function getLeagueBench(league) {
+  return firstPlayerList(league?.bench, league?.userTeam?.bench, league?.myBench)
+    .filter((player) => player && player.isStarter === false);
+}
+
+function leagueDeepLink(league) {
+  const platform = String(league?.platform || '').toLowerCase();
+  if (platform.includes('espn')) {
+    const leagueId = league?.espnLeagueId || league?.leagueId;
+    const teamId = league?.espnTeamId || league?.teamId;
+    if (!leagueId) return null;
+    const query = new URLSearchParams({ leagueId: String(leagueId) });
+    if (teamId) query.set('teamId', String(teamId));
+    if (league?.season) query.set('seasonId', String(league.season));
+    return { label: 'Open in ESPN ↗', href: `https://fantasy.espn.com/football/team?${query.toString()}` };
+  }
+  if (platform.includes('yahoo')) {
+    const href = league?.yahooMatchupUrl
+      || (league?.yahooLeagueId
+        ? `https://football.fantasysports.yahoo.com/f1/${String(league.yahooLeagueId).replace(/^.*\.l\./, '')}`
+        : 'https://football.fantasysports.yahoo.com/');
+    return { label: 'Open in Yahoo ↗', href };
+  }
+  if (platform.includes('sleeper')) {
+    const leagueId = league?.sleeperLeagueId || league?.leagueId;
+    if (!leagueId) return { label: 'Open in Sleeper ↗', href: 'https://sleeper.com/' };
+    return { label: 'Open in Sleeper ↗', href: `https://sleeper.com/leagues/${leagueId}` };
+  }
+  return null;
+}
+
+function loadAlertPrefs() {
+  try {
+    const raw = localStorage.getItem(ALERT_PREFS_KEY);
+    if (!raw) return { ...DEFAULT_ALERT_PREFS };
+    const parsed = JSON.parse(raw);
+    return { ...DEFAULT_ALERT_PREFS, ...(parsed && typeof parsed === 'object' ? parsed : {}) };
+  } catch {
+    return { ...DEFAULT_ALERT_PREFS };
+  }
+}
+
+function NFLPrimary(team) {
+  const key = canonTeam(team);
+  return NFL_TEAM_PRIMARY[key] || '#334155';
 }
 
 function leagueHasLivePlayers(league, games) {
@@ -189,46 +299,96 @@ function leagueHasLivePlayers(league, games) {
 }
 
 function MatchupLineups({ league, week, isLight }) {
+  const [benchOpen, setBenchOpen] = useState(false);
   const mine = getLeaguePortfolio(league);
   const opp = getLeagueThreats(league);
+  const rows = lineupMatchupRows(mine, opp);
+  const bench = getLeagueBench(league);
   const projected = Boolean(league?.lineupProjected || mine.some((player) => player.projectedStart) || opp.some((player) => player.projectedStart));
-  const column = (title, players, align) => (
-    <div className={`min-w-0 ${align === 'end' ? 'text-right' : 'text-left'}`}>
-      <div className={`text-[9px] font-black uppercase tracking-wider ${isLight ? 'text-slate-400' : 'text-slate-500'}`}>
-        {title}
-      </div>
-      {players.length === 0 ? (
-        <p className={`mt-1 text-[10px] leading-snug ${isLight ? 'text-slate-400' : 'text-slate-500'}`}>
-          No Week {week} starters saved
-        </p>
+  const deepLink = leagueDeepLink(league);
+  const sideCell = (player, align) => (
+    <div className={`min-w-0 flex-1 ${align === 'end' ? 'text-right' : 'text-left'}`}>
+      {player ? (
+        <>
+          <div className={`truncate text-[11px] font-extrabold leading-tight ${isLight ? 'text-slate-900' : 'text-white'}`}>
+            {player.name}
+          </div>
+          <div className={`truncate text-[9px] font-bold tabular-nums ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+            {String(player.nflTeam || player.team || '').toUpperCase()} · {starterActualLabel(player)}
+          </div>
+        </>
       ) : (
-        <ul className="mt-1 space-y-1">
-          {players.map((player, index) => (
-            <li key={`${player.name}-${player.slot || index}`} className="flex items-center justify-between gap-2 min-w-0">
-              <div className={`min-w-0 flex-1 ${align === 'end' ? 'text-right' : 'text-left'}`}>
-                <div className={`truncate text-[11px] font-black ${isLight ? 'text-slate-900' : 'text-white'}`}>{player.name}</div>
-                <div className={`truncate text-[9px] font-bold ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
-                  {[player.slot || player.position, String(player.nflTeam || player.team || '').toUpperCase()].filter(Boolean).join(' • ')}
-                </div>
-              </div>
-              <div className={`w-10 shrink-0 text-right text-[11px] font-black tabular-nums ${isLight ? 'text-slate-900' : 'text-white'}`}>
-                {starterActualLabel(player)}
-              </div>
-            </li>
-          ))}
-        </ul>
+        <div className={`text-[10px] font-bold ${isLight ? 'text-slate-300' : 'text-slate-600'}`}>—</div>
       )}
     </div>
   );
   return (
-    <div className={`space-y-1 border-t pt-2 ${isLight ? 'border-slate-100' : 'border-white/10'}`}>
-      <div className={`text-[10px] font-black uppercase tracking-wider ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
-        {projected ? `Projected Week ${week} starters` : `Week ${week} starters`}
+    <div className={`space-y-2 border-t pt-2 ${isLight ? 'border-slate-100' : 'border-white/10'}`}>
+      <div className="flex items-center justify-between gap-2">
+        <div className={`text-[10px] font-black uppercase tracking-wider ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+          {projected ? `Projected Week ${week}` : `Week ${week} starters`}
+        </div>
+        {deepLink && (
+          <a
+            href={deepLink.href}
+            target="_blank"
+            rel="noreferrer"
+            onClick={(event) => event.stopPropagation()}
+            className={`text-[10px] font-black whitespace-nowrap ${isLight ? 'text-slate-600 hover:text-slate-900' : 'text-slate-400 hover:text-white'}`}
+          >
+            {deepLink.label}
+          </a>
+        )}
       </div>
-      <div className="grid grid-cols-2 gap-2">
-        {column(getUserTeamName(league), mine, 'start')}
-        {column(getLeagueOppName(league), opp, 'end')}
-      </div>
+      {rows.length === 0 ? (
+        <p className={`text-[10px] leading-snug ${isLight ? 'text-slate-400' : 'text-slate-500'}`}>
+          No Week {week} starters saved
+        </p>
+      ) : (
+        <ul className="space-y-1">
+          {rows.map((row) => (
+            <li key={row.key} className="grid grid-cols-[1fr_2.25rem_1fr] items-center gap-1.5 min-w-0">
+              {sideCell(row.mine, 'start')}
+              <div className={`text-center text-[9px] font-black tracking-wide ${isLight ? 'text-slate-400' : 'text-slate-500'}`}>
+                {row.slot}
+              </div>
+              {sideCell(row.opp, 'end')}
+            </li>
+          ))}
+        </ul>
+      )}
+      <button
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation();
+          setBenchOpen((open) => !open);
+        }}
+        className={`w-full min-h-8 rounded-lg border text-[10px] font-black uppercase tracking-wider ${
+          isLight ? 'border-slate-200 text-slate-600 bg-slate-50' : 'border-slate-700 text-slate-300 bg-slate-950/60'
+        }`}
+      >
+        Bench {benchOpen ? '▴' : '▾'}
+      </button>
+      {benchOpen && (
+        <div className={`rounded-xl border px-2.5 py-2 space-y-1 ${isLight ? 'border-slate-200 bg-slate-50' : 'border-slate-800 bg-slate-950/50'}`}>
+          {bench.length === 0 ? (
+            <p className={`text-[10px] font-semibold ${isLight ? 'text-slate-400' : 'text-slate-500'}`}>
+              No bench players saved for this league.
+            </p>
+          ) : (
+            bench.map((player, index) => (
+              <div key={`${player.name}-${index}`} className="flex items-center justify-between gap-2 text-[11px]">
+                <span className={`min-w-0 truncate font-bold ${isLight ? 'text-slate-800' : 'text-slate-100'}`}>
+                  {player.name}
+                </span>
+                <span className={`shrink-0 font-black tabular-nums ${isLight ? 'text-slate-600' : 'text-slate-300'}`}>
+                  {starterActualLabel(player)}
+                </span>
+              </div>
+            ))
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -237,11 +397,8 @@ function LeagueScoreboard({ league, isLight, onRemove }) {
   const myName = getUserTeamName(league);
   const oppName = getLeagueOppName(league);
   const leagueName = getLeagueDisplayName(league);
-  const showLeague = Boolean(leagueName);
   const myScore = finiteNumber(league?.myScore) ?? 0;
   const oppScore = finiteNumber(league?.oppScore) ?? 0;
-  const myMark = fantasyMark(myName);
-  const oppMark = fantasyMark(oppName);
   const mine = leagueSideRecord(league, 'my');
   const opp = leagueSideRecord(league, 'opp');
   const outlook = matchupOutlook(league);
@@ -250,16 +407,9 @@ function LeagueScoreboard({ league, isLight, onRemove }) {
       ? isLight ? 'text-emerald-700' : 'text-emerald-300'
       : isLight ? 'text-slate-400' : 'text-slate-500'
   );
-  const teamSide = (name, record, rank, score, proj, mark, leading, align) => (
-    <div className={`min-w-0 flex flex-col gap-1 ${align === 'end' ? 'items-end text-right' : 'items-start text-left'}`}>
-      <div
-        className="w-7 h-7 rounded-lg flex items-center justify-center font-black text-[10px]"
-        style={{ backgroundColor: mark.bg, color: mark.fg }}
-        aria-hidden="true"
-      >
-        {mark.initials}
-      </div>
-      <div className={`w-full min-w-0 font-black text-[13px] leading-tight truncate ${isLight ? 'text-slate-900' : 'text-white'}`}>
+  const teamSide = (name, record, rank, score, projected, leading, align) => (
+    <div className={`min-w-0 flex flex-col gap-0.5 ${align === 'end' ? 'items-end text-right' : 'items-start text-left'}`}>
+      <div className={`w-full min-w-0 font-extrabold text-[13px] leading-tight truncate ${isLight ? 'text-slate-900' : 'text-white'}`}>
         {name}
       </div>
       {teamSeasonDetail(record, rank) ? (
@@ -267,21 +417,19 @@ function LeagueScoreboard({ league, isLight, onRemove }) {
           {teamSeasonDetail(record, rank)}
         </div>
       ) : null}
-      <div className={`font-black text-3xl leading-none tabular-nums ${scoreClass(leading)}`}>
+      <div className={`font-black text-3xl leading-none tabular-nums tracking-tight ${scoreClass(leading)}`}>
         {scoreText(score)}
       </div>
-      {proj != null && (
-        <div className={`text-[10px] font-mono ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
-          Proj {scoreText(proj)}
-        </div>
-      )}
+      <div className={`text-[10px] font-semibold tabular-nums ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+        Proj {scoreText(projected)}
+      </div>
     </div>
   );
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between gap-2">
         <div className={`min-w-0 text-[10px] font-black uppercase tracking-wider truncate ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
-          {showLeague ? leagueName : 'This week'}
+          {leagueName || 'This week'}
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
           {onRemove && (
@@ -301,16 +449,16 @@ function LeagueScoreboard({ league, isLight, onRemove }) {
             </button>
           )}
           <span className={`text-[10px] font-mono px-2 py-0.5 rounded-full font-bold border ${
-            isLight ? 'bg-purple-50 text-purple-700 border-purple-200' : 'bg-purple-950 text-purple-300 border-purple-800'
+            isLight ? 'bg-slate-100 text-slate-700 border-slate-200' : 'bg-slate-950 text-slate-300 border-slate-700'
           }`}>
             {league?.platform || 'League'}
           </span>
         </div>
       </div>
-      <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
-        {teamSide(myName, mine.record, mine.rank, myScore, league?.myProj, myMark, myScore > oppScore || myScore === oppScore, 'end')}
-        <div className={`text-[10px] font-black tracking-[0.2em] ${isLight ? 'text-slate-400' : 'text-slate-500'}`}>VS</div>
-        {teamSide(oppName, opp.record, opp.rank, oppScore, league?.oppProj, oppMark, oppScore > myScore || myScore === oppScore, 'start')}
+      <div className="grid grid-cols-[1fr_auto_1fr] items-start gap-2">
+        {teamSide(myName, mine.record, mine.rank, myScore, outlook.myTotal, outlook.myTotal >= outlook.oppTotal, 'end')}
+        <div className={`pt-6 text-[10px] font-black tracking-[0.2em] ${isLight ? 'text-slate-400' : 'text-slate-500'}`}>VS</div>
+        {teamSide(oppName, opp.record, opp.rank, oppScore, outlook.oppTotal, outlook.oppTotal >= outlook.myTotal, 'start')}
       </div>
       <div className="space-y-1">
         <div className="flex items-center justify-between text-[10px] font-black tabular-nums">
@@ -545,6 +693,24 @@ function etClock(kickoff) {
   };
 }
 
+function formatEtKickoff(kickoff) {
+  const et = etClock(kickoff);
+  if (!et) return '';
+  const hour24 = Math.floor(et.minutes / 60);
+  const minute = et.minutes % 60;
+  const suffix = hour24 >= 12 ? 'PM' : 'AM';
+  const hour12 = hour24 % 12 || 12;
+  return `${hour12}:${String(minute).padStart(2, '0')} ${suffix} EST`;
+}
+
+function slateDividerLabel(player, window = null) {
+  const slate = window || slateWindowFor(player);
+  const base = String(slate?.label || 'Slate').toUpperCase();
+  if (slate?.id === 'bye' || slate?.id === 'final' || slate?.id === 'live') return base;
+  const time = formatEtKickoff(player?.kickoff);
+  return time ? `${base} • ${time}` : base;
+}
+
 function weekByeTeams() {
   return new Set((getActiveSlate().byes || []).map((team) => canonTeam(team)));
 }
@@ -642,6 +808,8 @@ function passesBoardFilters(player, filters) {
   if (filters?.hideFinal && (player?.gameStatus === 'FINAL')) return false;
   if (filters?.liveOnly && !(player?.isLive || player?.gameStatus === 'IN_PROGRESS')) return false;
   if (filters?.redZoneOnly && !player?.inRedZone) return false;
+  if (filters?.outperformers && !(boomDelta(player) >= 4)) return false;
+  if (filters?.conflicted && !((player?.myShares || 0) > 0 && (player?.oppShares || 0) > 0)) return false;
   return true;
 }
 
@@ -665,11 +833,6 @@ function alignedSlateColumns(forPlayers, againstPlayers, sortMode) {
   forPlayers.forEach((player) => place(player, 'forPlayers'));
   againstPlayers.forEach((player) => place(player, 'againstPlayers'));
   return [...buckets.values()].sort((a, b) => a.rank - b.rank);
-}
-
-function sideLeagueNames(player, side) {
-  const list = side === 'against' ? player?.oppLeagues : player?.myLeagues;
-  return [...new Set((list || []).map((item) => item?.league).filter(Boolean))];
 }
 
 function applyLiveToPlayer(player, games, liveScores, now = new Date()) {
@@ -781,20 +944,31 @@ function CrossFireMeter({ player, isLight }) {
   );
 }
 
-function LivePoints({ player, isLight, tone = 'for', layout = 'inline' }) {
+function LivePoints({ player, isLight, tone = 'for', layout = 'inline', onScoreJump = null }) {
   const view = liveScoreView(player);
   const [scorePop, setScorePop] = useState(false);
+  const [floatDelta, setFloatDelta] = useState(null);
   const previousShown = useRef(null);
   useEffect(() => {
     const shown = view.shown;
-    if (previousShown.current != null && shown > previousShown.current + 0.05) {
+    if (previousShown.current != null && Math.abs(shown - previousShown.current) > 0.05) {
+      const jumped = shown - previousShown.current;
       setScorePop(true);
-      const timer = window.setTimeout(() => setScorePop(false), 420);
+      if (jumped > 0.05) {
+        setFloatDelta(jumped);
+        onScoreJump?.(jumped);
+      } else {
+        onScoreJump?.(jumped);
+      }
+      const timer = window.setTimeout(() => {
+        setScorePop(false);
+        setFloatDelta(null);
+      }, 900);
       previousShown.current = shown;
       return () => window.clearTimeout(timer);
     }
     previousShown.current = shown;
-  }, [view.shown]);
+  }, [view.shown, onScoreJump]);
   const color = view.live
     ? (isLight ? 'text-slate-950' : 'text-white')
     : tone === 'against'
@@ -813,10 +987,29 @@ function LivePoints({ player, isLight, tone = 'for', layout = 'inline' }) {
         ? (isLight ? 'text-red-600' : 'text-rose-300')
         : (isLight ? 'text-slate-500' : 'text-slate-400');
   const muted = isLight ? 'text-slate-500' : 'text-slate-400';
+  const floatNode = floatDelta != null && floatDelta > 0 ? (
+    <span className={`absolute -top-3 right-0 rootmap-float-delta text-[10px] font-black tabular-nums ${
+      isLight ? 'text-emerald-600' : 'text-emerald-300'
+    }`}>
+      +{floatDelta.toFixed(1)}
+    </span>
+  ) : null;
+  if (layout === 'compact') {
+    return (
+      <div className="relative text-right shrink-0 leading-none">
+        {floatNode}
+        <div className={`font-black tabular-nums text-[15px] tracking-tight ${color} ${scorePop ? 'rootmap-score-pop' : ''}`}>
+          {view.shown.toFixed(1)}
+          <span className={`ml-0.5 text-[9px] font-black uppercase ${muted}`}>PTS</span>
+        </div>
+      </div>
+    );
+  }
   if (layout === 'hero') {
     const scoreLabel = view.bye ? 'Bye' : view.live ? 'Live pts' : view.final ? 'Final pts' : 'Pts';
     return (
-      <div className="mt-1.5">
+      <div className="relative mt-1.5">
+        {floatNode}
         <div className="flex items-baseline gap-1.5">
           {view.live && <LivePulse size={8} />}
           <span className={`text-[1.7rem] font-black tabular-nums leading-none tracking-tight ${color} ${scorePop ? 'rootmap-score-pop' : ''}`}>
@@ -837,7 +1030,8 @@ function LivePoints({ player, isLight, tone = 'for', layout = 'inline' }) {
     );
   }
   return (
-    <div className={`text-right shrink-0 max-w-[9.5rem] leading-tight ${view.live ? (isLight ? 'text-green-600' : 'text-emerald-400') : color}`}>
+    <div className={`relative text-right shrink-0 max-w-[9.5rem] leading-tight ${view.live ? (isLight ? 'text-green-600' : 'text-emerald-400') : color}`}>
+      {floatNode}
       <span className="inline-flex items-center justify-end gap-1 font-mono font-black text-xs">
         {view.live && <LivePulse />}
         <span className={scorePop ? 'rootmap-score-pop' : ''}>{view.shown.toFixed(1)} pts</span>
@@ -886,21 +1080,39 @@ function RosterCard({
   isLight,
   isHovered,
   headshotTick,
-  stance,
+  stance: _stance,
   onSelect,
   onHoverStart,
   onHoverEnd,
   cardRef
 }) {
-  const isConflict = side === 'cross' || (side === 'for' ? player.oppShares > 0 : player.myShares > 0);
-  const shares = side === 'for' ? player.myShares : player.oppShares;
+  const isConflict = side === 'cross' || ((player.myShares || 0) > 0 && (player.oppShares || 0) > 0);
+  const shares = side === 'against' ? player.oppShares : player.myShares;
   const live = Boolean(player.isLive || player.gameStatus === 'IN_PROGRESS');
+  const hasBall = Boolean(player.hasPossession || (live && player.inRedZone));
   const accent = getTeamAccent(canonTeam(player.nflTeam) || player.nflTeam);
-  const shareColor = side === 'against'
-    ? (isLight ? 'text-red-600' : 'text-rose-400')
-    : side === 'cross'
-      ? 'text-violet-500'
-      : (isLight ? 'text-green-600' : 'text-emerald-400');
+  const [scorePulse, setScorePulse] = useState('');
+  const handleScoreJump = (delta) => {
+    setScorePulse(delta > 0 ? 'rootmap-score-border-up' : 'rootmap-score-border-down');
+    window.setTimeout(() => setScorePulse(''), 720);
+  };
+  const combined = getCombinedStance(player);
+  const leagueCount = isConflict
+    ? (player.myShares || 0) + (player.oppShares || 0)
+    : (shares || 0);
+  const footerStance = isConflict
+    ? (
+      <span className={`inline-flex items-center rounded-full px-1.5 py-0.5 text-[8px] font-black tracking-wide ${
+        isLight ? 'bg-gradient-to-r from-emerald-100 to-rose-100 text-slate-800' : 'bg-gradient-to-r from-emerald-950 to-rose-950 text-slate-100'
+      }`}>
+        ⚡ {player.myShares || 0} FOR • {player.oppShares || 0} AGAINST
+      </span>
+    )
+    : side === 'against' || combined.tone === 'threat'
+      ? <span className={`text-[9px] font-black uppercase ${isLight ? 'text-rose-600' : 'text-rose-300'}`}>Root Against</span>
+      : <span className={`text-[9px] font-black uppercase ${isLight ? 'text-emerald-700' : 'text-emerald-300'}`}>
+          {combined.tone === 'down' ? combined.label : 'Root For'}
+        </span>;
   return (
     <div
       data-player-name={player.name}
@@ -910,102 +1122,71 @@ function RosterCard({
       onClick={onSelect}
       onMouseEnter={onHoverStart}
       onMouseLeave={onHoverEnd}
-      className={`relative w-full min-w-0 overflow-hidden rounded-xl p-2 pl-3 transition active:scale-[0.98] cursor-pointer border shadow-sm touch-manipulation ${rosterCardSurface(isLight, live, isConflict, isHovered, player.inRedZone, player.zeroProjection)}`}
+      className={`relative w-full min-w-0 overflow-hidden rounded-xl px-2 py-1.5 pl-2.5 transition active:scale-[0.98] cursor-pointer border shadow-sm touch-manipulation ${scorePulse} ${rosterCardSurface(isLight, live, isConflict, isHovered, player.inRedZone, player.zeroProjection)}`}
     >
       <span
         aria-hidden="true"
-        className="pointer-events-none absolute left-0 top-2 bottom-2 w-1 rounded-full"
+        className="pointer-events-none absolute left-0 top-1.5 bottom-1.5 w-1 rounded-full"
         style={{
           backgroundColor: accent.bg,
           boxShadow: live ? `0 0 10px ${accent.bg}` : undefined
         }}
       />
-      <div className="flex items-start gap-2">
-        <PlayerHeadshot key={`${player.name}-${headshotTick}`} name={player.name} team={player.nflTeam} defense={isTeamDefense(player)} size={36} />
+      <div className="flex items-center gap-2 min-w-0">
+        <div className="relative shrink-0">
+          <PlayerHeadshot key={`${player.name}-${headshotTick}`} name={player.name} team={player.nflTeam} defense={isTeamDefense(player)} size={28} />
+          {hasBall && !player.inRedZone && (
+            <span className="absolute -top-0.5 -right-0.5">
+              <LivePulse size={7} />
+            </span>
+          )}
+        </div>
         <div className="min-w-0 flex-1">
-          <div className={`font-black text-[13px] leading-snug break-words ${isLight ? 'text-slate-950' : 'text-white'}`}>
-            {player.name}
-          </div>
-          <div className={`text-[10px] font-bold mt-0.5 ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
-            {player.position} · {player.nflTeam}
-          </div>
-          <ConnotationBadge player={player} isLight={isLight} />
-          {player.zeroProjection && (
-            <div className="mt-1">
-              <span className="inline-flex px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-wide bg-amber-400 text-slate-950">
-                ⚠️ 0.0 PROJ - CHECK STATUS
-              </span>
+          <div className="flex items-center gap-1 min-w-0">
+            <div className={`truncate font-extrabold text-[12px] leading-tight tracking-tight ${isLight ? 'text-slate-950' : 'text-white'}`}>
+              {player.name}
             </div>
-          )}
-        </div>
-      </div>
-
-      {(player.isBye || player.gameClock || player.inRedZone || player.hasPossession) && (
-        <div className="mt-1.5 flex flex-wrap items-center gap-1">
-          {player.isBye && (
-            <span className="px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-wider bg-slate-600 text-white">
-              BYE
-            </span>
-          )}
-          {player.gameClock && !player.isBye && (
-            <span className={`text-[10px] font-bold leading-tight break-words ${
-              live
-                ? isLight ? 'text-emerald-800' : 'text-emerald-200'
-                : isLight ? 'text-slate-400' : 'text-slate-500'
-            }`}>
-              {player.gameClock}
-            </span>
-          )}
-          {player.inRedZone && (
-            <span className="px-1.5 py-0.5 rounded text-[8px] font-black uppercase bg-rose-600 text-white tracking-wider">
-              RZ
-            </span>
-          )}
-          {player.hasPossession && !player.inRedZone && (
-            <span className={`px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-wider ${
-              isLight ? 'bg-emerald-600 text-white' : 'bg-emerald-500 text-slate-950'
-            }`}>
-              Ball
-            </span>
-          )}
-        </div>
-      )}
-
-      <LivePoints player={player} isLight={isLight} tone={side === 'against' ? 'against' : side === 'cross' ? 'cross' : 'for'} layout="hero" />
-
-      {player.bigPlay && (
-        <div className="mt-1.5">
-          <span className={`inline-flex items-center px-1.5 py-0.2 rounded font-mono text-[9px] font-black border ${
-            isLight ? 'bg-amber-100 text-amber-800 border-amber-300' : 'bg-amber-500/20 text-amber-300 border-amber-500/40'
-          }`}>
-            ⚡ {player.bigPlay}
-          </span>
-        </div>
-      )}
-
-      <ExposureFlags player={player} isLight={isLight} />
-
-      {side !== 'cross' && (
-        <div className={`flex justify-between items-start gap-1 text-[10px] pt-1 border-t font-mono ${
-          live
-            ? isLight ? 'border-emerald-200' : 'border-emerald-800/80'
-            : isLight ? 'border-slate-100' : 'border-slate-800/80'
-        }`}>
-          <span className={`min-w-0 font-bold break-words ${shareColor}`}>
-            {isConflict ? (
-              <>
-                <span className="block text-[8px] font-black uppercase tracking-wide">
-                  {side === 'against' ? 'Faced in' : 'Started in'}
-                </span>
-                {sideLeagueNames(player, side).join(', ') || (side === 'against' ? 'Opponent league' : 'Your league')}
-              </>
-            ) : (
-              `${shares} ${shares === 1 ? 'LEAGUE' : 'LEAGUES'}`
+            {player.inRedZone && (
+              <span className="shrink-0 px-1 py-0.5 rounded text-[7px] font-black uppercase bg-rose-600 text-white tracking-wider">
+                RZ
+              </span>
             )}
-          </span>
-          <span className="min-w-0 text-right break-words">{isConflict ? null : stance}</span>
+            {hasBall && !player.inRedZone && (
+              <LivePulse size={6} />
+            )}
+            {player.isBye && (
+              <span className="shrink-0 px-1 py-0.5 rounded text-[7px] font-black uppercase tracking-wider bg-slate-600 text-white">
+                BYE
+              </span>
+            )}
+            {player.zeroProjection && (
+              <span className="shrink-0 px-1 py-0.5 rounded text-[7px] font-black uppercase tracking-wide bg-amber-400 text-slate-950">
+                0 PROJ
+              </span>
+            )}
+          </div>
+          <div className={`truncate text-[9px] font-bold leading-tight ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+            {player.position} • {player.nflTeam}
+          </div>
         </div>
-      )}
+        <LivePoints
+          player={player}
+          isLight={isLight}
+          tone={side === 'against' ? 'against' : isConflict ? 'cross' : 'for'}
+          layout="compact"
+          onScoreJump={handleScoreJump}
+        />
+      </div>
+      <div className={`mt-1 flex items-center justify-between gap-1 pt-1 border-t ${
+        live
+          ? isLight ? 'border-emerald-200/80' : 'border-emerald-800/70'
+          : isLight ? 'border-slate-100' : 'border-slate-800/80'
+      }`}>
+        <span className={`text-[9px] font-black uppercase tracking-wide tabular-nums ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+          {leagueCount} {leagueCount === 1 ? 'LEAGUE' : 'LEAGUES'}
+        </span>
+        <div className="min-w-0 shrink text-right">{footerStance}</div>
+      </div>
     </div>
   );
 }
@@ -1121,38 +1302,6 @@ function markExposureTags(playerMap, leagueList, games) {
   });
 }
 
-function ConnotationBadge({ player, isLight }) {
-  if (!player?.doubleDip && !player?.friendlyFire) return null;
-  return (
-    <div className="mt-1 space-y-1">
-      {player.doubleDip && (
-        <div>
-          <span className={`inline-flex items-center px-1.5 py-0.5 rounded font-black border text-[8px] leading-tight tracking-wide ${
-            isLight ? 'bg-cyan-50 text-amber-700 border-cyan-400' : 'bg-cyan-950/80 text-amber-200 border-cyan-500'
-          }`}>
-            🎯 DOUBLE DIP
-          </span>
-          <p className={`mt-0.5 text-[9px] leading-snug font-semibold break-words ${isLight ? 'text-cyan-800' : 'text-cyan-200'}`}>
-            Offense vs Opponent DEF (Dual point swing on TDs)
-          </p>
-        </div>
-      )}
-      {player.friendlyFire && (
-        <div>
-          <span className={`inline-flex items-center px-1.5 py-0.5 rounded font-black border text-[8px] leading-tight tracking-wide ${
-            isLight ? 'bg-amber-50 text-amber-800 border-amber-400' : 'bg-amber-950/70 text-amber-200 border-amber-500'
-          }`}>
-            ⚠️ FRIENDLY FIRE
-          </span>
-          <p className={`mt-0.5 text-[9px] leading-snug font-semibold break-words ${isLight ? 'text-amber-800' : 'text-amber-200'}`}>
-            Offense vs Your DEF (Offensive TD reduces defense points)
-          </p>
-        </div>
-      )}
-    </div>
-  );
-}
-
 function ExposureFlags({ player, isLight }) {
   if (!player?.crossfire) return null;
   return (
@@ -1181,6 +1330,42 @@ const HEADSHOT_INDEX_KEY = 'rootmap_sleeper_headshot_index_v1';
 const HEADSHOT_INDEX_AT_KEY = 'rootmap_sleeper_headshot_index_at';
 const HEADSHOT_INDEX_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const SLEEPER_PLAYERS_URL = 'https://api.sleeper.app/v1/players/nfl';
+
+const NFL_TEAM_PRIMARY = {
+  ARI: '#97233F',
+  ATL: '#A71930',
+  BAL: '#241773',
+  BUF: '#00338D',
+  CAR: '#0085CA',
+  CHI: '#0B162A',
+  CIN: '#FB4F14',
+  CLE: '#311D00',
+  DAL: '#003594',
+  DEN: '#FB4F14',
+  DET: '#0076B6',
+  GB: '#203731',
+  HOU: '#03202F',
+  IND: '#002C5F',
+  JAX: '#006778',
+  KC: '#E31837',
+  LAC: '#0080C6',
+  LAR: '#003594',
+  LV: '#000000',
+  MIA: '#008E97',
+  MIN: '#4F2683',
+  NE: '#002244',
+  NO: '#101820',
+  NYG: '#0B2265',
+  NYJ: '#125740',
+  PHI: '#004C54',
+  PIT: '#101820',
+  SEA: '#002244',
+  SF: '#AA0000',
+  TB: '#D50A0A',
+  TEN: '#0C2340',
+  WAS: '#5A1414',
+  WSH: '#5A1414'
+};
 
 const NFL_TEAM_SECONDARY = {
   ARI: { bg: '#A5ACAF', fg: '#111111' },
@@ -1417,8 +1602,19 @@ export default function App() {
   const [leagueSort, setLeagueSort] = useState('closest');
   const [leagueMenuOpen, setLeagueMenuOpen] = useState(false);
   const [sortMode, setSortMode] = useState('slate');
-  const [boardFilters, setBoardFilters] = useState({ liveOnly: false, redZoneOnly: false, hideFinal: false });
+  const [boardFilters, setBoardFilters] = useState({
+    liveOnly: false,
+    redZoneOnly: false,
+    hideFinal: false,
+    outperformers: false,
+    conflicted: false
+  });
   const [showSortSheet, setShowSortSheet] = useState(false);
+  const [showAlertSheet, setShowAlertSheet] = useState(false);
+  const [alertPrefs, setAlertPrefs] = useState(loadAlertPrefs);
+  const [jumpMenuOpen, setJumpMenuOpen] = useState(false);
+  const [flashGameId, setFlashGameId] = useState(null);
+  const gameCardRefs = useRef(new Map());
   const [zeroProjAlerts, setZeroProjAlerts] = useState(() => {
     try {
       const stored = localStorage.getItem('rootmap_zero_proj_alerts');
@@ -1862,7 +2058,7 @@ export default function App() {
   }, [leagues]);
 
   useEffect(() => {
-    if (!showLegend && !showLeagueFilter && !leaguePendingDelete && !showSetupImport && !showConnect && !showSleeper && !showEspn && !showYahooIngest && !showSortSheet && !showWeekPicker && !showMobileSync) return undefined;
+    if (!showLegend && !showLeagueFilter && !leaguePendingDelete && !showSetupImport && !showConnect && !showSleeper && !showEspn && !showYahooIngest && !showSortSheet && !showAlertSheet && !showWeekPicker && !showMobileSync && !jumpMenuOpen) return undefined;
     const onKey = (event) => {
       if (event.key !== 'Escape') return;
       if (showEspn || showSleeper || showYahooIngest || showConnect) {
@@ -1879,6 +2075,14 @@ export default function App() {
       }
       if (showWeekPicker) {
         setShowWeekPicker(false);
+        return;
+      }
+      if (showAlertSheet) {
+        setShowAlertSheet(false);
+        return;
+      }
+      if (jumpMenuOpen) {
+        setJumpMenuOpen(false);
         return;
       }
       if (showSetupImport) {
@@ -1898,7 +2102,7 @@ export default function App() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [showLegend, showLeagueFilter, leaguePendingDelete, showSetupImport, showConnect, showSleeper, showEspn, showYahooIngest, showSortSheet, showWeekPicker, showMobileSync]);
+  }, [showLegend, showLeagueFilter, leaguePendingDelete, showSetupImport, showConnect, showSleeper, showEspn, showYahooIngest, showSortSheet, showAlertSheet, showWeekPicker, showMobileSync, jumpMenuOpen]);
 
   const confirmRemoveLeague = () => {
     if (!leaguePendingDelete) return;
@@ -2489,11 +2693,22 @@ export default function App() {
   }, [zeroProjAlerts]);
 
   useEffect(() => {
+    try {
+      localStorage.setItem(ALERT_PREFS_KEY, JSON.stringify(alertPrefs));
+    } catch {
+      // preference storage is optional
+    }
+  }, [alertPrefs]);
+
+  useEffect(() => {
     if (!zeroProjAlerts || !liveScores) return undefined;
     const found = checkZeroProjectionStarters(leagues, { games, liveScores });
-    notifyZeroProjectionAlerts(found);
-    return undefined;
-  }, [zeroProjAlerts, leagues, games, liveScores]);
+    const delayMs = alertPrefs.spoilerFreeDelay ? 45000 : 0;
+    const timer = window.setTimeout(() => {
+      notifyZeroProjectionAlerts(found);
+    }, delayMs);
+    return () => window.clearTimeout(timer);
+  }, [zeroProjAlerts, alertPrefs.spoilerFreeDelay, leagues, games, liveScores]);
 
   useEffect(() => {
     const next = new Map();
@@ -2551,7 +2766,11 @@ export default function App() {
     [rankedBoard, rootView]
   );
 
-  const filterCount = Number(boardFilters.liveOnly) + Number(boardFilters.redZoneOnly) + Number(boardFilters.hideFinal);
+  const filterCount = Number(boardFilters.liveOnly)
+    + Number(boardFilters.redZoneOnly)
+    + Number(boardFilters.hideFinal)
+    + Number(boardFilters.outperformers)
+    + Number(boardFilters.conflicted);
   const leagueSortReadyRef = useRef(false);
 
   useEffect(() => {
@@ -2615,6 +2834,16 @@ export default function App() {
     });
   }, [games, playerMasterIndex]);
 
+  const jumpToGame = (gameId) => {
+    const node = gameCardRefs.current.get(gameId);
+    if (!node) return;
+    setJumpMenuOpen(false);
+    node.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    setFlashGameId(gameId);
+    window.setTimeout(() => setFlashGameId((current) => (current === gameId ? null : current)), 1100);
+    tapHaptic();
+  };
+
   const renderBoardColumn = (players, side) => {
     let previousWindow = '';
     let markedFinal = false;
@@ -2633,7 +2862,7 @@ export default function App() {
         <div key={`${side}_${cardKey}`} className="space-y-1">
           {(showSlate || showFinal || showBye) && (
             <div className={`px-1 text-[10px] font-black uppercase tracking-wider ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
-              {window.id === 'bye' ? 'Bye Week' : showFinal ? 'Final' : window.label}
+              {window.id === 'bye' ? 'BYE WEEK' : showFinal ? 'FINAL' : slateDividerLabel(player, window)}
             </div>
           )}
           <div className={window.id === 'bye' ? 'opacity-60' : window.id === 'final' ? 'opacity-75' : undefined}>
@@ -2733,14 +2962,14 @@ export default function App() {
     <div className={`min-h-screen pb-[calc(7.5rem+env(safe-area-inset-bottom))] font-sans transition-colors duration-200 ${
       isLight ? 'bg-slate-50 text-slate-900' : 'bg-slate-950 text-slate-100'
     }`}>
-      <div className={`sticky top-0 z-40 max-w-md mx-auto pt-[env(safe-area-inset-top)] ${isLight ? 'bg-white/95' : 'bg-slate-950/95'} backdrop-blur-md`}>
-      <header className={`border-b px-3 py-2 space-y-1.5 transition-colors ${
+      <div className={`sticky top-0 z-40 max-w-md mx-auto pt-[calc(env(safe-area-inset-top)+6px)] ${isLight ? 'bg-white/95' : 'bg-slate-950/95'} backdrop-blur-md`}>
+      <header className={`border-b px-3 py-1.5 space-y-1.5 transition-colors ${
         isLight ? 'border-slate-200 shadow-sm' : 'border-slate-800/80'
       }`}>
         <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-1.5 min-w-0">
-            <RootMapLogo className="w-6 h-6 shrink-0" showWordmark={false} />
-            <span className={`font-black text-sm tracking-tight ${isLight ? 'text-slate-900' : 'text-white'}`}>
+          <div className="flex items-center gap-2 min-w-0">
+            <RootMapLogo className="w-8 h-8 shrink-0" showWordmark={false} />
+            <span className={`font-extrabold text-lg tracking-tight ${isLight ? 'text-slate-900' : 'text-white'}`}>
               Root<span className="text-emerald-400">Map</span>
             </span>
           </div>
@@ -2758,6 +2987,37 @@ export default function App() {
           >
             Week {slateMeta.week}
           </button>
+            {view === 'all-leagues' && (
+              <button
+                type="button"
+                onClick={() => selectConnectTab('yahoo')}
+                className={`shrink-0 h-9 px-2.5 rounded-lg text-[10px] font-black border whitespace-nowrap ${
+                  isLight ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-950 border-white'
+                }`}
+              >
+                + Import
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => {
+                setShowAlertSheet(true);
+                prepareCrossFireAlerts();
+                prepareZeroProjectionAlerts({ request: false });
+                tapHaptic();
+              }}
+              aria-label="Game-Day Alerts"
+              title="Game-Day Alerts"
+              className={`w-9 h-9 rounded-lg border flex items-center justify-center transition touch-manipulation ${
+                showAlertSheet || alertPrefs.lineupRescue || alertPrefs.redZoneTv || alertPrefs.fourthQuarterSweat
+                  ? isLight ? 'bg-amber-50 text-amber-700 border-amber-300' : 'bg-amber-950/50 text-amber-300 border-amber-700'
+                  : isLight ? 'bg-white text-slate-700 border-slate-200' : 'bg-slate-900 text-slate-200 border-slate-700'
+              }`}
+            >
+              <svg viewBox="0 0 16 16" className="w-4 h-4" aria-hidden="true">
+                <path fill="currentColor" d="M8 1.5a3.5 3.5 0 0 0-3.5 3.5v1.3c0 .5-.2 1-.5 1.4L2.8 9.4A1.2 1.2 0 0 0 3.8 11h8.4a1.2 1.2 0 0 0 1-1.6l-1.2-1.7a2.2 2.2 0 0 1-.5-1.4V5A3.5 3.5 0 0 0 8 1.5Zm-1.3 11a1.3 1.3 0 1 0 2.6 0h-2.6Z" />
+              </svg>
+            </button>
             <button
               type="button"
               onClick={() => setTheme(isLight ? 'dark' : 'light')}
@@ -2778,22 +3038,6 @@ export default function App() {
                   <path fill="currentColor" d="M8.4 1.4a.7.7 0 0 1 .2.8 4.6 4.6 0 0 0 5.2 6.3.7.7 0 0 1 .8.9A6.6 6.6 0 1 1 7.6 1.2a.7.7 0 0 1 .8.2Z" />
                 </svg>
               )}
-            </button>
-            <button
-              ref={filterButtonRef}
-              type="button"
-              onClick={() => setShowSortSheet(true)}
-              className={`shrink-0 inline-flex h-9 items-center gap-1 rounded-full border px-2.5 text-[10px] font-black whitespace-nowrap ${
-                filterCount > 0 || sortMode !== 'slate'
-                  ? isLight ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-950 border-white'
-                  : isLight ? 'bg-white text-slate-700 border-slate-300' : 'bg-slate-900 text-slate-200 border-slate-700'
-              }`}
-            >
-              Sort & Filter
-              {filterCount > 0 && (
-                <span className={`rounded-full px-1 text-[9px] ${isLight ? 'bg-white/20' : 'bg-slate-900/10'}`}>{filterCount}</span>
-              )}
-              <span aria-hidden="true">▾</span>
             </button>
             {showWeekPicker && (
               <>
@@ -2908,6 +3152,50 @@ export default function App() {
             </button>
           </div>
         )}
+        {view === 'matchups' && leagues.length > 0 && (
+          <div className="-mx-3 px-3 overflow-x-auto scrollbar-none">
+            <div className="flex items-center gap-1.5 min-w-max pb-0.5">
+              {[
+                { key: 'redZoneOnly', label: '🔴 RedZone', active: boardFilters.redZoneOnly },
+                { key: 'outperformers', label: '🔥 Outperformers', active: boardFilters.outperformers },
+                { key: 'conflicted', label: '⚡ Conflicted', active: boardFilters.conflicted }
+              ].map((pill) => (
+                <button
+                  key={pill.key}
+                  type="button"
+                  aria-pressed={pill.active}
+                  onClick={() => {
+                    setBoardFilters((current) => ({ ...current, [pill.key]: !current[pill.key] }));
+                    tapHaptic();
+                  }}
+                  className={`shrink-0 h-8 px-2.5 rounded-full border text-[10px] font-black whitespace-nowrap transition ${
+                    pill.active
+                      ? isLight ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-950 border-white'
+                      : isLight ? 'bg-white text-slate-700 border-slate-200' : 'bg-slate-900 text-slate-200 border-slate-700'
+                  }`}
+                >
+                  {pill.label}
+                </button>
+              ))}
+              <button
+                ref={filterButtonRef}
+                type="button"
+                onClick={() => setShowSortSheet(true)}
+                className={`shrink-0 inline-flex h-8 items-center gap-1 rounded-full border px-2.5 text-[10px] font-black whitespace-nowrap ${
+                  filterCount > 0 || sortMode !== 'slate'
+                    ? isLight ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-emerald-500 text-slate-950 border-emerald-400'
+                    : isLight ? 'bg-white text-slate-700 border-slate-300' : 'bg-slate-900 text-slate-200 border-slate-700'
+                }`}
+              >
+                Sort & Filter
+                {filterCount > 0 && (
+                  <span className={`rounded-full px-1 text-[9px] ${isLight ? 'bg-white/20' : 'bg-slate-900/10'}`}>{filterCount}</span>
+                )}
+                <span aria-hidden="true">▾</span>
+              </button>
+            </div>
+          </div>
+        )}
       </header>
       </div>
 
@@ -2964,15 +3252,13 @@ export default function App() {
 
             <div className="relative">
               {rootView === 'both' ? (
-                <div className="flex flex-col gap-3">
+                <div className="flex flex-col gap-2">
                   {alignedSlateColumns(myPortfolio, oppThreats, sortMode).map((group) => {
+                    const sample = group.forPlayers[0] || group.againstPlayers[0];
                     const headerClass = `px-1 text-[10px] font-black uppercase tracking-wider ${isLight ? 'text-slate-500' : 'text-slate-400'}`;
                     const faded = group.key === 'bye' ? 'opacity-60' : group.key === 'final' ? 'opacity-75' : '';
                     const column = (players, side) => (
-                      <div className={`flex-1 flex flex-col space-y-3 min-w-0 ${faded}`}>
-                        {group.label && players.length > 0 && (
-                          <div className={headerClass}>{group.label}</div>
-                        )}
+                      <div className={`flex-1 flex flex-col space-y-1.5 min-w-0 ${faded}`}>
                         {players.map((player) => {
                           const cardKey = player.cardKey || player.name;
                           const conflict = (player.myShares || 0) > 0 && (player.oppShares || 0) > 0;
@@ -2994,15 +3280,24 @@ export default function App() {
                       </div>
                     );
                     return (
-                      <div key={group.key} className="flex items-start gap-2">
-                        {column(group.forPlayers, 'for')}
-                        {column(group.againstPlayers, 'against')}
+                      <div key={group.key} className="space-y-1.5">
+                        {group.label && sample && (
+                          <div className={headerClass}>
+                            {group.key === 'bye' || group.key === 'final'
+                              ? group.label.toUpperCase()
+                              : slateDividerLabel(sample, { id: group.key, label: group.label, rank: group.rank })}
+                          </div>
+                        )}
+                        <div className="flex items-start gap-2">
+                          {column(group.forPlayers, 'for')}
+                          {column(group.againstPlayers, 'against')}
+                        </div>
                       </div>
                     );
                   })}
                 </div>
               ) : (
-                <div className="space-y-2">
+                <div className="space-y-1.5">
                   {renderBoardColumn(rootView === 'for' ? myPortfolio : oppThreats, rootView)}
                 </div>
               )}
@@ -3013,106 +3308,188 @@ export default function App() {
         {/* VIEW 2: GAME SLATE */}
         {view === 'game-slate' && (
           <div className="space-y-3">
-            <div className={`rounded-2xl p-3 border flex justify-between items-center gap-3 shadow-sm ${
+            <div className={`h-11 rounded-xl border px-2.5 flex items-center justify-between gap-2 shadow-sm ${
               isLight ? 'bg-white border-slate-200' : 'bg-slate-900 border-slate-800'
             }`}>
-              <div>
-                <div className={`text-xs font-black uppercase tracking-wide ${isLight ? 'text-emerald-700' : 'text-emerald-400'}`}>
-                  {slateMeta.label || 'NFL Slate'} · {slateMeta.range}
-                </div>
-                <div className={`text-[11px] mt-0.5 ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
-                  Tuesday 6:00 AM ET slate. ESPN scores fill in once a game is posted.
-                </div>
-                {slateMeta.byes?.length > 0 && (
-                  <div className={`text-[11px] mt-1 font-bold ${isLight ? 'text-slate-600' : 'text-slate-300'}`}>
-                    Bye weeks: {slateMeta.byes.join(', ')}
-                  </div>
-                )}
+              <div className={`min-w-0 truncate text-[11px] font-black ${isLight ? 'text-slate-700' : 'text-slate-200'}`}>
+                Byes: {(slateMeta.byes || []).length ? slateMeta.byes.join(' • ') : 'None'}
               </div>
-              <div className="text-right shrink-0">
-                <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold border ${
-                  isLight ? 'bg-emerald-50 text-emerald-700 border-emerald-300' : 'bg-emerald-950 text-emerald-400 border-emerald-800'
-                }`}>
-                  Week {slateMeta.week}
-                </span>
+              <div className="relative shrink-0">
+                <button
+                  type="button"
+                  aria-expanded={jumpMenuOpen}
+                  onClick={() => {
+                    setJumpMenuOpen((open) => !open);
+                    tapHaptic();
+                  }}
+                  className={`rootmap-jump-pulse h-8 px-2.5 rounded-full border text-[10px] font-black whitespace-nowrap ${
+                    jumpMenuOpen
+                      ? isLight ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-emerald-500 text-slate-950 border-emerald-400'
+                      : isLight ? 'bg-slate-50 text-slate-800 border-slate-200' : 'bg-slate-950 text-slate-100 border-slate-700'
+                  }`}
+                >
+                  Jump to Game ▾
+                </button>
+                {jumpMenuOpen && (
+                  <>
+                    <button type="button" aria-label="Close jump menu" className="fixed inset-0 z-30 cursor-default" onClick={() => setJumpMenuOpen(false)} />
+                    <div className={`absolute right-0 top-10 z-40 w-[min(20rem,calc(100vw-2rem))] max-h-64 overflow-y-auto rounded-2xl border p-2 shadow-2xl space-y-1.5 ${
+                      isLight ? 'bg-white border-slate-200' : 'bg-slate-950 border-slate-700'
+                    }`}>
+                      {orderedGames.map((game) => {
+                        const roots = getGamePlayers(game);
+                        const forRoots = roots.reduce((sum, player) => sum + (player.myShares || 0), 0);
+                        const againstRoots = roots.reduce((sum, player) => sum + (player.oppShares || 0), 0);
+                        const total = forRoots + againstRoots;
+                        const forPct = total ? Math.round((forRoots / total) * 100) : 50;
+                        return (
+                          <button
+                            key={`jump-${game.id}`}
+                            type="button"
+                            onClick={() => jumpToGame(game.id)}
+                            className={`w-full rounded-xl border px-2.5 py-2 text-left ${
+                              isLight ? 'border-slate-200 hover:bg-slate-50' : 'border-slate-800 hover:bg-slate-900'
+                            }`}
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <span className={`text-[11px] font-extrabold ${isLight ? 'text-slate-900' : 'text-white'}`}>
+                                {game.away} @ {game.home}
+                              </span>
+                              <span className={`text-[10px] font-black tabular-nums ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+                                {total} Roots
+                              </span>
+                            </div>
+                            <div className={`mt-1.5 h-1.5 overflow-hidden rounded-full ${isLight ? 'bg-slate-200' : 'bg-slate-800'}`}>
+                              <div className="h-full bg-emerald-500" style={{ width: `${forPct}%`, float: 'left' }} />
+                              <div className="h-full bg-rose-500" style={{ width: `${100 - forPct}%` }} />
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </>
+                )}
               </div>
             </div>
 
-            {orderedGames.map(game => {
+            {orderedGames.map((game) => {
               const activeMatchPlayers = getGamePlayers(game);
+              const forRoots = activeMatchPlayers.reduce((sum, player) => sum + (player.myShares || 0), 0);
+              const againstRoots = activeMatchPlayers.reduce((sum, player) => sum + (player.oppShares || 0), 0);
+              const rootTotal = forRoots + againstRoots;
+              const forPct = rootTotal ? Math.round((forRoots / rootTotal) * 100) : 50;
+              const liveGame = game.gameStatus === 'IN_PROGRESS' || /\bLIVE\b/i.test(`${game.status || ''} ${game.time || ''}`);
+              const awayColor = NFLPrimary(game.away);
+              const homeColor = NFLPrimary(game.home);
               return (
-                <div key={game.id} className={`rounded-2xl overflow-hidden border shadow-sm ${
-                  isLight ? 'bg-white border-slate-200' : 'bg-slate-900 border-slate-800'
-                }`}>
-                  <div className={`px-3.5 py-2.5 border-b flex justify-between items-center text-xs ${
-                    isLight ? 'bg-slate-50 border-slate-200' : 'bg-slate-950 border-slate-800'
-                  }`}>
-                    <div className="flex items-center gap-2">
-                      <span className={`font-bold ${isLight ? 'text-slate-900' : 'text-white'}`}>{game.away} @ {game.home}</span>
-                      <span className={`font-mono text-[11px] ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
-                        ({game.awayScore || 0} - {game.homeScore || 0})
-                      </span>
+                <div
+                  key={game.id}
+                  ref={(node) => {
+                    if (node) gameCardRefs.current.set(game.id, node);
+                    else gameCardRefs.current.delete(game.id);
+                  }}
+                  className={`rounded-2xl overflow-hidden border shadow-sm ${flashGameId === game.id ? 'rootmap-game-flash' : ''} ${
+                    isLight ? 'bg-white border-slate-200' : 'bg-slate-900 border-slate-800'
+                  }`}
+                >
+                  <div
+                    className="h-1.5 w-full"
+                    style={{ background: `linear-gradient(90deg, ${awayColor} 0%, ${awayColor} 48%, ${homeColor} 52%, ${homeColor} 100%)` }}
+                  />
+                  <div className={`px-3 py-2.5 border-b ${isLight ? 'border-slate-100' : 'border-slate-800'}`}>
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0 flex-1 space-y-1">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className={`font-extrabold text-sm tracking-tight ${isLight ? 'text-slate-900' : 'text-white'}`}>
+                            <span style={{ color: awayColor }}>{game.away}</span>
+                            <span className={`mx-1 tabular-nums ${isLight ? 'text-slate-900' : 'text-white'}`}>{game.awayScore || 0}</span>
+                          </span>
+                          <span className={`text-[10px] font-black ${isLight ? 'text-slate-400' : 'text-slate-500'}`}>VS</span>
+                          <span className={`font-extrabold text-sm tracking-tight text-right ${isLight ? 'text-slate-900' : 'text-white'}`}>
+                            <span className={`mr-1 tabular-nums ${isLight ? 'text-slate-900' : 'text-white'}`}>{game.homeScore || 0}</span>
+                            <span style={{ color: homeColor }}>{game.home}</span>
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className={`text-[10px] font-black uppercase tracking-wide ${
+                            liveGame
+                              ? isLight ? 'text-emerald-700' : 'text-emerald-300'
+                              : isLight ? 'text-slate-500' : 'text-slate-400'
+                          }`}>
+                            {liveGame ? `LIVE ${game.status || game.time || ''}`.replace(/^LIVE\s+LIVE/i, 'LIVE') : (game.status || game.time || 'Scheduled')}
+                            {(game.possession || game.isRedZone) ? ` · ${game.possession || 'Ball'}${game.isRedZone ? ' RZ' : ''}` : ''}
+                          </span>
+                          <span className={`text-[10px] font-black tabular-nums ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+                            {rootTotal} roots
+                          </span>
+                        </div>
+                        <div className="space-y-0.5">
+                          <div className={`flex justify-between text-[9px] font-black uppercase tracking-wide ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+                            <span className={isLight ? 'text-emerald-700' : 'text-emerald-300'}>Root Balance</span>
+                            <span>{forRoots} for · {againstRoots} against</span>
+                          </div>
+                          <div className={`flex h-1.5 overflow-hidden rounded-full ${isLight ? 'bg-slate-200' : 'bg-slate-800'}`}>
+                            <div className="bg-emerald-500" style={{ width: `${forPct}%` }} />
+                            <div className="bg-rose-500" style={{ width: `${100 - forPct}%` }} />
+                          </div>
+                        </div>
+                      </div>
                     </div>
-                    <span className={`text-[11px] font-bold text-right ${
-                      game.status?.includes('LIVE') 
-                        ? isLight ? 'text-emerald-700' : 'text-emerald-400' 
-                        : isLight ? 'text-slate-500' : 'text-slate-400'
-                    }`}>
-                      <span className="block">{game.status || game.time}</span>
-                      {(game.possession || game.isRedZone) && (
-                        <span className={`block text-[9px] font-black uppercase ${game.isRedZone ? 'text-rose-500' : ''}`}>
-                          {game.possession ? `${game.possession} ball` : 'Ball'}{game.isRedZone ? ' · RZ' : ''}
-                        </span>
-                      )}
-                    </span>
                   </div>
 
-                  <div className={`divide-y p-1 ${isLight ? 'divide-slate-100' : 'divide-slate-800/60'}`}>
+                  <div className={`divide-y ${isLight ? 'divide-slate-100' : 'divide-slate-800/60'}`}>
                     {activeMatchPlayers.length === 0 ? (
                       <div className="p-3 text-center text-xs text-slate-400 italic">
                         No portfolio starters active in this matchup
                       </div>
                     ) : (
-                      activeMatchPlayers.map(player => (
-                        <div
-                          key={player.name}
-                          onClick={() => setSelectedPlayer(player)}
-                          className={`p-2.5 cursor-pointer rounded-xl transition ${
-                            isLight ? 'hover:bg-slate-50' : 'hover:bg-slate-800/40'
-                          }`}
-                        >
-                          <div className="flex items-center justify-between gap-2">
-                            <div className="flex items-center gap-2.5 min-w-0">
-                              <PlayerHeadshot key={`${player.name}-${headshotTick}`} name={player.name} team={player.nflTeam} defense={isTeamDefense(player)} size={40} />
-                              <div className="min-w-0">
-                                <div className={`font-bold text-xs truncate ${isLight ? 'text-slate-900' : 'text-white'}`}>{player.name}</div>
-                                <div className={`text-[10px] ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>{player.position} • {player.nflTeam}</div>
-                                <ConnotationBadge player={player} isLight={isLight} />
-                              <div className="mt-0.5">{renderStance(player)}</div>
+                      activeMatchPlayers.map((player) => {
+                        const stance = getCombinedStance(player);
+                        const forSide = stance.tone === 'pure' || stance.tone === 'down';
+                        const againstSide = stance.tone === 'threat';
+                        const rowAccent = againstSide ? '#e11d48' : forSide ? '#059669' : '#8b5cf6';
+                        return (
+                          <div
+                            key={player.name}
+                            onClick={() => setSelectedPlayer(player)}
+                            className={`relative px-2.5 py-1.5 cursor-pointer transition ${
+                              isLight ? 'hover:bg-slate-50' : 'hover:bg-slate-800/40'
+                            }`}
+                          >
+                            <span
+                              aria-hidden="true"
+                              className="absolute left-0 top-1 bottom-1 w-0.5 rounded-full"
+                              style={{ backgroundColor: rowAccent }}
+                            />
+                            <div className="flex items-center justify-between gap-2 pl-1.5">
+                              <div className="flex items-center gap-2 min-w-0">
+                                <PlayerHeadshot key={`${player.name}-${headshotTick}`} name={player.name} team={player.nflTeam} defense={isTeamDefense(player)} size={28} />
+                                <div className="min-w-0">
+                                  <div className={`font-extrabold text-[12px] truncate leading-tight ${isLight ? 'text-slate-900' : 'text-white'}`}>{player.name}</div>
+                                  <div className={`text-[9px] font-bold ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>{player.position} • {player.nflTeam}</div>
+                                </div>
                               </div>
-                            </div>
-                            <div className="text-right font-mono shrink-0">
-                              <LivePoints
-                                player={player}
-                                isLight={isLight}
-                                tone={
-                                  getCombinedStance(player).tone === 'threat'
-                                    ? 'against'
-                                    : getCombinedStance(player).tone === 'cross'
-                                      ? 'cross'
-                                      : 'for'
-                                }
-                              />
-                              <div className={`text-[10px] ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
-                                {player.myShares > 0
-                                  ? `${player.myShares} ${player.myShares === 1 ? 'League' : 'Leagues'}`
-                                  : `${player.oppShares} ${player.oppShares === 1 ? 'Opponent' : 'Opponents'}`}
+                              <div className="flex items-center gap-1.5 shrink-0">
+                                <LivePoints
+                                  player={player}
+                                  isLight={isLight}
+                                  tone={againstSide ? 'against' : stance.tone === 'cross' ? 'cross' : 'for'}
+                                  layout="compact"
+                                />
+                                <span className={`rounded-full px-1.5 py-0.5 text-[8px] font-black uppercase tracking-wide whitespace-nowrap ${
+                                  againstSide
+                                    ? isLight ? 'bg-rose-100 text-rose-700' : 'bg-rose-950 text-rose-300'
+                                    : forSide
+                                      ? isLight ? 'bg-emerald-100 text-emerald-700' : 'bg-emerald-950 text-emerald-300'
+                                      : isLight ? 'bg-violet-100 text-violet-700' : 'bg-violet-950 text-violet-300'
+                                }`}>
+                                  {againstSide ? 'ROOT AGAINST' : forSide ? 'ROOT FOR' : '⚡ CONFLICT'}
+                                </span>
                               </div>
                             </div>
                           </div>
-                          <ExposureFlags player={player} isLight={isLight} />
-                        </div>
-                      ))
+                        );
+                      })
                     )}
                   </div>
                 </div>
@@ -3121,20 +3498,40 @@ export default function App() {
           </div>
         )}
 
-        {/* VIEW 3: ALL LEAGUES */}
+        {/* VIEW 3: MATCHUPS */}
         {view === 'all-leagues' && (
           <div className="space-y-3">
-            <button
-              type="button"
-              onClick={() => selectConnectTab('yahoo')}
-              className="w-full min-h-11 rounded-2xl bg-purple-600 hover:bg-purple-500 text-white text-sm font-black shadow-lg"
-            >
-              + Connect / Import League
-            </button>
+            {leagues.length > 0 && (
+              <div className="-mx-1 overflow-x-auto">
+                <div className="flex items-center gap-1.5 min-w-max px-1 pb-0.5">
+                  {sortedLeagues.map((lg) => {
+                    const outlook = matchupOutlook(lg);
+                    return (
+                      <button
+                        key={`jump-league-${lg.id}`}
+                        type="button"
+                        onClick={() => {
+                          const node = document.getElementById(`league-card-${lg.id}`);
+                          node?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                          setFlashGameId(lg.id);
+                          window.setTimeout(() => setFlashGameId((current) => (current === lg.id ? null : current)), 1100);
+                          tapHaptic();
+                        }}
+                        className={`shrink-0 h-8 px-2.5 rounded-full border text-[10px] font-black whitespace-nowrap ${
+                          isLight ? 'bg-white text-slate-700 border-slate-200' : 'bg-slate-900 text-slate-200 border-slate-700'
+                        }`}
+                      >
+                        {getLeagueDisplayName(lg)} · {outlook.myPct}%
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
 
             <div className="flex items-center justify-between gap-2">
               <div className={`text-xs font-black uppercase tracking-wider ${isLight ? 'text-slate-700' : 'text-slate-300'}`}>
-                Connected Leagues ({leagues.length})
+                Matchups ({leagues.length})
               </div>
               <label className="shrink-0 flex items-center">
                 <span className="text-xs uppercase tracking-wider text-slate-400 font-medium mr-1.5">Sort by:</span>
@@ -3225,20 +3622,31 @@ export default function App() {
                 <div className={`text-sm font-black ${isLight ? 'text-slate-900' : 'text-white'}`}>
                   Connect a Yahoo, Sleeper, or ESPN league
                 </div>
+                <button
+                  type="button"
+                  onClick={() => selectConnectTab('yahoo')}
+                  className={`w-full min-h-11 rounded-xl border text-xs font-black ${
+                    isLight ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-950 border-white'
+                  }`}
+                >
+                  + Import League
+                </button>
               </div>
             )}
 
             {sortedLeagues.map((lg) => {
-              const myScore = finiteNumber(lg.myScore) ?? 0;
-              const oppScore = finiteNumber(lg.oppScore) ?? 0;
-              const ahead = myScore > oppScore;
-              const behind = oppScore > myScore;
-              const nailbiter = Math.abs(myScore - oppScore) <= 10 && leagueHasLivePlayers(lg, games);
+              const outlook = matchupOutlook(lg);
+              const ahead = outlook.myTotal > outlook.oppTotal;
+              const behind = outlook.oppTotal > outlook.myTotal;
+              const nailbiter = Math.abs(outlook.myTotal - outlook.oppTotal) <= 10 && leagueHasLivePlayers(lg, games);
               return (
               <div
                 key={lg.id}
+                id={`league-card-${lg.id}`}
                 onClick={() => setActiveLeagueDrawer(lg)}
                 className={`rounded-3xl p-4 space-y-3 cursor-pointer border shadow-sm transition ${
+                  flashGameId === lg.id ? 'rootmap-game-flash' : ''
+                } ${
                   hiddenLeagueIds.has(lg.id) ? 'opacity-60' : ''
                 } ${
                   nailbiter
@@ -3335,7 +3743,7 @@ export default function App() {
           {[
             { id: 'matchups', label: 'RootMap' },
             { id: 'game-slate', label: 'Game Slate' },
-            { id: 'all-leagues', label: 'All Leagues' }
+            { id: 'all-leagues', label: 'Matchups' }
           ].map((tab) => {
             const active = view === tab.id;
             return (
@@ -3617,6 +4025,8 @@ export default function App() {
               {[
                 { key: 'liveOnly', label: 'Live On Field Only' },
                 { key: 'redZoneOnly', label: 'Red Zone Only' },
+                { key: 'outperformers', label: 'Outperformers (+4.0)' },
+                { key: 'conflicted', label: 'Conflicted Only' },
                 { key: 'hideFinal', label: 'Hide Completed Games' }
               ].map((option) => {
                 const on = boardFilters[option.key];
@@ -3650,6 +4060,7 @@ export default function App() {
               onClick={() => {
                 const next = !zeroProjAlerts;
                 setZeroProjAlerts(next);
+                setAlertPrefs((current) => ({ ...current, lineupRescue: next }));
                 if (next) prepareZeroProjectionAlerts({ request: true });
                 tapHaptic();
               }}
@@ -3711,6 +4122,105 @@ export default function App() {
               >
                 Leagues{hiddenCount > 0 ? ` ${visibleLeagues.length}/${leagues.length}` : ''}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showAlertSheet && (
+        <div
+          onClick={() => setShowAlertSheet(false)}
+          className="fixed inset-0 z-[80] bg-black/60 backdrop-blur-sm flex items-end justify-center"
+          role="presentation"
+        >
+          <div
+            onClick={(event) => event.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="gameday-alerts-title"
+            className={`border-t rounded-t-3xl p-5 max-w-md w-full max-h-[min(88vh,36rem)] overflow-y-auto space-y-4 shadow-2xl pb-[calc(1.25rem+env(safe-area-inset-bottom))] ${
+              isLight ? 'bg-white border-slate-200' : 'bg-slate-900 border-slate-800'
+            }`}
+          >
+            <div className={`w-12 h-1.5 rounded-full mx-auto ${isLight ? 'bg-slate-300' : 'bg-slate-700'}`} />
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h3 id="gameday-alerts-title" className={`text-base font-extrabold tracking-tight ${isLight ? 'text-slate-900' : 'text-white'}`}>
+                  Game-Day Alerts
+                </h3>
+                <p className={`mt-1 text-[11px] font-semibold ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+                  Local pre-game notifications when Capacitor / browser permission is available.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowAlertSheet(false)}
+                className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold ${
+                  isLight ? 'bg-slate-100 text-slate-500' : 'bg-slate-800 text-slate-400'
+                }`}
+              >
+                ✕
+              </button>
+            </div>
+            <div className="space-y-2">
+              {[
+                {
+                  key: 'lineupRescue',
+                  label: 'Lineup Rescue (Inactives & Bye Weeks)',
+                  detail: 'Ping when a starter is inactive, bye, or projected 0.0 before kickoff.'
+                },
+                {
+                  key: 'redZoneTv',
+                  label: 'RedZone TV Trigger',
+                  detail: 'Highlight when one of your rooted offenses drives inside the 20.'
+                },
+                {
+                  key: 'fourthQuarterSweat',
+                  label: '4th Quarter Sweat Alert (±10 Projected Pts)',
+                  detail: 'Late-game nudge when a matchup is still within 10 projected points.'
+                },
+                {
+                  key: 'spoilerFreeDelay',
+                  label: 'Spoiler-Free Delay (45s)',
+                  detail: 'Hold live alert delivery for 45 seconds so you can watch the play first.'
+                }
+              ].map((option) => {
+                const on = Boolean(alertPrefs[option.key]);
+                return (
+                  <button
+                    key={option.key}
+                    type="button"
+                    role="switch"
+                    aria-checked={on}
+                    onClick={() => {
+                      const next = !on;
+                      setAlertPrefs((current) => ({ ...current, [option.key]: next }));
+                      if (option.key === 'lineupRescue') {
+                        setZeroProjAlerts(next);
+                        if (next) prepareZeroProjectionAlerts({ request: true });
+                      }
+                      if (next) {
+                        prepareCrossFireAlerts();
+                        prepareZeroProjectionAlerts({ request: true });
+                      }
+                      tapHaptic();
+                    }}
+                    className={`w-full flex items-center justify-between gap-3 rounded-2xl border px-3 py-2.5 text-left ${
+                      isLight ? 'bg-slate-50 border-slate-200 text-slate-900' : 'bg-slate-950 border-slate-800 text-white'
+                    }`}
+                  >
+                    <span className="min-w-0">
+                      <span className="block text-xs font-black">{option.label}</span>
+                      <span className={`block text-[11px] mt-0.5 font-semibold ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+                        {option.detail}
+                      </span>
+                    </span>
+                    <span className={`w-10 h-6 rounded-full p-0.5 transition shrink-0 ${on ? 'bg-emerald-500' : isLight ? 'bg-slate-300' : 'bg-slate-700'}`}>
+                      <span className={`block w-5 h-5 rounded-full bg-white shadow transition ${on ? 'translate-x-4' : 'translate-x-0'}`} />
+                    </span>
+                  </button>
+                );
+              })}
             </div>
           </div>
         </div>
