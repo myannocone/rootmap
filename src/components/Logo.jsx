@@ -32,7 +32,7 @@ export default function RootMapLogo({ className = "w-8 h-8", showWordmark = fals
         <circle cx="74" cy="78" r="4" fill="#10b981" />
       </svg>
       {showWordmark && (
-        <span className="font-black text-lg tracking-tight bg-gradient-to-r from-white via-slate-200 to-slate-400 bg-clip-text text-transparent">
+        <span className="font-extrabold text-xl tracking-tight bg-gradient-to-r from-white via-slate-200 to-slate-400 bg-clip-text text-transparent">
           Root<span className="text-emerald-400">Map</span>
         </span>
       )}
