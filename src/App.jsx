@@ -54,7 +54,8 @@ const MISSING_OPPONENT_NAME = 'Opponent';
 
 const ROOTING_LEGEND = [
   { icon: '🟢', title: 'Root For', detail: 'Started only on your rosters.' },
-  { icon: '🟢', title: 'Double Down (+2 or more)', detail: 'Started on multiple of your rosters.' },
+  { icon: '🔥', title: 'Double Down (2X+ FOR)', detail: 'Started on 2+ of your rosters — multi-league leverage.' },
+  { icon: '🚨', title: 'Double Down (2X+ AGAINST)', detail: 'Started by opponents in 2+ leagues — shared threat.' },
   { icon: '🔴', title: 'Root Against', detail: 'Started only by an opponent.' },
   { icon: '⚡', title: 'Cross Fire', detail: 'The same player is in your starters and an opponent’s starters.' },
   { icon: '🎯', title: 'Double Dip', detail: 'Offense vs Opponent DEF (Dual point swing on TDs).' },
@@ -817,12 +818,19 @@ function compareBoardPlayers(a, b, sortMode) {
   return String(a.name || '').localeCompare(String(b.name || ''));
 }
 
+function isDoubleDownPlayer(player) {
+  const forCount = player?.myShares || 0;
+  const againstCount = player?.oppShares || 0;
+  return (forCount >= 2 && againstCount === 0) || (againstCount >= 2 && forCount === 0);
+}
+
 function passesBoardFilters(player, filters) {
   if (filters?.hideFinal && (player?.gameStatus === 'FINAL')) return false;
   if (filters?.liveOnly && !(player?.isLive || player?.gameStatus === 'IN_PROGRESS')) return false;
   if (filters?.redZoneOnly && !player?.inRedZone) return false;
   if (filters?.outperformers && !(boomDelta(player) >= 4)) return false;
   if (filters?.conflicted && !((player?.myShares || 0) > 0 && (player?.oppShares || 0) > 0)) return false;
+  if (filters?.doubleDown && !isDoubleDownPlayer(player)) return false;
   return true;
 }
 
@@ -1050,32 +1058,42 @@ function LivePoints({ player, isLight, tone = 'for', layout = 'inline', onScoreJ
   );
 }
 
-function rosterCardSurface(isLight, isLive, isConflict, isHovered, inRedZone, zeroProj, side = 'for') {
+function rosterCardSurface(isLight, isLive, isConflict, isHovered, inRedZone, zeroProj, side = 'for', isDoubleDown = false) {
   if (zeroProj && !isLive) {
     return isLight
-      ? 'border-rose-500 bg-amber-50 ring-2 ring-inset ring-amber-400'
-      : 'border-rose-400 bg-rose-950/40 ring-2 ring-inset ring-amber-400';
+      ? 'border border-rose-500 bg-amber-50 ring-2 ring-inset ring-amber-400 shadow-sm'
+      : 'border border-rose-400 bg-rose-950/40 ring-2 ring-inset ring-amber-400 shadow-sm';
   }
   const zone = inRedZone ? 'rootmap-redzone' : '';
   if (isConflict) {
     const pulse = inRedZone ? zone : 'rootmap-crossfire';
     if (isLive) {
       return isLight
-        ? `${pulse} border-violet-600 bg-violet-50 ring-2 ring-inset ring-violet-500 ${isHovered ? 'shadow-md' : ''}`
-        : `${pulse} border-violet-300 bg-violet-950/50 ring-2 ring-inset ring-violet-300 ${isHovered ? 'shadow-md' : ''}`;
+        ? `${pulse} border border-violet-600 bg-violet-50 ring-2 ring-inset ring-violet-500 ${isHovered ? 'shadow-md' : 'shadow-sm'}`
+        : `${pulse} border border-violet-300 bg-violet-950/50 ring-2 ring-inset ring-violet-300 ${isHovered ? 'shadow-md' : 'shadow-sm'}`;
     }
     return isLight
-      ? `${pulse} border-violet-500 bg-violet-50 ring-2 ring-violet-400 ${isHovered ? 'shadow-md' : ''}`
-      : `${pulse} border-violet-400 bg-violet-950/40 ring-2 ring-violet-400 ${isHovered ? 'shadow-md' : ''}`;
+      ? `${pulse} border border-violet-500 bg-violet-50 ring-2 ring-violet-400 ${isHovered ? 'shadow-md' : 'shadow-sm'}`
+      : `${pulse} border border-violet-400 bg-violet-950/40 ring-2 ring-violet-400 ${isHovered ? 'shadow-md' : 'shadow-sm'}`;
+  }
+  if (isDoubleDown && side === 'against') {
+    return isLight
+      ? `${zone} border-2 border-rose-500 bg-rose-100/90 shadow-[0_0_14px_rgba(244,63,94,0.25)] ${isHovered ? 'shadow-md' : ''}`
+      : `${zone} border-2 border-rose-400 bg-rose-950/55 shadow-[0_0_14px_rgba(244,63,94,0.25)] ${isHovered ? 'shadow-md' : ''}`;
+  }
+  if (isDoubleDown) {
+    return isLight
+      ? `${zone} border-2 border-emerald-500 bg-emerald-100/90 shadow-[0_0_14px_rgba(16,185,129,0.25)] ${isHovered ? 'shadow-md' : ''}`
+      : `${zone} border-2 border-emerald-400 bg-emerald-950/55 shadow-[0_0_14px_rgba(16,185,129,0.25)] ${isHovered ? 'shadow-md' : ''}`;
   }
   if (side === 'against') {
     return isLight
-      ? `${zone} border-rose-400/70 bg-rose-50 hover:shadow ${isHovered ? 'shadow-md' : ''}`
-      : `${zone} border-rose-400/70 bg-rose-950/35 hover:border-rose-400 ${isHovered ? 'shadow-md' : ''}`;
+      ? `${zone} border border-rose-400/70 bg-rose-50 hover:shadow ${isHovered ? 'shadow-md' : 'shadow-sm'}`
+      : `${zone} border border-rose-400/70 bg-rose-950/35 hover:border-rose-400 ${isHovered ? 'shadow-md' : 'shadow-sm'}`;
   }
   return isLight
-    ? `${zone} border-emerald-400/70 bg-emerald-50 hover:shadow ${isHovered ? 'shadow-md' : ''}`
-    : `${zone} border-emerald-400/70 bg-emerald-950/35 hover:border-emerald-400 ${isHovered ? 'shadow-md' : ''}`;
+    ? `${zone} border border-emerald-400/70 bg-emerald-50 hover:shadow ${isHovered ? 'shadow-md' : 'shadow-sm'}`
+    : `${zone} border border-emerald-400/70 bg-emerald-950/35 hover:border-emerald-400 ${isHovered ? 'shadow-md' : 'shadow-sm'}`;
 }
 
 function RosterCard({
@@ -1091,7 +1109,12 @@ function RosterCard({
   cardRef
 }) {
   const isConflict = side === 'cross' || ((player.myShares || 0) > 0 && (player.oppShares || 0) > 0);
-  const shares = side === 'against' ? player.oppShares : player.myShares;
+  const forCount = player.myShares || 0;
+  const againstCount = player.oppShares || 0;
+  const shares = side === 'against' ? againstCount : forCount;
+  const isDoubleFor = forCount >= 2 && againstCount === 0;
+  const isDoubleAgainst = againstCount >= 2 && forCount === 0;
+  const isDoubleDown = isDoubleFor || isDoubleAgainst;
   const live = Boolean(player.isLive || player.gameStatus === 'IN_PROGRESS');
   const hasBall = Boolean(player.hasPossession || (live && player.inRedZone));
   const accent = getTeamAccent(canonTeam(player.nflTeam) || player.nflTeam);
@@ -1100,9 +1123,8 @@ function RosterCard({
     setScorePulse(delta > 0 ? 'rootmap-score-border-up' : 'rootmap-score-border-down');
     window.setTimeout(() => setScorePulse(''), 720);
   };
-  const combined = getCombinedStance(player);
   const leagueCount = isConflict
-    ? (player.myShares || 0) + (player.oppShares || 0)
+    ? forCount + againstCount
     : (shares || 0);
   const timeBadge = playerTimeBadge(player);
   // Keep Double Down / Cross Fire badges; hide plain Root For / Root Against on single-league cards.
@@ -1111,16 +1133,32 @@ function RosterCard({
       <span className={`inline-flex items-center rounded-full px-1.5 py-0.5 text-[8px] font-black tracking-wide ${
         isLight ? 'bg-gradient-to-r from-emerald-100 to-rose-100 text-slate-800' : 'bg-gradient-to-r from-emerald-950 to-rose-950 text-slate-100'
       }`}>
-        ⚡ {player.myShares || 0} FOR • {player.oppShares || 0} AGAINST
+        ⚡ {forCount} FOR • {againstCount} AGAINST
       </span>
     )
-    : combined.tone === 'down'
+    : isDoubleFor
       ? (
-        <span className={`text-[9px] font-black uppercase ${isLight ? 'text-emerald-700' : 'text-emerald-300'}`}>
-          {combined.label}
+        <span className={`relative inline-flex items-center gap-1 overflow-hidden rounded-full border px-1.5 py-0.5 text-[8px] font-bold tracking-wide ${
+          isLight
+            ? 'bg-emerald-500/20 border-emerald-500 text-emerald-800'
+            : 'bg-emerald-500/25 border-emerald-400 text-emerald-200'
+        }`}>
+          <span aria-hidden="true" className="pointer-events-none absolute inset-0 animate-pulse bg-emerald-400/15" />
+          <span className="relative">🔥 {forCount}X FOR</span>
         </span>
       )
-      : null;
+      : isDoubleAgainst
+        ? (
+          <span className={`relative inline-flex items-center gap-1 overflow-hidden rounded-full border px-1.5 py-0.5 text-[8px] font-bold tracking-wide ${
+            isLight
+              ? 'bg-rose-500/20 border-rose-500 text-rose-800'
+              : 'bg-rose-500/25 border-rose-400 text-rose-200'
+          }`}>
+            <span aria-hidden="true" className="pointer-events-none absolute inset-0 animate-pulse bg-rose-400/15" />
+            <span className="relative">🚨 {againstCount}X AGAINST</span>
+          </span>
+        )
+        : null;
   const statusTone = side === 'against' ? 'against' : 'for';
   const pointsTone = side === 'against' ? 'against' : isConflict ? 'cross' : 'for';
   return (
@@ -1128,11 +1166,12 @@ function RosterCard({
       data-player-name={player.name}
       data-friendly-fire={player.friendlyFire ? 'true' : 'false'}
       data-double-dip={player.doubleDip ? 'true' : 'false'}
+      data-double-down={isDoubleDown ? 'true' : 'false'}
       ref={cardRef}
       onClick={onSelect}
       onMouseEnter={onHoverStart}
       onMouseLeave={onHoverEnd}
-      className={`relative w-full min-w-0 overflow-hidden rounded-xl px-2 py-1.5 pl-2.5 transition active:scale-[0.98] cursor-pointer border shadow-sm touch-manipulation ${scorePulse} ${rosterCardSurface(isLight, live, isConflict, isHovered, player.inRedZone, player.zeroProjection, side)}`}
+      className={`relative w-full min-w-0 overflow-hidden rounded-xl px-2 py-1.5 pl-2.5 transition active:scale-[0.98] cursor-pointer touch-manipulation ${scorePulse} ${rosterCardSurface(isLight, live, isConflict, isHovered, player.inRedZone, player.zeroProjection, side, isDoubleDown)}`}
     >
       <span
         aria-hidden="true"
@@ -1222,10 +1261,13 @@ function getCombinedStance(player) {
     return { label: `Cross Fire${swing}`, tone: 'cross' };
   }
   if (mine > 0 && opp === 0) {
-    if (mine >= 2) return { label: `Double Down (+${mine})`, tone: 'down' };
+    if (mine >= 2) return { label: `🔥 ${mine}X FOR`, tone: 'down' };
     return { label: 'Root For', tone: 'pure' };
   }
-  if (opp > 0 && mine === 0) return { label: 'Root Against', tone: 'threat' };
+  if (opp > 0 && mine === 0) {
+    if (opp >= 2) return { label: `🚨 ${opp}X AGAINST`, tone: 'down-against' };
+    return { label: 'Root Against', tone: 'threat' };
+  }
   return { label: 'Neutral / Free Agent', tone: 'neutral' };
 }
 
@@ -1629,7 +1671,8 @@ export default function App() {
     redZoneOnly: false,
     hideFinal: false,
     outperformers: false,
-    conflicted: false
+    conflicted: false,
+    doubleDown: false
   });
   const [showSortSheet, setShowSortSheet] = useState(false);
   const [showAlertSheet, setShowAlertSheet] = useState(false);
@@ -2849,7 +2892,8 @@ export default function App() {
     + Number(boardFilters.redZoneOnly)
     + Number(boardFilters.hideFinal)
     + Number(boardFilters.outperformers)
-    + Number(boardFilters.conflicted);
+    + Number(boardFilters.conflicted)
+    + Number(boardFilters.doubleDown);
   const leagueSortReadyRef = useRef(false);
 
   useEffect(() => {
@@ -2974,7 +3018,7 @@ export default function App() {
         </span>
       );
     }
-    if (stance.tone === 'threat') {
+    if (stance.tone === 'down-against' || stance.tone === 'threat') {
       return (
         <span className={`font-black text-right leading-tight ${isLight ? 'text-red-600' : 'text-rose-300'}`}>
           {stance.label}
@@ -3309,7 +3353,8 @@ export default function App() {
                 {[
                   { key: 'redZoneOnly', label: '🔴 RedZone', active: boardFilters.redZoneOnly },
                   { key: 'outperformers', label: '🔥 Outperformers', active: boardFilters.outperformers },
-                  { key: 'conflicted', label: '⚡ Conflicted', active: boardFilters.conflicted }
+                  { key: 'conflicted', label: '⚡ Conflicted', active: boardFilters.conflicted },
+                  { key: 'doubleDown', label: '🔥 Double Down', active: boardFilters.doubleDown }
                 ].map((pill) => (
                   <button
                     key={pill.key}
@@ -3320,7 +3365,7 @@ export default function App() {
                       setBoardFilters((current) => ({ ...current, [pill.key]: !current[pill.key] }));
                       tapHaptic();
                     }}
-                    className={`shrink-0 h-8 px-2 rounded-full border text-[10px] font-black whitespace-nowrap transition ${
+                    className={`shrink-0 h-8 px-1.5 rounded-full border text-[10px] font-black whitespace-nowrap transition ${
                       pill.active
                         ? isLight ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-950 border-white'
                         : isLight ? 'bg-white text-slate-700 border-slate-200' : 'bg-slate-900 text-slate-200 border-slate-700'
@@ -3455,7 +3500,7 @@ export default function App() {
               }`}>
                 {visibleLeagues.length === 0
                   ? 'Every league is filtered out. Turn one back on in Filter Leagues. Saved rosters stay on this device.'
-                  : (boardFilters.liveOnly || boardFilters.redZoneOnly || boardFilters.hideFinal)
+                  : (boardFilters.liveOnly || boardFilters.redZoneOnly || boardFilters.hideFinal || boardFilters.outperformers || boardFilters.conflicted || boardFilters.doubleDown)
                     ? 'No starters match this filter.'
                     : 'No starters in this view.'}
               </div>
@@ -4216,6 +4261,7 @@ export default function App() {
                 { key: 'redZoneOnly', label: 'Red Zone Only' },
                 { key: 'outperformers', label: 'Outperformers (+4.0)' },
                 { key: 'conflicted', label: 'Conflicted Only' },
+                { key: 'doubleDown', label: 'Double Down (2X+)' },
                 { key: 'hideFinal', label: 'Hide Completed Games' }
               ].map((option) => {
                 const on = boardFilters[option.key];
