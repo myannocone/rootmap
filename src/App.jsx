@@ -111,6 +111,31 @@ function getUserTeamName(lg) {
   return lg?.myTeamName || lg?.userTeam?.name || getLeagueDisplayName(lg);
 }
 
+function sumActiveStarterPoints(starters) {
+  return listedStarters(starters).reduce((sum, player) => sum + (Number(player?.points) || 0), 0);
+}
+
+function leagueSideScore(league, side = 'my') {
+  const top = side === 'opp' ? league?.oppScore : league?.myScore;
+  const parsed = finiteNumber(top);
+  if (parsed != null && parsed !== 0) return parsed;
+  const starters = side === 'opp' ? getLeagueThreats(league) : getLeaguePortfolio(league);
+  const fromStarters = sumActiveStarterPoints(starters);
+  if (fromStarters > 0) return fromStarters;
+  return parsed ?? 0;
+}
+
+function leagueFilterLabel(lg, leagues = []) {
+  const name = getLeagueDisplayName(lg);
+  const duplicates = (leagues || []).filter((other) => getLeagueDisplayName(other) === name);
+  if (duplicates.length <= 1) return name;
+  const team = getUserTeamName(lg);
+  if (team && team !== name) return `${name} · ${team}`;
+  const platform = String(lg?.platform || '').trim();
+  if (platform) return `${name} · ${platform}`;
+  return name;
+}
+
 function ordinalRank(value) {
   const rank = Number(value);
   if (!Number.isInteger(rank) || rank < 1) return '';
@@ -137,8 +162,12 @@ function teamSeasonDetail(record, rank) {
 
 function starterActualLabel(player) {
   const actual = finiteNumber(player?.actualPoints);
-  if (actual == null) return '—';
-  return scoreText(actual);
+  if (actual != null) return scoreText(actual);
+  const points = finiteNumber(player?.points);
+  const proj = finiteNumber(player?.projPoints);
+  // points often mirrors projection before kickoff — keep the dash in that case.
+  if (points == null || (proj != null && points === proj)) return '—';
+  return scoreText(points);
 }
 
 function leagueSideRecord(league, side) {
@@ -191,8 +220,8 @@ function sideLiveProjection(starters, liveScore, leagueProj) {
 }
 
 function matchupOutlook(league) {
-  const myLive = finiteNumber(league?.myScore) ?? 0;
-  const oppLive = finiteNumber(league?.oppScore) ?? 0;
+  const myLive = leagueSideScore(league, 'my');
+  const oppLive = leagueSideScore(league, 'opp');
   const mySide = sideLiveProjection(getLeaguePortfolio(league), myLive, league?.myProj ?? league?.myProjected);
   const oppSide = sideLiveProjection(getLeagueThreats(league), oppLive, league?.oppProj ?? league?.oppProjected);
   const myTotal = mySide.projected;
@@ -398,8 +427,8 @@ function LeagueScoreboard({ league, isLight, onRemove }) {
   const myName = getUserTeamName(league);
   const oppName = getLeagueOppName(league);
   const leagueName = getLeagueDisplayName(league);
-  const myScore = finiteNumber(league?.myScore) ?? 0;
-  const oppScore = finiteNumber(league?.oppScore) ?? 0;
+  const myScore = leagueSideScore(league, 'my');
+  const oppScore = leagueSideScore(league, 'opp');
   const mine = leagueSideRecord(league, 'my');
   const opp = leagueSideRecord(league, 'opp');
   const outlook = matchupOutlook(league);
@@ -3075,8 +3104,8 @@ export default function App() {
         const delta = matchupOutlook(b).myPct - matchupOutlook(a).myPct;
         if (delta) return delta;
       } else {
-        const ad = Math.abs((finiteNumber(a.myScore) ?? 0) - (finiteNumber(a.oppScore) ?? 0));
-        const bd = Math.abs((finiteNumber(b.myScore) ?? 0) - (finiteNumber(b.oppScore) ?? 0));
+        const ad = Math.abs(leagueSideScore(a, 'my') - leagueSideScore(a, 'opp'));
+        const bd = Math.abs(leagueSideScore(b, 'my') - leagueSideScore(b, 'opp'));
         if (ad !== bd) return ad - bd;
       }
       return getUserTeamName(a).localeCompare(getUserTeamName(b));
@@ -3915,7 +3944,7 @@ export default function App() {
                           isLight ? 'bg-white text-slate-700 border-slate-200' : 'bg-slate-900 text-slate-200 border-slate-700'
                         }`}
                       >
-                        {getLeagueDisplayName(lg)} · {outlook.myPct}%
+                        {leagueFilterLabel(lg, sortedLeagues)} · {outlook.myPct}%
                       </button>
                     );
                   })}
@@ -3975,7 +4004,7 @@ export default function App() {
                       }`}
                     >
                       {leagues.map((lg) => {
-                        const leagueName = getLeagueDisplayName(lg);
+                        const leagueName = leagueFilterLabel(lg, leagues);
                         const onBoard = !hiddenLeagueIds.has(lg.id);
                         return (
                           <div key={lg.id} className="flex items-center gap-1 rounded-lg">
@@ -4771,7 +4800,7 @@ export default function App() {
               )}
               {leagues.map((lg) => {
                 const checked = !hiddenLeagueIds.has(lg.id);
-                const leagueName = getLeagueDisplayName(lg);
+                const leagueName = leagueFilterLabel(lg, leagues);
                 return (
                   <div
                     key={lg.id}

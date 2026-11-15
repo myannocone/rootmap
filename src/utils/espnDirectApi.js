@@ -265,16 +265,24 @@ function sideWeeklyPoints(side) {
   return finiteNumber(side.rosterForCurrentScoringPeriod?.appliedStatTotal);
 }
 
+function sumStarterPoints(starters) {
+  return (starters || []).reduce((sum, player) => sum + (Number(player?.points) || 0), 0);
+}
+
 function weeklyMatchupScore(game, teamId, starters) {
-  const fallback = (starters || []).reduce((sum, player) => {
-    const number = Number(player?.actualPoints);
-    return sum + (Number.isFinite(number) ? number : 0);
-  }, 0);
+  const fallback = sumStarterPoints(starters);
   if (teamId == null || teamId === '') return fallback;
   const mine = String(teamId);
-  const side = game && sideTeamId(game.home) === mine ? game.home : (game && sideTeamId(game.away) === mine ? game.away : null);
+  const side = game && sideTeamId(game.home) === mine
+    ? game.home
+    : (game && sideTeamId(game.away) === mine ? game.away : null);
+  // Prefer ESPN's live/applied total, but fall back when it is missing or stuck at 0
+  // while individual starters already carry valid points.
   const live = sideWeeklyPoints(side);
-  return live != null ? live : fallback;
+  if (live == null || live === 0) {
+    return fallback > 0 ? fallback : (live ?? fallback);
+  }
+  return live;
 }
 
 function playerName(player, defense, nflTeam) {
