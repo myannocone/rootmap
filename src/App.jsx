@@ -742,8 +742,8 @@ function slateWindowFor(player) {
     if (/\bfri/i.test(text)) return { id: 'friday', label: 'Friday', rank: 2 };
     if (/\bsat/i.test(text)) return { id: 'saturday', label: 'Saturday', rank: 2 };
     if (/9:30|morning/i.test(text)) return { id: 'morning', label: 'Sunday Morning', rank: 3 };
-    if (/1:00/.test(text)) return { id: 'early', label: '1:00 PM', rank: 4 };
-    if (/4:(00|05|25)/.test(text)) return { id: 'afternoon', label: '4:00 PM', rank: 5 };
+    if (/1:00/.test(text)) return { id: 'early', label: 'Sunday Early', rank: 4 };
+    if (/4:(00|05|25)/.test(text)) return { id: 'afternoon', label: 'Sunday Afternoon', rank: 5 };
     if (/\bmon/i.test(text)) return { id: 'mnf', label: 'Monday Night', rank: 6 };
     if (/\bsun/i.test(text)) return { id: 'snf', label: 'Sunday Night', rank: 6 };
     return { id: 'bye', label: 'Bye Week', rank: 8 };
@@ -752,8 +752,8 @@ function slateWindowFor(player) {
   if (et.weekday === 'Fri') return { id: 'friday', label: 'Friday', rank: 2 };
   if (et.weekday === 'Sat') return { id: 'saturday', label: 'Saturday', rank: 2 };
   if (et.weekday === 'Sun' && et.minutes < 12 * 60) return { id: 'morning', label: 'Sunday Morning', rank: 3 };
-  if (et.weekday === 'Sun' && et.minutes < 16 * 60) return { id: 'early', label: '1:00 PM', rank: 4 };
-  if (et.weekday === 'Sun' && et.minutes < 19 * 60) return { id: 'afternoon', label: '4:00 PM', rank: 5 };
+  if (et.weekday === 'Sun' && et.minutes < 16 * 60) return { id: 'early', label: 'Sunday Early', rank: 4 };
+  if (et.weekday === 'Sun' && et.minutes < 19 * 60) return { id: 'afternoon', label: 'Sunday Afternoon', rank: 5 };
   if (et.weekday === 'Sun') return { id: 'snf', label: 'Sunday Night', rank: 6 };
   if (et.weekday === 'Mon') return { id: 'mnf', label: 'Monday Night', rank: 6 };
   return { id: 'bye', label: 'Bye Week', rank: 8 };
@@ -905,12 +905,14 @@ function liveScoreView(player) {
   };
 }
 
-function LivePulse({ size = 6 }) {
+function LivePulse({ size = 6, tone = 'for' }) {
   const px = `${size}px`;
+  const ping = tone === 'against' ? 'bg-rose-400' : 'bg-emerald-400';
+  const solid = tone === 'against' ? 'bg-rose-500' : 'bg-emerald-500';
   return (
     <span className="relative inline-flex shrink-0" style={{ width: px, height: px }} aria-hidden="true">
-      <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
-      <span className="relative inline-flex h-full w-full rounded-full bg-emerald-500" />
+      <span className={`absolute inline-flex h-full w-full animate-ping rounded-full opacity-75 ${ping}`} />
+      <span className={`relative inline-flex h-full w-full rounded-full ${solid}`} />
     </span>
   );
 }
@@ -995,13 +997,24 @@ function LivePoints({ player, isLight, tone = 'for', layout = 'inline', onScoreJ
     </span>
   ) : null;
   if (layout === 'compact') {
+    const preGame = !view.live && !view.final && !view.bye;
+    const scoreLabel = view.bye ? 'BYE' : (view.live || view.final) ? 'PTS' : 'PROJ';
+    const mainShown = preGame && view.proj != null ? view.proj : view.shown;
+    const projLine = (view.live || view.final) && view.proj != null
+      ? (deltaText ? `Proj ${view.proj.toFixed(1)} (${deltaText})` : `Proj ${view.proj.toFixed(1)}`)
+      : null;
     return (
-      <div className="relative text-right shrink-0 leading-none">
+      <div className="relative text-right shrink-0 leading-none min-w-0">
         {floatNode}
         <div className={`font-black tabular-nums text-[15px] tracking-tight ${color} ${scorePop ? 'rootmap-score-pop' : ''}`}>
-          {view.shown.toFixed(1)}
-          <span className={`ml-0.5 text-[9px] font-black uppercase ${muted}`}>PTS</span>
+          {mainShown.toFixed(1)}
+          <span className={`ml-0.5 text-[9px] font-black uppercase ${muted}`}>{scoreLabel}</span>
         </div>
+        {projLine && (
+          <div className={`mt-0.5 text-[10px] font-semibold tabular-nums leading-tight ${muted}`}>
+            {projLine}
+          </div>
+        )}
       </div>
     );
   }
@@ -1046,7 +1059,7 @@ function LivePoints({ player, isLight, tone = 'for', layout = 'inline', onScoreJ
   );
 }
 
-function rosterCardSurface(isLight, isLive, isConflict, isHovered, inRedZone, zeroProj) {
+function rosterCardSurface(isLight, isLive, isConflict, isHovered, inRedZone, zeroProj, side = 'for') {
   if (zeroProj && !isLive) {
     return isLight
       ? 'border-rose-500 bg-amber-50 ring-2 ring-inset ring-amber-400'
@@ -1064,14 +1077,14 @@ function rosterCardSurface(isLight, isLive, isConflict, isHovered, inRedZone, ze
       ? `${pulse} border-violet-500 bg-violet-50 ring-2 ring-violet-400 ${isHovered ? 'shadow-md' : ''}`
       : `${pulse} border-violet-400 bg-violet-950/40 ring-2 ring-violet-400 ${isHovered ? 'shadow-md' : ''}`;
   }
-  if (isLive) {
+  if (side === 'against') {
     return isLight
-      ? `${zone} border-emerald-600 bg-emerald-50 ring-2 ring-inset ring-emerald-500`
-      : `${zone} border-emerald-400 bg-emerald-950/50 ring-2 ring-inset ring-emerald-400`;
+      ? `${zone} border-rose-400/70 bg-rose-50 hover:shadow ${isHovered ? 'shadow-md' : ''}`
+      : `${zone} border-rose-400/70 bg-rose-950/35 hover:border-rose-400 ${isHovered ? 'shadow-md' : ''}`;
   }
   return isLight
-    ? `${zone} bg-white border-slate-200 hover:border-slate-300 hover:shadow`
-    : `${zone} bg-slate-900 border-slate-800 hover:border-slate-700`;
+    ? `${zone} border-emerald-400/70 bg-emerald-50 hover:shadow ${isHovered ? 'shadow-md' : ''}`
+    : `${zone} border-emerald-400/70 bg-emerald-950/35 hover:border-emerald-400 ${isHovered ? 'shadow-md' : ''}`;
 }
 
 function RosterCard({
@@ -1113,6 +1126,8 @@ function RosterCard({
       : <span className={`text-[9px] font-black uppercase ${isLight ? 'text-emerald-700' : 'text-emerald-300'}`}>
           {combined.tone === 'down' ? combined.label : 'Root For'}
         </span>;
+  const statusTone = side === 'against' ? 'against' : 'for';
+  const pointsTone = side === 'against' ? 'against' : isConflict ? 'cross' : 'for';
   return (
     <div
       data-player-name={player.name}
@@ -1122,7 +1137,7 @@ function RosterCard({
       onClick={onSelect}
       onMouseEnter={onHoverStart}
       onMouseLeave={onHoverEnd}
-      className={`relative w-full min-w-0 overflow-hidden rounded-xl px-2 py-1.5 pl-2.5 transition active:scale-[0.98] cursor-pointer border shadow-sm touch-manipulation ${scorePulse} ${rosterCardSurface(isLight, live, isConflict, isHovered, player.inRedZone, player.zeroProjection)}`}
+      className={`relative w-full min-w-0 overflow-hidden rounded-xl px-2 py-1.5 pl-2.5 transition active:scale-[0.98] cursor-pointer border shadow-sm touch-manipulation ${scorePulse} ${rosterCardSurface(isLight, live, isConflict, isHovered, player.inRedZone, player.zeroProjection, side)}`}
     >
       <span
         aria-hidden="true"
@@ -1132,27 +1147,29 @@ function RosterCard({
           boxShadow: live ? `0 0 10px ${accent.bg}` : undefined
         }}
       />
-      <div className="flex items-center gap-2 min-w-0">
-        <div className="relative shrink-0">
+      <div className="flex items-start gap-2 min-w-0">
+        <div className="relative shrink-0 mt-0.5">
           <PlayerHeadshot key={`${player.name}-${headshotTick}`} name={player.name} team={player.nflTeam} defense={isTeamDefense(player)} size={28} />
           {hasBall && !player.inRedZone && (
             <span className="absolute -top-0.5 -right-0.5">
-              <LivePulse size={7} />
+              <LivePulse size={7} tone={statusTone} />
             </span>
           )}
         </div>
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-1 min-w-0">
-            <div className={`truncate font-extrabold text-[12px] leading-tight tracking-tight ${isLight ? 'text-slate-950' : 'text-white'}`}>
+          <div className="flex items-start gap-1 min-w-0">
+            {live && (
+              <span className="mt-1 shrink-0">
+                <LivePulse size={6} tone={statusTone} />
+              </span>
+            )}
+            <div className={`min-w-0 flex-1 font-extrabold text-[12px] leading-snug tracking-tight whitespace-normal break-words hyphens-none ${isLight ? 'text-slate-950' : 'text-white'}`}>
               {player.name}
             </div>
             {player.inRedZone && (
               <span className="shrink-0 px-1 py-0.5 rounded text-[7px] font-black uppercase bg-rose-600 text-white tracking-wider">
                 RZ
               </span>
-            )}
-            {hasBall && !player.inRedZone && (
-              <LivePulse size={6} />
             )}
             {player.isBye && (
               <span className="shrink-0 px-1 py-0.5 rounded text-[7px] font-black uppercase tracking-wider bg-slate-600 text-white">
@@ -1165,22 +1182,22 @@ function RosterCard({
               </span>
             )}
           </div>
-          <div className={`truncate text-[9px] font-bold leading-tight ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+          <div className={`text-[9px] font-bold leading-tight ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
             {player.position} • {player.nflTeam}
           </div>
         </div>
         <LivePoints
           player={player}
           isLight={isLight}
-          tone={side === 'against' ? 'against' : isConflict ? 'cross' : 'for'}
+          tone={pointsTone}
           layout="compact"
           onScoreJump={handleScoreJump}
         />
       </div>
       <div className={`mt-1 flex items-center justify-between gap-1 pt-1 border-t ${
-        live
-          ? isLight ? 'border-emerald-200/80' : 'border-emerald-800/70'
-          : isLight ? 'border-slate-100' : 'border-slate-800/80'
+        side === 'against'
+          ? isLight ? 'border-rose-100' : 'border-rose-900/50'
+          : isLight ? 'border-emerald-100' : 'border-emerald-900/50'
       }`}>
         <span className={`text-[9px] font-black uppercase tracking-wide tabular-nums ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
           {leagueCount} {leagueCount === 1 ? 'LEAGUE' : 'LEAGUES'}
@@ -1697,10 +1714,47 @@ export default function App() {
   const [mobileSyncLink, setMobileSyncLink] = useState('');
   const [mobileSyncCode, setMobileSyncCode] = useState('');
   const [mobileSyncNote, setMobileSyncNote] = useState('');
+  const [filtersCollapsed, setFiltersCollapsed] = useState(false);
+  const [notifPermission, setNotifPermission] = useState('unknown');
 
   const filterButtonRef = useRef(null);
+  const swipeTouchRef = useRef(null);
+  const VIEW_ORDER = useMemo(() => ['matchups', 'game-slate', 'all-leagues'], []);
 
   const isLight = theme === 'light';
+
+  useEffect(() => {
+    const onScroll = () => {
+      const top = window.scrollY || document.documentElement.scrollTop || 0;
+      setFiltersCollapsed(top > 20);
+    };
+    onScroll();
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => window.removeEventListener('scroll', onScroll);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const readPermission = async () => {
+      try {
+        if (Capacitor.isNativePlatform()) {
+          const { LocalNotifications } = await import('@capacitor/local-notifications');
+          const perm = await LocalNotifications.checkPermissions();
+          if (!cancelled) setNotifPermission(perm.display || 'prompt');
+          return;
+        }
+        if (typeof Notification === 'undefined') {
+          if (!cancelled) setNotifPermission('unsupported');
+          return;
+        }
+        if (!cancelled) setNotifPermission(Notification.permission || 'default');
+      } catch {
+        if (!cancelled) setNotifPermission('unknown');
+      }
+    };
+    readPermission();
+    return () => { cancelled = true; };
+  }, [showAlertSheet]);
 
   useEffect(() => {
     const nodes = [document.documentElement, document.body];
@@ -2958,10 +3012,50 @@ export default function App() {
     </button>
   );
 
+  const handleViewportTouchStart = (event) => {
+    if (showAlertSheet || showSortSheet || showConnect || selectedPlayer || activeLeagueDrawer || leaguePendingDelete) {
+      swipeTouchRef.current = null;
+      return;
+    }
+    const target = event.target;
+    if (typeof target?.closest === 'function' && target.closest('.overflow-x-auto')) {
+      swipeTouchRef.current = null;
+      return;
+    }
+    const touch = event.touches?.[0];
+    if (!touch) return;
+    swipeTouchRef.current = { x: touch.clientX, y: touch.clientY };
+  };
+
+  const handleViewportTouchEnd = (event) => {
+    const start = swipeTouchRef.current;
+    swipeTouchRef.current = null;
+    if (!start) return;
+    if (showAlertSheet || showSortSheet || showConnect || selectedPlayer || activeLeagueDrawer || leaguePendingDelete) return;
+    const touch = event.changedTouches?.[0];
+    if (!touch) return;
+    const dx = touch.clientX - start.x;
+    const dy = touch.clientY - start.y;
+    if (!(Math.abs(dx) > 55 && Math.abs(dx) > Math.abs(dy) * 1.8)) return;
+    const index = VIEW_ORDER.indexOf(view);
+    if (index < 0) return;
+    if (dx < 0 && index < VIEW_ORDER.length - 1) {
+      setView(VIEW_ORDER[index + 1]);
+      tapHaptic();
+    } else if (dx > 0 && index > 0) {
+      setView(VIEW_ORDER[index - 1]);
+      tapHaptic();
+    }
+  };
+
   return (
-    <div className={`min-h-screen pb-[calc(7.5rem+env(safe-area-inset-bottom))] font-sans transition-colors duration-200 ${
-      isLight ? 'bg-slate-50 text-slate-900' : 'bg-slate-950 text-slate-100'
-    }`}>
+    <div
+      className={`min-h-screen pb-[calc(7.5rem+env(safe-area-inset-bottom))] font-sans transition-colors duration-200 ${
+        isLight ? 'bg-slate-50 text-slate-900' : 'bg-slate-950 text-slate-100'
+      }`}
+      onTouchStart={handleViewportTouchStart}
+      onTouchEnd={handleViewportTouchEnd}
+    >
       <div className={`sticky top-0 z-40 max-w-md mx-auto pt-[calc(env(safe-area-inset-top)+6px)] ${isLight ? 'bg-white/95' : 'bg-slate-950/95'} backdrop-blur-md`}>
       <header className={`border-b px-3 py-1.5 space-y-1.5 transition-colors ${
         isLight ? 'border-slate-200 shadow-sm' : 'border-slate-800/80'
@@ -3096,7 +3190,58 @@ export default function App() {
         </div>
         {view === 'matchups' && leagues.length > 0 && (
           <div
-            className={`grid items-end gap-3 px-1 pt-2 ${rootView === 'both' ? 'grid-cols-2' : 'grid-cols-[1fr_auto_1fr]'}`}
+            className={`rootmap-filter-tray ${filtersCollapsed ? 'is-collapsed' : ''}`}
+            aria-hidden={filtersCollapsed}
+          >
+            <div className="-mx-3 px-3 overflow-x-auto scrollbar-none">
+              <div className="flex items-center gap-1 min-w-max pb-0.5">
+                {[
+                  { key: 'redZoneOnly', label: '🔴 RedZone', active: boardFilters.redZoneOnly },
+                  { key: 'outperformers', label: '🔥 Outperformers', active: boardFilters.outperformers },
+                  { key: 'conflicted', label: '⚡ Conflicted', active: boardFilters.conflicted }
+                ].map((pill) => (
+                  <button
+                    key={pill.key}
+                    type="button"
+                    aria-pressed={pill.active}
+                    tabIndex={filtersCollapsed ? -1 : 0}
+                    onClick={() => {
+                      setBoardFilters((current) => ({ ...current, [pill.key]: !current[pill.key] }));
+                      tapHaptic();
+                    }}
+                    className={`shrink-0 h-8 px-2 rounded-full border text-[10px] font-black whitespace-nowrap transition ${
+                      pill.active
+                        ? isLight ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-950 border-white'
+                        : isLight ? 'bg-white text-slate-700 border-slate-200' : 'bg-slate-900 text-slate-200 border-slate-700'
+                    }`}
+                  >
+                    {pill.label}
+                  </button>
+                ))}
+                <button
+                  ref={filterButtonRef}
+                  type="button"
+                  tabIndex={filtersCollapsed ? -1 : 0}
+                  onClick={() => setShowSortSheet(true)}
+                  className={`shrink-0 inline-flex h-8 items-center gap-0.5 rounded-full border px-1.5 text-[10px] font-black whitespace-nowrap ${
+                    filterCount > 0 || sortMode !== 'slate'
+                      ? isLight ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-emerald-500 text-slate-950 border-emerald-400'
+                      : isLight ? 'bg-white text-slate-700 border-slate-300' : 'bg-slate-900 text-slate-200 border-slate-700'
+                  }`}
+                >
+                  Filter
+                  {filterCount > 0 && (
+                    <span className={`rounded-full px-1 text-[9px] ${isLight ? 'bg-white/20' : 'bg-slate-900/10'}`}>{filterCount}</span>
+                  )}
+                  <span aria-hidden="true">▾</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+        {view === 'matchups' && leagues.length > 0 && (
+          <div
+            className="grid grid-cols-2 gap-1.5 pt-0.5"
             role="tablist"
             aria-label="Rooting view"
           >
@@ -3111,26 +3256,18 @@ export default function App() {
                   return next;
                 });
               }}
-              className={`min-h-11 text-base font-black tracking-wider uppercase pb-2 border-b-2 transition-colors ${
+              className={`min-h-9 rounded-full px-2 text-[11px] font-black tracking-wider uppercase border transition-colors ${
                 rootView !== 'against'
-                  ? isLight ? 'text-emerald-700 border-emerald-600' : 'text-emerald-400 border-emerald-500'
-                  : isLight ? 'text-slate-400 border-transparent' : 'text-slate-500 border-transparent'
+                  ? isLight
+                    ? 'bg-emerald-600 text-white border-emerald-600 shadow-sm'
+                    : 'bg-emerald-950 text-emerald-300 border-emerald-500/80 shadow-[0_0_0_1px_rgba(52,211,153,0.25)]'
+                  : isLight
+                    ? 'bg-emerald-50 text-emerald-700/70 border-emerald-200'
+                    : 'bg-emerald-950/40 text-emerald-500/70 border-emerald-900'
               }`}
             >
-              Root For ({forCount})
+              ▲ Root For ({forCount})
             </button>
-            {rootView !== 'both' && (
-              <button
-                type="button"
-                onClick={() => {
-                  setRootView('both');
-                  tapHaptic();
-                }}
-                className={`min-h-11 px-1 pb-2 text-[11px] font-black uppercase tracking-wider ${isLight ? 'text-slate-500' : 'text-slate-400'}`}
-              >
-                Both
-              </button>
-            )}
             <button
               type="button"
               role="tab"
@@ -3142,58 +3279,18 @@ export default function App() {
                   return next;
                 });
               }}
-              className={`min-h-11 text-base font-black tracking-wider uppercase pb-2 border-b-2 transition-colors ${
+              className={`min-h-9 rounded-full px-2 text-[11px] font-black tracking-wider uppercase border transition-colors ${
                 rootView !== 'for'
-                  ? isLight ? 'text-rose-700 border-rose-600' : 'text-rose-400 border-rose-500'
-                  : isLight ? 'text-slate-400 border-transparent' : 'text-slate-500 border-transparent'
+                  ? isLight
+                    ? 'bg-rose-600 text-white border-rose-600 shadow-sm'
+                    : 'bg-rose-950 text-rose-300 border-rose-500/80 shadow-[0_0_0_1px_rgba(251,113,133,0.25)]'
+                  : isLight
+                    ? 'bg-rose-50 text-rose-700/70 border-rose-200'
+                    : 'bg-rose-950/40 text-rose-500/70 border-rose-900'
               }`}
             >
-              Root Against ({againstCount})
+              ▼ Root Against ({againstCount})
             </button>
-          </div>
-        )}
-        {view === 'matchups' && leagues.length > 0 && (
-          <div className="-mx-3 px-3 overflow-x-auto scrollbar-none">
-            <div className="flex items-center gap-1.5 min-w-max pb-0.5">
-              {[
-                { key: 'redZoneOnly', label: '🔴 RedZone', active: boardFilters.redZoneOnly },
-                { key: 'outperformers', label: '🔥 Outperformers', active: boardFilters.outperformers },
-                { key: 'conflicted', label: '⚡ Conflicted', active: boardFilters.conflicted }
-              ].map((pill) => (
-                <button
-                  key={pill.key}
-                  type="button"
-                  aria-pressed={pill.active}
-                  onClick={() => {
-                    setBoardFilters((current) => ({ ...current, [pill.key]: !current[pill.key] }));
-                    tapHaptic();
-                  }}
-                  className={`shrink-0 h-8 px-2.5 rounded-full border text-[10px] font-black whitespace-nowrap transition ${
-                    pill.active
-                      ? isLight ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-950 border-white'
-                      : isLight ? 'bg-white text-slate-700 border-slate-200' : 'bg-slate-900 text-slate-200 border-slate-700'
-                  }`}
-                >
-                  {pill.label}
-                </button>
-              ))}
-              <button
-                ref={filterButtonRef}
-                type="button"
-                onClick={() => setShowSortSheet(true)}
-                className={`shrink-0 inline-flex h-8 items-center gap-1 rounded-full border px-2.5 text-[10px] font-black whitespace-nowrap ${
-                  filterCount > 0 || sortMode !== 'slate'
-                    ? isLight ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-emerald-500 text-slate-950 border-emerald-400'
-                    : isLight ? 'bg-white text-slate-700 border-slate-300' : 'bg-slate-900 text-slate-200 border-slate-700'
-                }`}
-              >
-                Sort & Filter
-                {filterCount > 0 && (
-                  <span className={`rounded-full px-1 text-[9px] ${isLight ? 'bg-white/20' : 'bg-slate-900/10'}`}>{filterCount}</span>
-                )}
-                <span aria-hidden="true">▾</span>
-              </button>
-            </div>
           </div>
         )}
       </header>
@@ -3257,8 +3354,11 @@ export default function App() {
                     const sample = group.forPlayers[0] || group.againstPlayers[0];
                     const headerClass = `px-1 text-[10px] font-black uppercase tracking-wider ${isLight ? 'text-slate-500' : 'text-slate-400'}`;
                     const faded = group.key === 'bye' ? 'opacity-60' : group.key === 'final' ? 'opacity-75' : '';
+                    const laneClass = (side) => side === 'against'
+                      ? (isLight ? 'bg-rose-50/70' : 'bg-rose-950/20')
+                      : (isLight ? 'bg-emerald-50/70' : 'bg-emerald-950/20');
                     const column = (players, side) => (
-                      <div className={`flex-1 flex flex-col space-y-1.5 min-w-0 ${faded}`}>
+                      <div className={`flex-1 flex flex-col space-y-1.5 min-w-0 px-1 py-1 rounded-xl ${laneClass(side)} ${faded}`}>
                         {players.map((player) => {
                           const cardKey = player.cardKey || player.name;
                           const conflict = (player.myShares || 0) > 0 && (player.oppShares || 0) > 0;
@@ -3288,8 +3388,12 @@ export default function App() {
                               : slateDividerLabel(sample, { id: group.key, label: group.label, rank: group.rank })}
                           </div>
                         )}
-                        <div className="flex items-start gap-2">
+                        <div className="flex items-stretch gap-0">
                           {column(group.forPlayers, 'for')}
+                          <div
+                            aria-hidden="true"
+                            className={`w-px shrink-0 self-stretch mx-0.5 ${isLight ? 'bg-slate-300' : 'bg-slate-800'}`}
+                          />
                           {column(group.againstPlayers, 'against')}
                         </div>
                       </div>
@@ -3297,7 +3401,11 @@ export default function App() {
                   })}
                 </div>
               ) : (
-                <div className="space-y-1.5">
+                <div className={`space-y-1.5 rounded-xl px-1 py-1 ${
+                  rootView === 'against'
+                    ? isLight ? 'bg-rose-50/70' : 'bg-rose-950/20'
+                    : isLight ? 'bg-emerald-50/70' : 'bg-emerald-950/20'
+                }`}>
                   {renderBoardColumn(rootView === 'for' ? myPortfolio : oppThreats, rootView)}
                 </div>
               )}
@@ -3356,7 +3464,7 @@ export default function App() {
                                 {game.away} @ {game.home}
                               </span>
                               <span className={`text-[10px] font-black tabular-nums ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
-                                {total} Roots
+                                {total} {total === 1 ? 'root' : 'roots'}
                               </span>
                             </div>
                             <div className={`mt-1.5 h-1.5 overflow-hidden rounded-full ${isLight ? 'bg-slate-200' : 'bg-slate-800'}`}>
@@ -3420,7 +3528,7 @@ export default function App() {
                             {(game.possession || game.isRedZone) ? ` · ${game.possession || 'Ball'}${game.isRedZone ? ' RZ' : ''}` : ''}
                           </span>
                           <span className={`text-[10px] font-black tabular-nums ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
-                            {rootTotal} roots
+                            {rootTotal} {rootTotal === 1 ? 'root' : 'roots'}
                           </span>
                         </div>
                         <div className="space-y-0.5">
@@ -3529,91 +3637,93 @@ export default function App() {
               </div>
             )}
 
-            <div className="flex items-center justify-between gap-2">
-              <div className={`text-xs font-black uppercase tracking-wider ${isLight ? 'text-slate-700' : 'text-slate-300'}`}>
+            <div className="flex items-center gap-1.5 min-w-0">
+              <div className={`shrink-0 text-[11px] font-black uppercase tracking-wider ${isLight ? 'text-slate-700' : 'text-slate-300'}`}>
                 Matchups ({leagues.length})
               </div>
-              <label className="shrink-0 flex items-center">
-                <span className="text-xs uppercase tracking-wider text-slate-400 font-medium mr-1.5">Sort by:</span>
+              <label className="min-w-0 flex-1 flex items-center justify-end gap-1">
+                <span className={`shrink-0 text-[9px] font-black uppercase tracking-wider ${isLight ? 'text-slate-400' : 'text-slate-500'}`}>
+                  Sort by
+                </span>
                 <select
                   value={leagueSort}
                   onChange={(event) => {
                     setLeagueSort(event.target.value);
                     tapHaptic();
                   }}
-                  className={`max-w-[11.5rem] rounded-xl border px-2 py-1.5 text-[11px] font-black ${
+                  aria-label="Sort by"
+                  className={`min-w-0 max-w-[8.5rem] rounded-xl border px-1.5 py-1.5 text-[10px] font-black ${
                     isLight ? 'bg-white border-slate-300 text-slate-800' : 'bg-slate-950 border-slate-700 text-slate-100'
                   }`}
                 >
-                  <option value="closest">⚡ Closest Matchup</option>
-                  <option value="standing">🏆 League Standing</option>
-                  <option value="win">🎯 Highest Win Probability</option>
+                  <option value="closest">⚡ Closest</option>
+                  <option value="standing">🏆 Standing</option>
+                  <option value="win">🎯 Win %</option>
                 </select>
               </label>
-            </div>
-
-            {leagues.length > 0 && (
-              <div className="relative w-fit max-w-full">
-                <button
-                  type="button"
-                  aria-expanded={leagueMenuOpen}
-                  aria-haspopup="listbox"
-                  onClick={() => {
-                    setLeagueMenuOpen((open) => !open);
-                    tapHaptic();
-                  }}
-                  className={`min-h-9 px-3 rounded-xl text-[11px] font-black border inline-flex items-center gap-1.5 ${
-                    isLight
-                      ? 'bg-white text-slate-700 border-slate-200'
-                      : 'bg-slate-950 text-slate-200 border-slate-700'
-                  }`}
-                >
-                  Manage Leagues
-                  <span aria-hidden="true">{leagueMenuOpen ? '▴' : '▾'}</span>
-                </button>
-                {leagueMenuOpen && (
-                  <div
-                    role="listbox"
-                    aria-label="Manage leagues"
-                    className={`absolute left-0 top-full z-20 mt-1 w-56 max-h-64 overflow-y-auto rounded-xl border shadow-xl p-1 ${
-                      isLight ? 'bg-white border-slate-200' : 'bg-slate-950 border-slate-700'
+              {leagues.length > 0 && (
+                <div className="relative shrink-0">
+                  <button
+                    type="button"
+                    aria-expanded={leagueMenuOpen}
+                    aria-haspopup="listbox"
+                    onClick={() => {
+                      setLeagueMenuOpen((open) => !open);
+                      tapHaptic();
+                    }}
+                    className={`min-h-8 px-2 rounded-xl text-[10px] font-black border inline-flex items-center gap-1 ${
+                      isLight
+                        ? 'bg-white text-slate-700 border-slate-200'
+                        : 'bg-slate-950 text-slate-200 border-slate-700'
                     }`}
                   >
-                    {leagues.map((lg) => {
-                      const leagueName = getLeagueDisplayName(lg);
-                      const onBoard = !hiddenLeagueIds.has(lg.id);
-                      return (
-                        <div key={lg.id} className="flex items-center gap-1 rounded-lg">
-                          <label className="flex items-center gap-2 min-w-0 flex-1 px-2 py-1.5 cursor-pointer">
-                            <input
-                              type="checkbox"
-                              checked={onBoard}
-                              onChange={() => toggleLeagueVisibility(lg.id)}
-                              aria-label={`${onBoard ? 'Hide' : 'Show'} ${leagueName} on the board`}
-                              className="accent-emerald-500 w-3.5 h-3.5 shrink-0"
-                            />
-                            <span className={`truncate text-xs font-bold ${isLight ? 'text-slate-800' : 'text-slate-100'}`}>
-                              {leagueName}
-                            </span>
-                          </label>
-                          <button
-                            type="button"
-                            aria-label={`Remove ${leagueName}`}
-                            title={`Remove ${leagueName}`}
-                            onClick={() => setLeaguePendingDelete(lg)}
-                            className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${
-                              isLight ? 'text-rose-600 hover:bg-rose-50' : 'text-rose-400 hover:bg-rose-950/70'
-                            }`}
-                          >
-                            <TrashIcon />
-                          </button>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            )}
+                    Manage Leagues
+                    <span aria-hidden="true">{leagueMenuOpen ? '▴' : '▾'}</span>
+                  </button>
+                  {leagueMenuOpen && (
+                    <div
+                      role="listbox"
+                      aria-label="Manage leagues"
+                      className={`absolute right-0 top-full z-20 mt-1 w-56 max-h-64 overflow-y-auto rounded-xl border shadow-xl p-1 ${
+                        isLight ? 'bg-white border-slate-200' : 'bg-slate-950 border-slate-700'
+                      }`}
+                    >
+                      {leagues.map((lg) => {
+                        const leagueName = getLeagueDisplayName(lg);
+                        const onBoard = !hiddenLeagueIds.has(lg.id);
+                        return (
+                          <div key={lg.id} className="flex items-center gap-1 rounded-lg">
+                            <label className="flex items-center gap-2 min-w-0 flex-1 px-2 py-1.5 cursor-pointer">
+                              <input
+                                type="checkbox"
+                                checked={onBoard}
+                                onChange={() => toggleLeagueVisibility(lg.id)}
+                                aria-label={`${onBoard ? 'Hide' : 'Show'} ${leagueName} on the board`}
+                                className="accent-emerald-500 w-3.5 h-3.5 shrink-0"
+                              />
+                              <span className={`truncate text-xs font-bold ${isLight ? 'text-slate-800' : 'text-slate-100'}`}>
+                                {leagueName}
+                              </span>
+                            </label>
+                            <button
+                              type="button"
+                              aria-label={`Remove ${leagueName}`}
+                              title={`Remove ${leagueName}`}
+                              onClick={() => setLeaguePendingDelete(lg)}
+                              className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${
+                                isLight ? 'text-rose-600 hover:bg-rose-50' : 'text-rose-400 hover:bg-rose-950/70'
+                              }`}
+                            >
+                              <TrashIcon />
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
 
             {leagues.length === 0 && (
               <div className={`rounded-2xl p-5 border text-center space-y-3 shadow-sm ${
@@ -4149,7 +4259,7 @@ export default function App() {
                   Game-Day Alerts
                 </h3>
                 <p className={`mt-1 text-[11px] font-semibold ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
-                  Local pre-game notifications when Capacitor / browser permission is available.
+                  Custom game-day alerts across all connected leagues.
                 </p>
               </div>
               <button
@@ -4162,6 +4272,33 @@ export default function App() {
                 ✕
               </button>
             </div>
+            {notifPermission !== 'granted' && notifPermission !== 'unsupported' && (
+              <button
+                type="button"
+                onClick={async () => {
+                  try {
+                    if (Capacitor.isNativePlatform()) {
+                      const { LocalNotifications } = await import('@capacitor/local-notifications');
+                      const perm = await LocalNotifications.requestPermissions();
+                      setNotifPermission(perm.display || 'denied');
+                    } else {
+                      const granted = await prepareZeroProjectionAlerts({ request: true });
+                      setNotifPermission(granted ? 'granted' : (typeof Notification !== 'undefined' ? Notification.permission : 'denied'));
+                    }
+                  } catch {
+                    setNotifPermission('denied');
+                  }
+                  tapHaptic();
+                }}
+                className={`w-full min-h-11 rounded-2xl border text-xs font-black ${
+                  isLight
+                    ? 'bg-emerald-600 text-white border-emerald-600'
+                    : 'bg-emerald-500 text-slate-950 border-emerald-400'
+                }`}
+              >
+                Enable Notifications
+              </button>
+            )}
             <div className="space-y-2">
               {[
                 {
