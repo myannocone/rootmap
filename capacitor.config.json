@@ -3,7 +3,7 @@
   "appName": "RootMap",
   "webDir": "dist",
   "ios": {
-    "contentInset": "automatic"
+    "contentInset": "never"
   },
   "plugins": {
     "LocalNotifications": {

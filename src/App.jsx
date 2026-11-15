@@ -1113,6 +1113,7 @@ function RosterCard({
   const leagueCount = isConflict
     ? (player.myShares || 0) + (player.oppShares || 0)
     : (shares || 0);
+  // Keep Double Down / Cross Fire badges; hide plain Root For / Root Against on single-league cards.
   const footerStance = isConflict
     ? (
       <span className={`inline-flex items-center rounded-full px-1.5 py-0.5 text-[8px] font-black tracking-wide ${
@@ -1121,11 +1122,13 @@ function RosterCard({
         ⚡ {player.myShares || 0} FOR • {player.oppShares || 0} AGAINST
       </span>
     )
-    : side === 'against' || combined.tone === 'threat'
-      ? <span className={`text-[9px] font-black uppercase ${isLight ? 'text-rose-600' : 'text-rose-300'}`}>Root Against</span>
-      : <span className={`text-[9px] font-black uppercase ${isLight ? 'text-emerald-700' : 'text-emerald-300'}`}>
-          {combined.tone === 'down' ? combined.label : 'Root For'}
-        </span>;
+    : combined.tone === 'down'
+      ? (
+        <span className={`text-[9px] font-black uppercase ${isLight ? 'text-emerald-700' : 'text-emerald-300'}`}>
+          {combined.label}
+        </span>
+      )
+      : null;
   const statusTone = side === 'against' ? 'against' : 'for';
   const pointsTone = side === 'against' ? 'against' : isConflict ? 'cross' : 'for';
   return (
@@ -1157,13 +1160,14 @@ function RosterCard({
           )}
         </div>
         <div className="min-w-0 flex-1">
+          {/* Row 1: full-width name + live indicators (no score/proj squeeze) */}
           <div className="flex items-start gap-1 min-w-0">
             {live && (
               <span className="mt-1 shrink-0">
                 <LivePulse size={6} tone={statusTone} />
               </span>
             )}
-            <div className={`min-w-0 flex-1 font-extrabold text-[12px] leading-snug tracking-tight whitespace-normal break-words hyphens-none ${isLight ? 'text-slate-950' : 'text-white'}`}>
+            <div className={`min-w-0 flex-1 font-extrabold text-[12px] leading-snug tracking-tight whitespace-normal break-normal hyphens-none ${isLight ? 'text-slate-950' : 'text-white'}`}>
               {player.name}
             </div>
             {player.inRedZone && (
@@ -1182,17 +1186,20 @@ function RosterCard({
               </span>
             )}
           </div>
-          <div className={`text-[9px] font-bold leading-tight ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
-            {player.position} • {player.nflTeam}
+          {/* Row 2: POS • TEAM left, score + Proj differential right */}
+          <div className="mt-0.5 flex items-start justify-between gap-2 min-w-0">
+            <div className={`min-w-0 text-[9px] font-bold leading-tight ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+              {player.position} • {player.nflTeam}
+            </div>
+            <LivePoints
+              player={player}
+              isLight={isLight}
+              tone={pointsTone}
+              layout="compact"
+              onScoreJump={handleScoreJump}
+            />
           </div>
         </div>
-        <LivePoints
-          player={player}
-          isLight={isLight}
-          tone={pointsTone}
-          layout="compact"
-          onScoreJump={handleScoreJump}
-        />
       </div>
       <div className={`mt-1 flex items-center justify-between gap-1 pt-1 border-t ${
         side === 'against'
@@ -1202,7 +1209,7 @@ function RosterCard({
         <span className={`text-[9px] font-black uppercase tracking-wide tabular-nums ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
           {leagueCount} {leagueCount === 1 ? 'LEAGUE' : 'LEAGUES'}
         </span>
-        <div className="min-w-0 shrink text-right">{footerStance}</div>
+        {footerStance ? <div className="min-w-0 shrink text-right">{footerStance}</div> : null}
       </div>
     </div>
   );
@@ -3056,7 +3063,7 @@ export default function App() {
       onTouchStart={handleViewportTouchStart}
       onTouchEnd={handleViewportTouchEnd}
     >
-      <div className={`sticky top-0 z-40 max-w-md mx-auto pt-[calc(env(safe-area-inset-top)+6px)] ${isLight ? 'bg-white/95' : 'bg-slate-950/95'} backdrop-blur-md`}>
+      <div className={`rootmap-topbar sticky top-0 z-40 max-w-md mx-auto ${isLight ? 'bg-white/95' : 'bg-slate-950/95'} backdrop-blur-md`}>
       <header className={`border-b px-3 py-1.5 space-y-1.5 transition-colors ${
         isLight ? 'border-slate-200 shadow-sm' : 'border-slate-800/80'
       }`}>

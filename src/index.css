@@ -28,6 +28,11 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* Apply iOS top safe-area once on the sticky RootMap header (not also via contentInset). */
+.rootmap-topbar {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+
 @keyframes rootmap-crossfire {
   0%, 100% {
     box-shadow: 0 0 0 0 rgba(167, 139, 250, 0.2);
