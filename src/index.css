@@ -147,6 +147,45 @@ body {
   pointer-events: none;
 }
 
+.rootmap-view-track {
+  will-change: transform;
+  transition: transform 160ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.rootmap-view-track.is-dragging {
+  transition: none;
+}
+
+@keyframes rootmap-slide-in-left {
+  from {
+    transform: translate3d(14%, 0, 0);
+    opacity: 0.72;
+  }
+  to {
+    transform: translate3d(0, 0, 0);
+    opacity: 1;
+  }
+}
+
+@keyframes rootmap-slide-in-right {
+  from {
+    transform: translate3d(-14%, 0, 0);
+    opacity: 0.72;
+  }
+  to {
+    transform: translate3d(0, 0, 0);
+    opacity: 1;
+  }
+}
+
+.rootmap-view-slide-left {
+  animation: rootmap-slide-in-left 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.rootmap-view-slide-right {
+  animation: rootmap-slide-in-right 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .rootmap-crossfire,
   .rootmap-score-pop,
@@ -156,12 +195,15 @@ body {
   .rootmap-score-border-down,
   .rootmap-float-delta,
   .rootmap-game-flash,
-  .rootmap-jump-pulse {
+  .rootmap-jump-pulse,
+  .rootmap-view-slide-left,
+  .rootmap-view-slide-right {
     animation: none;
   }
 
   .rootmap-filter-tray,
-  .rootmap-filter-tray.is-collapsed {
+  .rootmap-filter-tray.is-collapsed,
+  .rootmap-view-track {
     transition: none;
   }
 }

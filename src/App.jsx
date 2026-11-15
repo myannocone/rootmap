@@ -703,12 +703,25 @@ function formatEtKickoff(kickoff) {
   return `${hour12}:${String(minute).padStart(2, '0')} ${suffix} EST`;
 }
 
+function formatEtKickoffShort(kickoff) {
+  return formatEtKickoff(kickoff).replace(/\s*EST$/i, '').trim();
+}
+
 function slateDividerLabel(player, window = null) {
   const slate = window || slateWindowFor(player);
-  const base = String(slate?.label || 'Slate').toUpperCase();
-  if (slate?.id === 'bye' || slate?.id === 'final' || slate?.id === 'live') return base;
-  const time = formatEtKickoff(player?.kickoff);
-  return time ? `${base} • ${time}` : base;
+  if (slate?.id === 'bye') return 'BYE WEEK';
+  if (slate?.id === 'final') return 'FINAL';
+  if (slate?.id === 'live') return 'LIVE';
+  const time = formatEtKickoffShort(player?.kickoff);
+  if (time) return time;
+  return String(slate?.label || 'Slate').toUpperCase();
+}
+
+function playerTimeBadge(player) {
+  if (player?.isBye || player?.gameStatus === 'BYE') return 'BYE';
+  if (player?.gameStatus === 'FINAL') return 'FINAL';
+  if (player?.isLive || player?.gameStatus === 'IN_PROGRESS') return 'LIVE';
+  return formatEtKickoffShort(player?.kickoff);
 }
 
 function weekByeTeams() {
@@ -811,28 +824,6 @@ function passesBoardFilters(player, filters) {
   if (filters?.outperformers && !(boomDelta(player) >= 4)) return false;
   if (filters?.conflicted && !((player?.myShares || 0) > 0 && (player?.oppShares || 0) > 0)) return false;
   return true;
-}
-
-function slateBucket(player, sortMode) {
-  const slate = slateWindowFor(player);
-  if (slate.id === 'bye') return { key: 'bye', label: 'Bye Week', rank: slate.rank };
-  if (slate.id === 'final') return { key: 'final', label: 'Final', rank: slate.rank };
-  if (sortMode !== 'slate') return { key: 'board', label: '', rank: 0 };
-  return { key: slate.id, label: slate.label, rank: slate.rank };
-}
-
-function alignedSlateColumns(forPlayers, againstPlayers, sortMode) {
-  const buckets = new Map();
-  const place = (player, field) => {
-    const slate = slateBucket(player, sortMode);
-    if (!buckets.has(slate.key)) {
-      buckets.set(slate.key, { ...slate, forPlayers: [], againstPlayers: [] });
-    }
-    buckets.get(slate.key)[field].push(player);
-  };
-  forPlayers.forEach((player) => place(player, 'forPlayers'));
-  againstPlayers.forEach((player) => place(player, 'againstPlayers'));
-  return [...buckets.values()].sort((a, b) => a.rank - b.rank);
 }
 
 function applyLiveToPlayer(player, games, liveScores, now = new Date()) {
@@ -1113,6 +1104,7 @@ function RosterCard({
   const leagueCount = isConflict
     ? (player.myShares || 0) + (player.oppShares || 0)
     : (shares || 0);
+  const timeBadge = playerTimeBadge(player);
   // Keep Double Down / Cross Fire badges; hide plain Root For / Root Against on single-league cards.
   const footerStance = isConflict
     ? (
@@ -1170,14 +1162,20 @@ function RosterCard({
             <div className={`min-w-0 flex-1 font-extrabold text-[12px] leading-snug tracking-tight whitespace-normal break-normal hyphens-none ${isLight ? 'text-slate-950' : 'text-white'}`}>
               {player.name}
             </div>
+            {timeBadge && (
+              <span className={`shrink-0 mt-0.5 px-1 py-0.5 rounded text-[7px] font-black uppercase tracking-wide tabular-nums ${
+                timeBadge === 'LIVE'
+                  ? isLight ? 'bg-emerald-100 text-emerald-700' : 'bg-emerald-950 text-emerald-300'
+                  : timeBadge === 'FINAL' || timeBadge === 'BYE'
+                    ? isLight ? 'bg-slate-100 text-slate-500' : 'bg-slate-800 text-slate-400'
+                    : isLight ? 'bg-slate-100 text-slate-600' : 'bg-slate-800 text-slate-300'
+              }`}>
+                {timeBadge}
+              </span>
+            )}
             {player.inRedZone && (
               <span className="shrink-0 px-1 py-0.5 rounded text-[7px] font-black uppercase bg-rose-600 text-white tracking-wider">
                 RZ
-              </span>
-            )}
-            {player.isBye && (
-              <span className="shrink-0 px-1 py-0.5 rounded text-[7px] font-black uppercase tracking-wider bg-slate-600 text-white">
-                BYE
               </span>
             )}
             {player.zeroProjection && (
@@ -1726,9 +1724,29 @@ export default function App() {
 
   const filterButtonRef = useRef(null);
   const swipeTouchRef = useRef(null);
+  const swipeAnimTimerRef = useRef(null);
+  const prefersReducedMotionRef = useRef(false);
+  const [swipeDragX, setSwipeDragX] = useState(0);
+  const [swipeDragging, setSwipeDragging] = useState(false);
+  const [viewSlideClass, setViewSlideClass] = useState('');
   const VIEW_ORDER = useMemo(() => ['matchups', 'game-slate', 'all-leagues'], []);
 
   const isLight = theme === 'light';
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return undefined;
+    const media = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const sync = () => {
+      prefersReducedMotionRef.current = media.matches;
+    };
+    sync();
+    media.addEventListener?.('change', sync);
+    return () => media.removeEventListener?.('change', sync);
+  }, []);
+
+  useEffect(() => () => {
+    if (swipeAnimTimerRef.current) window.clearTimeout(swipeAnimTimerRef.current);
+  }, []);
 
   useEffect(() => {
     const onScroll = () => {
@@ -3019,39 +3037,123 @@ export default function App() {
     </button>
   );
 
+  const triggerViewSlide = (direction) => {
+    if (prefersReducedMotionRef.current) {
+      setViewSlideClass('');
+      return;
+    }
+    setViewSlideClass(direction === 'left' ? 'rootmap-view-slide-left' : 'rootmap-view-slide-right');
+    if (swipeAnimTimerRef.current) window.clearTimeout(swipeAnimTimerRef.current);
+    swipeAnimTimerRef.current = window.setTimeout(() => setViewSlideClass(''), 240);
+  };
+
+  const goToView = (nextView, directionHint) => {
+    if (!nextView || nextView === view) return;
+    const from = VIEW_ORDER.indexOf(view);
+    const to = VIEW_ORDER.indexOf(nextView);
+    const direction = directionHint || (to > from ? 'left' : 'right');
+    setSwipeDragX(0);
+    setSwipeDragging(false);
+    triggerViewSlide(direction);
+    setView(nextView);
+    tapHaptic();
+  };
+
+  const resetSwipeGesture = () => {
+    swipeTouchRef.current = null;
+    setSwipeDragging(false);
+    setSwipeDragX(0);
+  };
+
   const handleViewportTouchStart = (event) => {
     if (showAlertSheet || showSortSheet || showConnect || selectedPlayer || activeLeagueDrawer || leaguePendingDelete) {
-      swipeTouchRef.current = null;
+      resetSwipeGesture();
       return;
     }
     const target = event.target;
     if (typeof target?.closest === 'function' && target.closest('.overflow-x-auto')) {
-      swipeTouchRef.current = null;
+      resetSwipeGesture();
       return;
     }
     const touch = event.touches?.[0];
     if (!touch) return;
-    swipeTouchRef.current = { x: touch.clientX, y: touch.clientY };
+    swipeTouchRef.current = {
+      x: touch.clientX,
+      y: touch.clientY,
+      t: typeof performance !== 'undefined' ? performance.now() : Date.now(),
+      locked: false,
+      ignored: false
+    };
+    setSwipeDragging(false);
+    setSwipeDragX(0);
+  };
+
+  const handleViewportTouchMove = (event) => {
+    const start = swipeTouchRef.current;
+    if (!start || start.ignored) return;
+    if (showAlertSheet || showSortSheet || showConnect || selectedPlayer || activeLeagueDrawer || leaguePendingDelete) {
+      resetSwipeGesture();
+      return;
+    }
+    const touch = event.touches?.[0];
+    if (!touch) return;
+    const dx = touch.clientX - start.x;
+    const dy = touch.clientY - start.y;
+    if (!start.locked) {
+      if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+      if (Math.abs(dy) * 1.25 >= Math.abs(dx)) {
+        start.ignored = true;
+        setSwipeDragging(false);
+        setSwipeDragX(0);
+        return;
+      }
+      start.locked = true;
+    }
+    if (prefersReducedMotionRef.current) return;
+    setSwipeDragging(true);
+    setSwipeDragX(Math.max(-56, Math.min(56, dx * 0.42)));
   };
 
   const handleViewportTouchEnd = (event) => {
     const start = swipeTouchRef.current;
+    const wasIgnored = Boolean(start?.ignored);
     swipeTouchRef.current = null;
-    if (!start) return;
-    if (showAlertSheet || showSortSheet || showConnect || selectedPlayer || activeLeagueDrawer || leaguePendingDelete) return;
+    setSwipeDragging(false);
+    if (!start || wasIgnored) {
+      setSwipeDragX(0);
+      return;
+    }
+    if (showAlertSheet || showSortSheet || showConnect || selectedPlayer || activeLeagueDrawer || leaguePendingDelete) {
+      setSwipeDragX(0);
+      return;
+    }
     const touch = event.changedTouches?.[0];
-    if (!touch) return;
+    if (!touch) {
+      setSwipeDragX(0);
+      return;
+    }
     const dx = touch.clientX - start.x;
     const dy = touch.clientY - start.y;
-    if (!(Math.abs(dx) > 55 && Math.abs(dx) > Math.abs(dy) * 1.8)) return;
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    const dt = Math.max(1, now - (start.t || now));
+    const distanceOk = Math.abs(dx) > 32;
+    const flickOk = Math.abs(dx) / dt > 0.35;
+    const horizontalOk = Math.abs(dx) > Math.abs(dy) * 1.25;
+    if (!(horizontalOk && (distanceOk || flickOk))) {
+      window.requestAnimationFrame(() => setSwipeDragX(0));
+      return;
+    }
     const index = VIEW_ORDER.indexOf(view);
-    if (index < 0) return;
+    if (index < 0) {
+      setSwipeDragX(0);
+      return;
+    }
     if (dx < 0 && index < VIEW_ORDER.length - 1) {
-      setView(VIEW_ORDER[index + 1]);
-      tapHaptic();
+      goToView(VIEW_ORDER[index + 1], 'left');
     } else if (dx > 0 && index > 0) {
-      setView(VIEW_ORDER[index - 1]);
-      tapHaptic();
+      goToView(VIEW_ORDER[index - 1], 'right');
+    } else {
+      window.requestAnimationFrame(() => setSwipeDragX(0));
     }
   };
 
@@ -3061,7 +3163,9 @@ export default function App() {
         isLight ? 'bg-slate-50 text-slate-900' : 'bg-slate-950 text-slate-100'
       }`}
       onTouchStart={handleViewportTouchStart}
+      onTouchMove={handleViewportTouchMove}
       onTouchEnd={handleViewportTouchEnd}
+      onTouchCancel={resetSwipeGesture}
     >
       <div className={`rootmap-topbar sticky top-0 z-40 max-w-md mx-auto ${isLight ? 'bg-white/95' : 'bg-slate-950/95'} backdrop-blur-md`}>
       <header className={`border-b px-3 py-1.5 space-y-1.5 transition-colors ${
@@ -3182,7 +3286,7 @@ export default function App() {
                     type="button"
                     onClick={() => {
                       setShowWeekPicker(false);
-                      setView(view === 'game-slate' ? 'matchups' : 'game-slate');
+                      goToView(view === 'game-slate' ? 'matchups' : 'game-slate');
                     }}
                     className={`mt-2 w-full min-h-9 rounded-xl border text-[11px] font-black ${
                       isLight ? 'border-slate-200 text-slate-700' : 'border-slate-700 text-slate-200'
@@ -3304,7 +3408,10 @@ export default function App() {
       </div>
 
       {/* Main Container */}
-      <main className="max-w-md mx-auto p-3 space-y-3">
+      <main
+        className={`max-w-md mx-auto p-3 space-y-3 rootmap-view-track ${viewSlideClass} ${swipeDragging ? 'is-dragging' : ''}`}
+        style={swipeDragX ? { transform: `translate3d(${swipeDragX}px, 0, 0)` } : undefined}
+      >
         {syncStatus && (
           <div
             role="status"
@@ -3356,59 +3463,24 @@ export default function App() {
 
             <div className="relative">
               {rootView === 'both' ? (
-                <div className="flex flex-col gap-2">
-                  {alignedSlateColumns(myPortfolio, oppThreats, sortMode).map((group) => {
-                    const sample = group.forPlayers[0] || group.againstPlayers[0];
-                    const headerClass = `px-1 text-[10px] font-black uppercase tracking-wider ${isLight ? 'text-slate-500' : 'text-slate-400'}`;
-                    const faded = group.key === 'bye' ? 'opacity-60' : group.key === 'final' ? 'opacity-75' : '';
-                    const laneClass = (side) => side === 'against'
-                      ? (isLight ? 'bg-rose-50/70' : 'bg-rose-950/20')
-                      : (isLight ? 'bg-emerald-50/70' : 'bg-emerald-950/20');
-                    const column = (players, side) => (
-                      <div className={`flex-1 flex flex-col space-y-1.5 min-w-0 px-1 py-1 rounded-xl ${laneClass(side)} ${faded}`}>
-                        {players.map((player) => {
-                          const cardKey = player.cardKey || player.name;
-                          const conflict = (player.myShares || 0) > 0 && (player.oppShares || 0) > 0;
-                          return (
-                            <RosterCard
-                              key={`${side}_${cardKey}`}
-                              player={player}
-                              side={side}
-                              isLight={isLight}
-                              isHovered={hoveredConflictPlayer === `${side}_${cardKey}`}
-                              headshotTick={headshotTick}
-                              stance={renderStance(player)}
-                              onSelect={() => setSelectedPlayer(player)}
-                              onHoverStart={() => conflict && setHoveredConflictPlayer(`${side}_${cardKey}`)}
-                              onHoverEnd={() => setHoveredConflictPlayer(null)}
-                            />
-                          );
-                        })}
-                      </div>
-                    );
-                    return (
-                      <div key={group.key} className="space-y-1.5">
-                        {group.label && sample && (
-                          <div className={headerClass}>
-                            {group.key === 'bye' || group.key === 'final'
-                              ? group.label.toUpperCase()
-                              : slateDividerLabel(sample, { id: group.key, label: group.label, rank: group.rank })}
-                          </div>
-                        )}
-                        <div className="flex items-stretch gap-0">
-                          {column(group.forPlayers, 'for')}
-                          <div
-                            aria-hidden="true"
-                            className={`w-px shrink-0 self-stretch mx-0.5 ${isLight ? 'bg-slate-300' : 'bg-slate-800'}`}
-                          />
-                          {column(group.againstPlayers, 'against')}
-                        </div>
-                      </div>
-                    );
-                  })}
+                <div className="flex items-start gap-0">
+                  <div className={`flex-1 flex flex-col gap-2 min-w-0 px-1 py-1 rounded-xl ${
+                    isLight ? 'bg-emerald-50/70' : 'bg-emerald-950/20'
+                  }`}>
+                    {renderBoardColumn(myPortfolio, 'for')}
+                  </div>
+                  <div
+                    aria-hidden="true"
+                    className={`w-px shrink-0 self-stretch mx-0.5 ${isLight ? 'bg-slate-300' : 'bg-slate-800'}`}
+                  />
+                  <div className={`flex-1 flex flex-col gap-2 min-w-0 px-1 py-1 rounded-xl ${
+                    isLight ? 'bg-rose-50/70' : 'bg-rose-950/20'
+                  }`}>
+                    {renderBoardColumn(oppThreats, 'against')}
+                  </div>
                 </div>
               ) : (
-                <div className={`space-y-1.5 rounded-xl px-1 py-1 ${
+                <div className={`flex flex-col gap-2 rounded-xl px-1 py-1 ${
                   rootView === 'against'
                     ? isLight ? 'bg-rose-50/70' : 'bg-rose-950/20'
                     : isLight ? 'bg-emerald-50/70' : 'bg-emerald-950/20'
@@ -3866,7 +3938,7 @@ export default function App() {
             return (
               <button
                 key={tab.id}
-                onClick={() => setView(tab.id)}
+                onClick={() => goToView(tab.id)}
                 className={`min-h-11 py-2 flex items-center justify-center rounded-xl text-xs tracking-tight transition touch-manipulation ${
                   active
                     ? isLight
