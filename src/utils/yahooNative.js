@@ -1,5 +1,7 @@
 import { registerPlugin } from '@capacitor/core';
+import { resolveNflTeam } from './leagueParser';
 import { cleanYahooPlayerName, parseYahooMatchupText } from './yahooPaste';
+import { canonTeamCode } from './playerTeam';
 
 export const YahooLogin = registerPlugin('YahooLogin');
 
@@ -123,9 +125,13 @@ function starterFromStructured(player, side) {
   if (!name || isOpponentLabel(name)) return null;
   const actualPoints = numberOrNull(player.actualPoints ?? player.points);
   const isMine = side === 'mine';
+  const nflTeam = canonTeamCode(player.nflTeam || player.team)
+    || resolveNflTeam(player.nflTeam || player.team)
+    || String(player.nflTeam || player.team || '').trim().toUpperCase();
   return {
     name,
-    nflTeam: String(player.nflTeam || '').toUpperCase(),
+    nflTeam,
+    team: nflTeam,
     position: player.position || player.slot || '',
     slot: player.slot || player.position || '',
     points: actualPoints ?? 0,

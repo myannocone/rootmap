@@ -40,6 +40,7 @@ export default async function handler(req, res) {
       return res.status(401).json({ error: 'Missing Yahoo access token. Connect Yahoo again.' });
     }
 
+    // importYahooLeagues parses editorial_team_abbr and backfills blanks via Sleeper.
     const leagues = await importYahooLeagues(accessToken);
     if (refreshed?.access_token) {
       res.setHeader('Set-Cookie', yahooTokenSetCookieHeaders(secure, refreshed));
