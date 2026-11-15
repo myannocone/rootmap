@@ -237,7 +237,11 @@ function readScorePair(nums, projFirst) {
 
 function toStarterRecord(player, side) {
   const isMine = side === 'mine';
-  const proj = player.projPoints ?? player.points ?? 0;
+  const explicitProj = player.projPoints;
+  const storedPoints = player.points;
+  const proj = explicitProj != null
+    ? explicitProj
+    : (storedPoints != null && Number(storedPoints) !== 0 ? storedPoints : null);
   const actual = player.actualPoints ?? null;
   const slot = player.slot || player.position;
   const teamRaw = player.nflTeam || player.team || '';
@@ -247,7 +251,7 @@ function toStarterRecord(player, side) {
     position: displayPlayerPosition({ position: player.position, slot }),
     slot,
     points: actual ?? proj ?? 0,
-    projPoints: proj ?? 0,
+    projPoints: proj,
     actualPoints: actual,
     isLive: /^(1st|2nd|3rd|4th|OT|Q)/i.test(player.gameClock || ''),
     inRedZone: false,

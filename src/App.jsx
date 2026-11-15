@@ -956,7 +956,9 @@ function liveScoreView(player) {
     ? explicitProj
     : (actual == null && stored != null && stored !== 0 ? stored : null);
   const hasActual = actual != null && (live || finalGame);
-  const shown = hasActual ? actual : (live ? 0 : (stored ?? 0));
+  const pregameValue = proj != null ? proj : (stored != null && stored !== 0 ? stored : null);
+  const unknownProj = !bye && !live && !finalGame && pregameValue == null;
+  const shown = hasActual ? actual : (live ? 0 : (pregameValue ?? 0));
   const delta = hasActual && proj != null ? actual - proj : null;
   return {
     live,
@@ -965,6 +967,7 @@ function liveScoreView(player) {
     shown,
     proj,
     delta,
+    unknownProj,
     awaiting: live && !hasActual,
     showProj: Boolean((live || finalGame) && proj != null && (live || hasActual))
   };
@@ -1065,6 +1068,7 @@ function LivePoints({ player, isLight, tone = 'for', layout = 'inline', onScoreJ
     const preGame = !view.live && !view.final && !view.bye;
     const scoreLabel = view.bye ? 'BYE' : (view.live || view.final) ? 'PTS' : 'PROJ';
     const mainShown = preGame && view.proj != null ? view.proj : view.shown;
+    const showDash = Boolean(view.unknownProj || (preGame && view.proj == null && !(mainShown > 0)));
     const projLine = (view.live || view.final) && view.proj != null
       ? (deltaText ? `Proj ${view.proj.toFixed(1)} (${deltaText})` : `Proj ${view.proj.toFixed(1)}`)
       : null;
@@ -1072,7 +1076,7 @@ function LivePoints({ player, isLight, tone = 'for', layout = 'inline', onScoreJ
       <div className="relative text-right shrink-0 leading-none min-w-0">
         {floatNode}
         <div className={`font-black tabular-nums text-[15px] tracking-tight ${color} ${scorePop ? 'rootmap-score-pop' : ''}`}>
-          {mainShown.toFixed(1)}
+          {showDash ? '—' : mainShown.toFixed(1)}
           <span className={`ml-0.5 text-[9px] font-black uppercase ${muted}`}>{scoreLabel}</span>
         </div>
         {projLine && (
