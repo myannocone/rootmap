@@ -819,9 +819,8 @@ function compareBoardPlayers(a, b, sortMode) {
 }
 
 function isDoubleDownPlayer(player) {
-  const forCount = player?.myShares || 0;
-  const againstCount = player?.oppShares || 0;
-  return (forCount >= 2 && againstCount === 0) || (againstCount >= 2 && forCount === 0);
+  const exposure = classifyPlayerExposure(player);
+  return exposure.kind === 'multiFor' || exposure.kind === 'multiAgainst';
 }
 
 function passesBoardFilters(player, filters) {
@@ -1252,23 +1251,185 @@ function RosterCard({
   );
 }
 
+function uniqueLeagueEntries(entries) {
+  const seen = new Set();
+  const out = [];
+  for (const entry of entries || []) {
+    const name = String(entry?.league || '').trim();
+    if (!name) continue;
+    const key = name.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(entry);
+  }
+  return out;
+}
+
+/** Player-level exposure across connected leagues (canonical card / name+team key). */
+function classifyPlayerExposure(player) {
+  const forLeagues = uniqueLeagueEntries(player?.myLeagues);
+  const againstLeagues = uniqueLeagueEntries(player?.oppLeagues);
+  const forCount = forLeagues.length || (player?.myShares || 0);
+  const againstCount = againstLeagues.length || (player?.oppShares || 0);
+
+  if (forCount >= 1 && againstCount >= 1) {
+    return {
+      kind: 'conflict',
+      tone: 'cross',
+      label: 'CONFLICT',
+      forCount,
+      againstCount,
+      forLeagues,
+      againstLeagues
+    };
+  }
+  if (forCount >= 2 && againstCount === 0) {
+    return {
+      kind: 'multiFor',
+      tone: 'down',
+      label: `🔥 ${forCount}X FOR`,
+      forCount,
+      againstCount,
+      forLeagues,
+      againstLeagues
+    };
+  }
+  if (againstCount >= 2 && forCount === 0) {
+    return {
+      kind: 'multiAgainst',
+      tone: 'down-against',
+      label: `🚨 ${againstCount}X AGAINST`,
+      forCount,
+      againstCount,
+      forLeagues,
+      againstLeagues
+    };
+  }
+  if (forCount === 1 && againstCount === 0) {
+    return {
+      kind: 'for',
+      tone: 'pure',
+      label: 'FOR',
+      forCount,
+      againstCount,
+      forLeagues,
+      againstLeagues
+    };
+  }
+  if (againstCount === 1 && forCount === 0) {
+    return {
+      kind: 'against',
+      tone: 'threat',
+      label: 'AGAINST',
+      forCount,
+      againstCount,
+      forLeagues,
+      againstLeagues
+    };
+  }
+  return {
+    kind: 'neutral',
+    tone: 'neutral',
+    label: 'Neutral / Free Agent',
+    forCount,
+    againstCount,
+    forLeagues,
+    againstLeagues
+  };
+}
+
 function getCombinedStance(player) {
-  const mine = player?.myShares || 0;
-  const opp = player?.oppShares || 0;
-  if (mine > 0 && opp > 0) {
-    const net = mine - opp;
+  const exposure = classifyPlayerExposure(player);
+  if (exposure.kind === 'conflict') {
+    const net = exposure.forCount - exposure.againstCount;
     const swing = net > 0 ? ` (+${net})` : net < 0 ? ` (${net})` : '';
     return { label: `Cross Fire${swing}`, tone: 'cross' };
   }
-  if (mine > 0 && opp === 0) {
-    if (mine >= 2) return { label: `🔥 ${mine}X FOR`, tone: 'down' };
-    return { label: 'Root For', tone: 'pure' };
-  }
-  if (opp > 0 && mine === 0) {
-    if (opp >= 2) return { label: `🚨 ${opp}X AGAINST`, tone: 'down-against' };
-    return { label: 'Root Against', tone: 'threat' };
-  }
+  if (exposure.kind === 'multiFor') return { label: exposure.label, tone: 'down' };
+  if (exposure.kind === 'for') return { label: 'Root For', tone: 'pure' };
+  if (exposure.kind === 'multiAgainst') return { label: exposure.label, tone: 'down-against' };
+  if (exposure.kind === 'against') return { label: 'Root Against', tone: 'threat' };
   return { label: 'Neutral / Free Agent', tone: 'neutral' };
+}
+
+function SlateExposureBadge({ exposure, isLight }) {
+  const { kind, label } = exposure;
+  if (kind === 'conflict') {
+    return (
+      <span className={`rounded-full border px-1.5 py-0.5 text-[8px] font-black uppercase tracking-wide whitespace-nowrap ${
+        isLight ? 'bg-amber-100 text-amber-800 border-amber-300' : 'bg-amber-950 text-amber-300 border-amber-700'
+      }`}>
+        ⚡ CONFLICT
+      </span>
+    );
+  }
+  if (kind === 'multiFor') {
+    return (
+      <span className={`relative inline-flex items-center gap-1 overflow-hidden rounded-full border px-1.5 py-0.5 text-[8px] font-black tracking-wide whitespace-nowrap ${
+        isLight
+          ? 'bg-emerald-500/20 border-emerald-500 text-emerald-800'
+          : 'bg-emerald-500/25 border-emerald-400 text-emerald-200'
+      }`}>
+        <span aria-hidden="true" className="pointer-events-none absolute inset-0 animate-pulse bg-emerald-400/20" />
+        <span className="relative">{label}</span>
+      </span>
+    );
+  }
+  if (kind === 'multiAgainst') {
+    return (
+      <span className={`relative inline-flex items-center gap-1 overflow-hidden rounded-full border px-1.5 py-0.5 text-[8px] font-black tracking-wide whitespace-nowrap ${
+        isLight
+          ? 'bg-rose-500/20 border-rose-500 text-rose-800'
+          : 'bg-rose-500/25 border-rose-400 text-rose-200'
+      }`}>
+        <span aria-hidden="true" className="pointer-events-none absolute inset-0 animate-pulse bg-rose-400/20" />
+        <span className="relative">{label}</span>
+      </span>
+    );
+  }
+  if (kind === 'against') {
+    return (
+      <span className={`rounded-full px-1.5 py-0.5 text-[8px] font-black uppercase tracking-wide whitespace-nowrap ${
+        isLight ? 'bg-rose-100 text-rose-700' : 'bg-rose-950 text-rose-300'
+      }`}>
+        {label}
+      </span>
+    );
+  }
+  if (kind === 'for') {
+    return (
+      <span className={`rounded-full px-1.5 py-0.5 text-[8px] font-black uppercase tracking-wide whitespace-nowrap ${
+        isLight ? 'bg-emerald-100 text-emerald-700' : 'bg-emerald-950 text-emerald-300'
+      }`}>
+        {label}
+      </span>
+    );
+  }
+  return null;
+}
+
+function SlateLeaguePills({ exposure, isLight }) {
+  const pills = [
+    ...exposure.forLeagues.map((entry) => ({ key: `for:${entry.league}`, name: entry.league, side: 'for' })),
+    ...exposure.againstLeagues.map((entry) => ({ key: `against:${entry.league}`, name: entry.league, side: 'against' }))
+  ];
+  if (!pills.length) return null;
+  return (
+    <div className="mt-0.5 flex flex-wrap gap-1">
+      {pills.map((pill) => (
+        <span
+          key={pill.key}
+          className={`rounded-full px-1.5 py-0.5 text-[7px] font-black uppercase tracking-wide whitespace-nowrap ${
+            pill.side === 'for'
+              ? isLight ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-emerald-950/60 text-emerald-300 border border-emerald-800'
+              : isLight ? 'bg-rose-50 text-rose-700 border border-rose-200' : 'bg-rose-950/60 text-rose-300 border border-rose-800'
+          }`}
+        >
+          {pill.name} · {pill.side === 'for' ? 'FOR' : 'AGAINST'}
+        </span>
+      ))}
+    </div>
+  );
 }
 
 function canonTeam(team) {
@@ -3676,13 +3837,21 @@ export default function App() {
                       </div>
                     ) : (
                       activeMatchPlayers.map((player) => {
-                        const stance = getCombinedStance(player);
-                        const forSide = stance.tone === 'pure' || stance.tone === 'down';
-                        const againstSide = stance.tone === 'threat';
-                        const rowAccent = againstSide ? '#e11d48' : forSide ? '#059669' : '#8b5cf6';
+                        const exposure = classifyPlayerExposure(player);
+                        const forSide = exposure.kind === 'for' || exposure.kind === 'multiFor';
+                        const againstSide = exposure.kind === 'against' || exposure.kind === 'multiAgainst';
+                        const isConflict = exposure.kind === 'conflict';
+                        const rowAccent = againstSide
+                          ? '#e11d48'
+                          : forSide
+                            ? '#059669'
+                            : isConflict
+                              ? '#d97706'
+                              : '#64748b';
+                        const rowKey = player.cardKey || playerCardKey(player.name, player.nflTeam) || player.name;
                         return (
                           <div
-                            key={player.name}
+                            key={rowKey}
                             onClick={() => setSelectedPlayer(player)}
                             className={`relative px-2.5 py-1.5 cursor-pointer transition ${
                               isLight ? 'hover:bg-slate-50' : 'hover:bg-slate-800/40'
@@ -3699,24 +3868,17 @@ export default function App() {
                                 <div className="min-w-0">
                                   <div className={`font-extrabold text-[12px] truncate leading-tight ${isLight ? 'text-slate-900' : 'text-white'}`}>{player.name}</div>
                                   <div className={`text-[9px] font-bold ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>{player.position} • {player.nflTeam}</div>
+                                  <SlateLeaguePills exposure={exposure} isLight={isLight} />
                                 </div>
                               </div>
                               <div className="flex items-center gap-1.5 shrink-0">
                                 <LivePoints
                                   player={player}
                                   isLight={isLight}
-                                  tone={againstSide ? 'against' : stance.tone === 'cross' ? 'cross' : 'for'}
+                                  tone={againstSide ? 'against' : isConflict ? 'cross' : 'for'}
                                   layout="compact"
                                 />
-                                <span className={`rounded-full px-1.5 py-0.5 text-[8px] font-black uppercase tracking-wide whitespace-nowrap ${
-                                  againstSide
-                                    ? isLight ? 'bg-rose-100 text-rose-700' : 'bg-rose-950 text-rose-300'
-                                    : forSide
-                                      ? isLight ? 'bg-emerald-100 text-emerald-700' : 'bg-emerald-950 text-emerald-300'
-                                      : isLight ? 'bg-violet-100 text-violet-700' : 'bg-violet-950 text-violet-300'
-                                }`}>
-                                  {againstSide ? 'ROOT AGAINST' : forSide ? 'ROOT FOR' : '⚡ CONFLICT'}
-                                </span>
+                                <SlateExposureBadge exposure={exposure} isLight={isLight} />
                               </div>
                             </div>
                           </div>
