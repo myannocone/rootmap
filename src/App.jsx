@@ -116,20 +116,43 @@ function getLeagueThreats(lg) {
 }
 
 function getLeagueDisplayName(lg) {
-  return preferYahooLeagueName(
-    lg?.leagueName,
-    lg?.name,
-    lg?.myTeamName,
-    lg?.userTeam?.name
-  ) || 'My Team';
+  const teamName = String(lg?.myTeamName || lg?.userTeam?.name || '').trim();
+  const candidates = [lg?.leagueName, lg?.name];
+  for (const candidate of candidates) {
+    const name = String(candidate || '').trim();
+    if (!name || isGenericYahooLeagueName(name)) continue;
+    // Yahoo sync used to fall back to the team name ("YANNACONDA") as the league name.
+    if (teamName && name === teamName) continue;
+    return name;
+  }
+  for (const candidate of candidates) {
+    const name = String(candidate || '').trim();
+    if (name && !isGenericYahooLeagueName(name)) return name;
+  }
+  return 'Yahoo League';
 }
 
 function getUserTeamName(lg) {
-  return lg?.myTeamName || lg?.userTeam?.name || getLeagueDisplayName(lg);
+  const team = preferYahooLeagueName(lg?.myTeamName, lg?.userTeam?.name);
+  if (team && !isGenericYahooLeagueName(team)) return team;
+  return team || 'My Team';
 }
 
 function sumActiveStarterPoints(starters) {
-  return listedStarters(starters).reduce((sum, player) => sum + (Number(player?.points) || 0), 0);
+  return listedStarters(starters).reduce((sum, player) => {
+    const actual = finiteNumber(player?.actualPoints);
+    if (actual != null && actual !== 0) return sum + actual;
+    return sum + (finiteNumber(player?.points) || 0);
+  }, 0);
+}
+
+function sumActiveStarterProjections(starters) {
+  return listedStarters(starters).reduce((sum, player) => {
+    const proj = finiteNumber(player?.projPoints)
+      ?? finiteNumber(player?.projected)
+      ?? finiteNumber(player?.projectedPoints);
+    return sum + (proj != null ? proj : 0);
+  }, 0);
 }
 
 function leagueSideScore(league, side = 'my') {
@@ -179,11 +202,13 @@ function teamSeasonDetail(record, rank) {
 
 function starterActualLabel(player) {
   const actual = finiteNumber(player?.actualPoints);
-  if (actual != null) return scoreText(actual);
+  const liveOrFinal = starterIsLive(player) || starterIsFinal(player);
+  // Yahoo often stores actualPoints: 0 pre-kickoff; only show a real line once live/final or non-zero.
+  if (actual != null && (liveOrFinal || actual !== 0)) return scoreText(actual);
   const points = finiteNumber(player?.points);
   const proj = finiteNumber(player?.projPoints);
   // points often mirrors projection before kickoff — keep the dash in that case.
-  if (points == null || (proj != null && points === proj)) return '—';
+  if (points == null || points === 0 || (proj != null && points === proj)) return '—';
   return scoreText(points);
 }
 
@@ -552,15 +577,16 @@ function normalizeLeague(lg, index = 0) {
   if (!lg || typeof lg !== 'object') return null;
   const portfolio = getLeaguePortfolio(lg).map(normalizeListedPlayer);
   const threats = getLeagueThreats(lg).map(normalizeListedPlayer);
-  const name = getLeagueDisplayName(lg) || `League ${index + 1}`;
+  const myTeamName = preferYahooLeagueName(lg.myTeamName, lg.userTeam?.name) || 'My Team';
+  const name = getLeagueDisplayName({ ...lg, myTeamName }) || `League ${index + 1}`;
   const oppTeamName = getLeagueOppName(lg);
-  const myTeamName = preferYahooLeagueName(lg.myTeamName, lg.userTeam?.name) || name;
   return {
     ...lg,
     id: lg.id || `lg_${Date.now()}_${index}`,
     name,
     leagueName: preferYahooLeagueName(lg.leagueName, name),
-    myTeamName: isGenericYahooLeagueName(myTeamName) ? name : myTeamName,
+    myTeamName: isGenericYahooLeagueName(myTeamName) ? 'My Team' : myTeamName,
+    teamName: preferYahooLeagueName(lg.teamName, myTeamName),
     oppTeamName,
     opponent: lg.opponent || oppTeamName,
     platform: lg.platform || 'Yahoo',
@@ -576,25 +602,36 @@ function normalizeLeague(lg, index = 0) {
   };
 }
 
+function yahooLeagueNameCandidate(league, teamName) {
+  const team = String(teamName || league?.myTeamName || '').trim();
+  for (const candidate of [league?.leagueName, league?.name]) {
+    const name = String(candidate || '').trim();
+    if (!name || isGenericYahooLeagueName(name)) continue;
+    if (team && name === team) continue;
+    return name;
+  }
+  return '';
+}
+
 function mergeYahooSyncedLeague(existing, incoming) {
   if (!incoming) return existing;
   if (!existing) return normalizeLeague(incoming);
-  const name = preferYahooLeagueName(
-    incoming.leagueName,
-    incoming.name,
-    existing.leagueName,
-    existing.name
-  );
+  const teamName = preferYahooLeagueName(incoming.myTeamName, existing.myTeamName, incoming.teamName, existing.teamName);
+  const name = yahooLeagueNameCandidate(incoming, teamName)
+    || yahooLeagueNameCandidate(existing, teamName)
+    || preferYahooLeagueName(incoming.leagueName, existing.leagueName, incoming.name, existing.name)
+    || 'Yahoo League';
   return normalizeLeague({
     ...existing,
     ...incoming,
     id: existing.id,
     name,
     leagueName: name,
+    teamName,
     yahooLeagueId: existing.yahooLeagueId || incoming.yahooLeagueId || incoming.leagueKey,
     yahooTeamId: existing.yahooTeamId || incoming.yahooTeamId || incoming.teamKey,
     yahooMatchupUrl: incoming.yahooMatchupUrl || existing.yahooMatchupUrl,
-    myTeamName: preferYahooLeagueName(incoming.myTeamName, existing.myTeamName),
+    myTeamName: teamName,
     oppTeamName: incoming.oppTeamName || existing.oppTeamName,
     portfolio: incoming.portfolio || incoming.starters || existing.portfolio,
     threats: incoming.threats || incoming.opponentStarters || existing.threats,
@@ -1004,6 +1041,90 @@ function applyLiveToPlayer(player, games, liveScores, now = new Date(), sleeperP
 
 function decorateStoredPlayer(player, games, liveScores, sleeperPlayers = null) {
   return applyLiveToPlayer({ ...(player || {}) }, games, liveScores, new Date(), sleeperPlayers);
+}
+
+function lookupMasterPlayerStats(player, masterIndex) {
+  if (!player || !masterIndex) return null;
+  const team = knownTeam(player.nflTeam || player.team);
+  const direct = masterIndex.get(playerCardKey(player.name, team));
+  if (direct) return direct;
+  const nameKey = String(player.name || '').trim().toLowerCase();
+  if (!nameKey) return null;
+  let fallback = null;
+  masterIndex.forEach((entry) => {
+    if (fallback) return;
+    if (String(entry?.name || '').trim().toLowerCase() !== nameKey) return;
+    if (team && knownTeam(entry.nflTeam) && knownTeam(entry.nflTeam) !== team) return;
+    fallback = entry;
+  });
+  return fallback;
+}
+
+/** Enrich Matchups starters with the same Sleeper/live stats RootMap uses, then re-sum team totals. */
+function hydrateLeagueForMatchups(league, games, liveScores, sleeperPlayers = null, masterIndex = null) {
+  if (!league) return league;
+  const hydrateOne = (player) => {
+    if (!player) return player;
+    const copy = { ...player };
+    const master = lookupMasterPlayerStats(copy, masterIndex);
+    if (master) {
+      const masterActual = finiteNumber(master.actualPoints) ?? finiteNumber(master.points);
+      const localActual = finiteNumber(copy.actualPoints) ?? finiteNumber(copy.points);
+      if ((localActual == null || localActual === 0) && masterActual != null && masterActual !== 0) {
+        copy.actualPoints = master.actualPoints ?? masterActual;
+        copy.points = masterActual;
+      }
+      const masterProj = finiteNumber(master.projPoints);
+      const localProj = finiteNumber(copy.projPoints) ?? finiteNumber(copy.projected);
+      if ((localProj == null || localProj === 0) && masterProj != null && masterProj !== 0) {
+        copy.projPoints = masterProj;
+        copy.projected = masterProj;
+      }
+      if (!knownTeam(copy.nflTeam || copy.team) && knownTeam(master.nflTeam)) {
+        copy.nflTeam = knownTeam(master.nflTeam);
+        copy.team = copy.nflTeam;
+      }
+      if (master.sleeperId && !copy.sleeperId) copy.sleeperId = master.sleeperId;
+      if (master.gameStatus) copy.gameStatus = master.gameStatus;
+      if (master.isLive != null) copy.isLive = master.isLive;
+      if (master.kickoff) copy.kickoff = master.kickoff;
+    }
+    return applyLiveToPlayer(copy, games, liveScores, new Date(), sleeperPlayers);
+  };
+
+  const portfolio = getLeaguePortfolio(league).map(hydrateOne);
+  const threats = getLeagueThreats(league).map(hydrateOne);
+  const myStarterScore = sumActiveStarterPoints(portfolio);
+  const oppStarterScore = sumActiveStarterPoints(threats);
+  const myStarterProj = sumActiveStarterProjections(portfolio);
+  const oppStarterProj = sumActiveStarterProjections(threats);
+  const myScoreRaw = finiteNumber(league.myScore);
+  const oppScoreRaw = finiteNumber(league.oppScore);
+  const myProjRaw = finiteNumber(league.myProj ?? league.myProjected);
+  const oppProjRaw = finiteNumber(league.oppProj ?? league.oppProjected);
+
+  return {
+    ...league,
+    name: getLeagueDisplayName(league),
+    leagueName: preferYahooLeagueName(league.leagueName, getLeagueDisplayName(league)),
+    myTeamName: getUserTeamName(league),
+    portfolio,
+    threats,
+    starters: portfolio,
+    opponentStarters: threats,
+    userTeam: league.userTeam
+      ? { ...league.userTeam, name: getUserTeamName(league), starters: portfolio }
+      : { name: getUserTeamName(league), starters: portfolio },
+    oppTeam: league.oppTeam
+      ? { ...league.oppTeam, starters: threats }
+      : league.oppTeam,
+    myScore: (myScoreRaw != null && myScoreRaw !== 0) ? myScoreRaw : myStarterScore,
+    oppScore: (oppScoreRaw != null && oppScoreRaw !== 0) ? oppScoreRaw : oppStarterScore,
+    myProj: (myProjRaw != null && myProjRaw !== 0) ? myProjRaw : (myStarterProj || myProjRaw),
+    oppProj: (oppProjRaw != null && oppProjRaw !== 0) ? oppProjRaw : (oppStarterProj || oppProjRaw),
+    myProjected: (myProjRaw != null && myProjRaw !== 0) ? myProjRaw : (myStarterProj || myProjRaw),
+    oppProjected: (oppProjRaw != null && oppProjRaw !== 0) ? oppProjRaw : (oppStarterProj || oppProjRaw)
+  };
 }
 
 function liveScoreView(player) {
@@ -3300,8 +3421,10 @@ export default function App() {
   }, [games]);
 
   const sortedLeagues = useMemo(() => {
-    const list = [...leagues];
-    list.sort((a, b) => {
+    const hydrated = leagues.map((league) => (
+      hydrateLeagueForMatchups(league, games, liveScores, sleeperPlayers, playerMasterIndex)
+    ));
+    hydrated.sort((a, b) => {
       if (leagueSort === 'standing') {
         const ar = Number(leagueSideRecord(a, 'my').rank) || 99;
         const br = Number(leagueSideRecord(b, 'my').rank) || 99;
@@ -3316,8 +3439,8 @@ export default function App() {
       }
       return getUserTeamName(a).localeCompare(getUserTeamName(b));
     });
-    return list;
-  }, [leagues, leagueSort]);
+    return hydrated;
+  }, [leagues, leagueSort, games, liveScores, sleeperPlayers, playerMasterIndex]);
 
   const getGamePlayers = (game) => {
     if (!game) return [];

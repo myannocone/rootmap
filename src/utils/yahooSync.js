@@ -34,6 +34,18 @@ export function preferYahooLeagueName(...candidates) {
   return '';
 }
 
+/** League header name that is never the fantasy team nickname. */
+export function preferYahooLeagueOverTeam(teamName, ...leagueCandidates) {
+  const team = String(teamName || '').trim();
+  for (const candidate of leagueCandidates) {
+    const name = String(candidate || '').trim();
+    if (!name || isGenericYahooLeagueName(name)) continue;
+    if (team && name === team) continue;
+    return name;
+  }
+  return preferYahooLeagueName(...leagueCandidates) || 'Yahoo League';
+}
+
 /**
  * Fetch the latest Yahoo leagues from /api/sync using HttpOnly cookies.
  * Returns null when no Yahoo session is available (401).
@@ -57,9 +69,19 @@ export async function syncYahooLeaguesFromApi({ week } = {}) {
     throw new Error(data.error || data.details || `Yahoo sync failed (${response.status})`);
   }
   const leagues = Array.isArray(data.leagues) ? data.leagues : [];
-  return leagues.map((league) => ({
-    ...league,
-    name: preferYahooLeagueName(league.leagueName, league.name),
-    leagueName: preferYahooLeagueName(league.leagueName, league.name)
-  }));
+  return leagues.map((league) => {
+    const teamName = preferYahooLeagueName(league.myTeamName, league.teamName, league.userTeam?.name);
+    const leagueName = preferYahooLeagueOverTeam(
+      teamName,
+      league.leagueName,
+      league.name
+    );
+    return {
+      ...league,
+      name: leagueName,
+      leagueName,
+      teamName,
+      myTeamName: teamName || league.myTeamName
+    };
+  });
 }
