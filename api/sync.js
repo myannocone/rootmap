@@ -66,7 +66,8 @@ export default async function handler(req, res) {
       return res.status(200).json({ inspectYahoo: true, ...inspect });
     }
 
-    // importYahooLeagues parses editorial_team_abbr, real league names, and week points.
+    // Yahoo-native weekly sync: scoreboard team_points + roster player_points/projections.
+    // Sleeper pts_ppr is NOT used here — the client may fall back only when yahooStatsOk is false.
     const leagues = await importYahooLeagues(accessToken, { week });
     if (refreshed?.access_token) {
       res.setHeader('Set-Cookie', yahooTokenSetCookieHeaders(secure, refreshed));
@@ -75,7 +76,8 @@ export default async function handler(req, res) {
     return res.status(200).json({
       leagues,
       count: leagues.length,
-      week: week || leagues[0]?.lineupWeek || null
+      week: week || leagues[0]?.lineupWeek || null,
+      scoringSource: 'yahoo'
     });
   } catch (err) {
     console.error('Sync failure:', err);

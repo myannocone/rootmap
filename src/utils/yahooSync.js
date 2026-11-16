@@ -3,7 +3,7 @@
  * Overwrites cached "My Teams & Leagues" names and week points.
  */
 
-const GENERIC_YAHOO_SECTION_RE = /^(my\s*teams?\s*(?:&|and)\s*leagues?|my\s*teams?|my\s*leagues?)$/i;
+const GENERIC_YAHOO_SECTION_RE = /^(my\s*teams?\s*(?:&|and)\s*leagues?|my\s*teams?|my\s*leagues?|yahoo\s*league)$/i;
 
 export function isGenericYahooLeagueName(name) {
   return GENERIC_YAHOO_SECTION_RE.test(String(name || '').trim());
@@ -34,16 +34,26 @@ export function preferYahooLeagueName(...candidates) {
   return '';
 }
 
+function yahooNameKey(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, '');
+}
+
 /** League header name that is never the fantasy team nickname. */
 export function preferYahooLeagueOverTeam(teamName, ...leagueCandidates) {
-  const team = String(teamName || '').trim();
+  const teamKey = yahooNameKey(teamName);
   for (const candidate of leagueCandidates) {
     const name = String(candidate || '').trim();
     if (!name || isGenericYahooLeagueName(name)) continue;
-    if (team && name === team) continue;
+    if (teamKey && yahooNameKey(name) === teamKey) continue;
     return name;
   }
-  return preferYahooLeagueName(...leagueCandidates) || 'Yahoo League';
+  for (const candidate of leagueCandidates) {
+    const name = String(candidate || '').trim();
+    if (name && !isGenericYahooLeagueName(name) && yahooNameKey(name) !== teamKey) return name;
+  }
+  return 'Yahoo League';
 }
 
 /**
