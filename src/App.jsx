@@ -4,6 +4,12 @@ import RootMapLogo from './components/Logo';
 import { fetchLiveNFLSlate, gamePhase } from './services/espnScoreboard';
 import { FALLBACK_NFL_WEEK, getActiveSlate, getSlateByWeek } from './data/nflSchedule';
 import { isEspnMatchupText, parseEspnMatchupText, resolveNflTeam } from './utils/leagueParser';
+import {
+  backfillPlayerTeam,
+  canonTeamCode,
+  needsTeamBackfill,
+  sleeperTeamIndexFrom
+} from './utils/playerTeam';
 import { cleanYahooPlayerName, parseYahooMatchupText } from './utils/yahooPaste';
 import {
   fetchNflState,
@@ -344,7 +350,7 @@ function MatchupLineups({ league, week, isLight }) {
             {player.name}
           </div>
           <div className={`truncate text-[9px] font-bold tabular-nums ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
-            {String(player.nflTeam || player.team || '').toUpperCase()} · {starterActualLabel(player)}
+            {[knownTeam(player.nflTeam || player.team) || String(player.nflTeam || player.team || '').toUpperCase(), starterActualLabel(player)].filter(Boolean).join(' · ')}
           </div>
         </>
       ) : (
@@ -523,10 +529,18 @@ function cleanListedPlayer(player) {
   return { ...player, name };
 }
 
+function normalizeListedPlayer(player) {
+  const cleaned = cleanListedPlayer(player);
+  if (!cleaned || typeof cleaned !== 'object') return cleaned;
+  const team = knownTeam(cleaned.nflTeam || cleaned.team);
+  if (!team || (cleaned.nflTeam === team && cleaned.team === team)) return cleaned;
+  return { ...cleaned, nflTeam: team, team };
+}
+
 function normalizeLeague(lg, index = 0) {
   if (!lg || typeof lg !== 'object') return null;
-  const portfolio = getLeaguePortfolio(lg).map(cleanListedPlayer);
-  const threats = getLeagueThreats(lg).map(cleanListedPlayer);
+  const portfolio = getLeaguePortfolio(lg).map(normalizeListedPlayer);
+  const threats = getLeagueThreats(lg).map(normalizeListedPlayer);
   const name = getLeagueDisplayName(lg) || `League ${index + 1}`;
   const oppTeamName = getLeagueOppName(lg);
   return {
@@ -612,19 +626,29 @@ function TrashIcon() {
 }
 
 function playerCardKey(name, nflTeam) {
-  const team = resolveNflTeam(nflTeam);
+  const team = knownTeam(nflTeam);
   return `${String(name || '').trim().toLowerCase()}|${team}`;
 }
 
 function knownTeam(value) {
-  return resolveNflTeam(value) || '';
+  return resolveNflTeam(value) || canonTeamCode(value) || '';
 }
 
-function buildPlayerMasterIndex(leagueList, games = [], defenseLeagues = null, liveScores = null) {
-  const map = new Map();
+function resolvePlayerTeam(player, sleeperPlayers = null, teamIndex = null) {
+  const filled = backfillPlayerTeam(player, sleeperPlayers, teamIndex);
+  return knownTeam(filled?.nflTeam || filled?.team || player?.nflTeam || player?.team);
+}
 
-  const getOrCreate = (name, nflTeam, position, points = 0, isLive = false, inRedZone = false, gameClock = 'Scheduled', bigPlay = null) => {
-    const team = knownTeam(nflTeam);
+function buildPlayerMasterIndex(leagueList, games = [], defenseLeagues = null, liveScores = null, sleeperPlayers = null) {
+  const map = new Map();
+  const teamIndex = sleeperPlayers ? sleeperTeamIndexFrom(sleeperPlayers) : null;
+
+  const getOrCreate = (name, nflTeam, position, points = 0, isLive = false, inRedZone = false, gameClock = 'Scheduled', bigPlay = null, sourcePlayer = null) => {
+    const team = resolvePlayerTeam(
+      { name, nflTeam, team: nflTeam, position, slot: sourcePlayer?.slot },
+      sleeperPlayers,
+      teamIndex
+    ) || knownTeam(nflTeam);
     const key = playerCardKey(name, team);
     if (!map.has(key)) {
       map.set(key, {
@@ -644,7 +668,8 @@ function buildPlayerMasterIndex(leagueList, games = [], defenseLeagues = null, l
       });
     }
     const item = map.get(key);
-    if (team && !knownTeam(item.nflTeam)) item.nflTeam = team;
+    if (team && needsTeamBackfill(item.nflTeam)) item.nflTeam = team;
+    else if (team && !knownTeam(item.nflTeam)) item.nflTeam = team;
     if (points || isLive) item.points = points;
     if (isLive) item.isLive = true;
     if (inRedZone) item.inRedZone = true;
@@ -662,11 +687,13 @@ function buildPlayerMasterIndex(leagueList, games = [], defenseLeagues = null, l
     }
     if (player?.sleeperId) item.sleeperId = String(player.sleeperId);
     if (player?.scoringKey) item.scoringKey = player.scoringKey;
+    const team = resolvePlayerTeam(player, sleeperPlayers, teamIndex);
+    if (team && needsTeamBackfill(item.nflTeam)) item.nflTeam = team;
   };
 
   (leagueList || []).forEach((lg) => {
     getLeaguePortfolio(lg).forEach((p) => {
-      const item = getOrCreate(p.name, p.nflTeam, p.position, p.points, p.isLive, p.inRedZone, p.gameClock, p.bigPlay);
+      const item = getOrCreate(p.name, p.nflTeam || p.team, p.position, p.points, p.isLive, p.inRedZone, p.gameClock, p.bigPlay, p);
       item.myShares += 1;
       item.myLeagues.push({ league: getLeagueDisplayName(lg), opponent: getLeagueOppName(lg) });
       item.isStarter = true;
@@ -677,7 +704,7 @@ function buildPlayerMasterIndex(leagueList, games = [], defenseLeagues = null, l
 
   (leagueList || []).forEach((lg) => {
     getLeagueThreats(lg).forEach((p) => {
-      const item = getOrCreate(p.name, p.nflTeam, p.position, p.points, p.isLive, p.inRedZone, p.gameClock, p.bigPlay);
+      const item = getOrCreate(p.name, p.nflTeam || p.team, p.position, p.points, p.isLive, p.inRedZone, p.gameClock, p.bigPlay, p);
       item.oppShares += 1;
       item.oppLeagues.push({ league: getLeagueDisplayName(lg), opponent: getLeagueOppName(lg) });
       item.isThreat = true;
@@ -686,7 +713,7 @@ function buildPlayerMasterIndex(leagueList, games = [], defenseLeagues = null, l
   });
 
   markExposureTags(map, defenseLeagues || leagueList, games);
-  map.forEach((player) => applyLiveToPlayer(player, games, liveScores));
+  map.forEach((player) => applyLiveToPlayer(player, games, liveScores, new Date(), sleeperPlayers, teamIndex));
   return map;
 }
 
@@ -862,7 +889,27 @@ function passesBoardFilters(player, filters) {
   return true;
 }
 
-function applyLiveToPlayer(player, games, liveScores, now = new Date()) {
+function applyLiveToPlayer(player, games, liveScores, now = new Date(), sleeperPlayers = null, teamIndex = null) {
+  if (needsTeamBackfill(player?.nflTeam || player?.team)) {
+    const filled = backfillPlayerTeam(player, sleeperPlayers, teamIndex);
+    if (filled?.nflTeam) {
+      player.nflTeam = filled.nflTeam;
+      player.team = filled.nflTeam;
+    }
+  } else {
+    const team = knownTeam(player?.nflTeam || player?.team);
+    if (team) {
+      player.nflTeam = team;
+      player.team = team;
+    }
+  }
+
+  let live = sleeperLiveNumbers(player, liveScores);
+  if (live?.team && needsTeamBackfill(player.nflTeam)) {
+    player.nflTeam = knownTeam(live.team) || live.team;
+    player.team = player.nflTeam;
+  }
+
   const game = gameForTeam(games, player?.nflTeam);
   const bye = playerIsBye(player, game);
   player.isBye = bye;
@@ -875,8 +922,12 @@ function applyLiveToPlayer(player, games, liveScores, now = new Date()) {
     player.gameDate = null;
     player.opponent = 'BYE';
     player.gameClock = 'Bye';
-    const live = sleeperLiveNumbers(player, liveScores);
+    live = sleeperLiveNumbers(player, liveScores) || live;
     if (live?.proj != null) player.projPoints = live.proj;
+    if (live?.team && needsTeamBackfill(player.nflTeam)) {
+      player.nflTeam = knownTeam(live.team) || live.team;
+      player.team = player.nflTeam;
+    }
     return player;
   }
   const phase = game ? gamePhase(game, now) : 'UPCOMING';
@@ -891,7 +942,11 @@ function applyLiveToPlayer(player, games, liveScores, now = new Date()) {
     const clock = game.status || game.time;
     if (clock) player.gameClock = clock;
   }
-  const live = sleeperLiveNumbers(player, liveScores);
+  live = sleeperLiveNumbers(player, liveScores) || live;
+  if (live?.team && needsTeamBackfill(player.nflTeam)) {
+    player.nflTeam = knownTeam(live.team) || live.team;
+    player.team = player.nflTeam;
+  }
   if (live?.proj != null) player.projPoints = live.proj;
   player.zeroProjection = Boolean(starterProjectionStatus(player, { games, liveScores, now })?.zero);
   const storedActual = finiteNumber(player.actualPoints);
@@ -903,8 +958,8 @@ function applyLiveToPlayer(player, games, liveScores, now = new Date()) {
   return player;
 }
 
-function decorateStoredPlayer(player, games, liveScores) {
-  return applyLiveToPlayer({ ...(player || {}) }, games, liveScores);
+function decorateStoredPlayer(player, games, liveScores, sleeperPlayers = null) {
+  return applyLiveToPlayer({ ...(player || {}) }, games, liveScores, new Date(), sleeperPlayers);
 }
 
 function liveScoreView(player) {
@@ -1254,7 +1309,7 @@ function RosterCard({
           {/* Row 2: POS • TEAM left, score + Proj differential right */}
           <div className="mt-0.5 flex items-start justify-between gap-2 min-w-0">
             <div className={`min-w-0 text-[9px] font-bold leading-tight ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
-              {player.position} • {player.nflTeam}
+              {player.position} • {knownTeam(player.nflTeam) || player.nflTeam || ''}
             </div>
             <LivePoints
               player={player}
@@ -1462,8 +1517,7 @@ function SlateLeaguePills({ exposure, isLight }) {
 }
 
 function canonTeam(team) {
-  const key = String(team || '').toUpperCase().trim();
-  return TEAM_ALIASES[key] || key;
+  return knownTeam(team) || TEAM_ALIASES[String(team || '').toUpperCase().trim()] || String(team || '').toUpperCase().trim();
 }
 
 function isTeamDefense(player) {
@@ -1954,6 +2008,7 @@ export default function App() {
   const [mobileSyncNote, setMobileSyncNote] = useState('');
   const [filtersCollapsed, setFiltersCollapsed] = useState(false);
   const [notifPermission, setNotifPermission] = useState('unknown');
+  const [sleeperPlayers, setSleeperPlayers] = useState(null);
 
   const filterButtonRef = useRef(null);
   const swipeTouchRef = useRef(null);
@@ -1976,6 +2031,60 @@ export default function App() {
     media.addEventListener?.('change', sync);
     return () => media.removeEventListener?.('change', sync);
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    prefetchSleeperPlayers()
+      .then((players) => {
+        if (!cancelled) setSleeperPlayers(players && typeof players === 'object' ? players : {});
+      })
+      .catch(() => {
+        if (!cancelled) setSleeperPlayers({});
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!sleeperPlayers || !Object.keys(sleeperPlayers).length) return;
+    const index = sleeperTeamIndexFrom(sleeperPlayers);
+    setLeagues((prev) => {
+      let changed = false;
+      const next = prev.map((league) => {
+        let leagueChanged = false;
+        const fillList = (list) => (list || []).map((player) => {
+          if (!needsTeamBackfill(player?.nflTeam || player?.team)) return player;
+          const filled = backfillPlayerTeam(player, sleeperPlayers, index);
+          if (filled?.nflTeam && filled.nflTeam !== (player?.nflTeam || player?.team)) {
+            leagueChanged = true;
+            changed = true;
+            return filled;
+          }
+          return player;
+        });
+        const portfolio = fillList(getLeaguePortfolio(league));
+        const threats = fillList(getLeagueThreats(league));
+        if (!leagueChanged) return league;
+        return {
+          ...league,
+          portfolio,
+          threats,
+          starters: portfolio,
+          opponentStarters: threats,
+          userTeam: league.userTeam ? { ...league.userTeam, starters: portfolio } : league.userTeam,
+          oppTeam: league.oppTeam ? { ...league.oppTeam, starters: threats } : league.oppTeam
+        };
+      });
+      if (!changed) return prev;
+      try {
+        localStorage.setItem(LEAGUES_STORAGE_KEY, JSON.stringify(next));
+      } catch {
+        // storage is optional
+      }
+      return next;
+    });
+  }, [sleeperPlayers]);
 
   useEffect(() => () => {
     if (swipeAnimTimerRef.current) window.clearTimeout(swipeAnimTimerRef.current);
@@ -2986,8 +3095,8 @@ export default function App() {
   const hiddenCount = leagues.length - visibleLeagues.length;
 
   const playerMasterIndex = useMemo(
-    () => buildPlayerMasterIndex(visibleLeagues, games, null, liveScores),
-    [visibleLeagues, games, liveScores]
+    () => buildPlayerMasterIndex(visibleLeagues, games, null, liveScores, sleeperPlayers),
+    [visibleLeagues, games, liveScores, sleeperPlayers]
   );
 
   const crossFirePointsRef = useRef(null);
@@ -5635,7 +5744,7 @@ export default function App() {
             </div>
             <div className="overflow-y-auto space-y-2 py-3">
               {getLeaguePortfolio(activeLeagueDrawer).map((raw, idx) => {
-                const p = decorateStoredPlayer(raw, games, liveScores);
+                const p = decorateStoredPlayer(raw, games, liveScores, sleeperPlayers);
                 return (
                 <div key={idx} className={`rounded-xl p-2.5 flex justify-between items-center text-xs border ${
                   isLight ? 'bg-slate-50 border-slate-200' : 'bg-slate-800/60 border-slate-700/40'

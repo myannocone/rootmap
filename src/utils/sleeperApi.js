@@ -175,9 +175,12 @@ export function sleeperLiveNumbers(player, bundle) {
   return {
     started: Boolean(live.started),
     actual: pickPoint(live.actual, key),
-    proj: pickPoint(live.proj, key)
+    proj: pickPoint(live.proj, key),
+    team: resolveNflTeam(live.team) || sleeperTeam(live.team) || null
   };
 }
+
+export { sleeperTeam };
 
 export function prefetchSleeperPlayers() {
   if (playerDirectoryCache) return Promise.resolve(playerDirectoryCache);

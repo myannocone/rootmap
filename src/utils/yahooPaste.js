@@ -97,8 +97,10 @@ function isNameLine(line) {
 function parseTeamPos(line) {
   const match = String(line || '').trim().match(TEAM_POS_RE);
   if (!match) return { nflTeam: '', position: '' };
+  const raw = String(match[1] || '').trim().toUpperCase();
+  const aliases = { WSH: 'WAS', JAC: 'JAX', LA: 'LAR', OAK: 'LV', SD: 'LAC', ARZ: 'ARI', SFO: 'SF' };
   return {
-    nflTeam: match[1].toUpperCase(),
+    nflTeam: aliases[raw] || raw,
     position: normalizePosition(match[2])
   };
 }
