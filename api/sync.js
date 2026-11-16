@@ -1,5 +1,6 @@
 ﻿import {
   importYahooLeagues,
+  inspectYahooPayload,
   resolveYahooAccessToken,
   requestIsSecure,
   yahooTokenSetCookieHeaders
@@ -11,42 +12,71 @@ function bearerFrom(req) {
   return header.replace(/^Bearer\s+/i, '').trim();
 }
 
+function wantsInspect(req) {
+  const value = req.query?.inspectYahoo ?? req.query?.inspect;
+  return value === '1' || value === 'true' || value === 'yes';
+}
+
+function weekFrom(req) {
+  const week = Number(req.query?.week);
+  return week >= 1 && week <= 18 ? week : undefined;
+}
+
+async function resolveAccess(req, bearer) {
+  let accessToken = bearer;
+  let refreshed = null;
+
+  if (!accessToken) {
+    const resolved = await resolveYahooAccessToken(req, { forceRefresh: true });
+    accessToken = resolved.accessToken;
+    refreshed = resolved.tokenData;
+  } else {
+    // Prefer a refreshed cookie token when present so week stats never ride an expired bearer.
+    try {
+      const resolved = await resolveYahooAccessToken(req, { forceRefresh: true });
+      if (resolved?.accessToken) {
+        accessToken = resolved.accessToken;
+        refreshed = resolved.tokenData;
+      }
+    } catch {
+      // Keep the Authorization bearer when cookie refresh is unavailable.
+    }
+  }
+
+  return { accessToken, refreshed };
+}
+
 export default async function handler(req, res) {
   const secure = requestIsSecure(req);
   const bearer = bearerFrom(req);
+  const week = weekFrom(req);
 
   try {
-    let accessToken = bearer;
-    let refreshed = null;
-
-    if (!accessToken) {
-      const resolved = await resolveYahooAccessToken(req, { forceRefresh: true });
-      accessToken = resolved.accessToken;
-      refreshed = resolved.tokenData;
-    } else {
-      // Prefer a refreshed cookie token when present so week stats never ride an expired bearer.
-      try {
-        const resolved = await resolveYahooAccessToken(req, { forceRefresh: true });
-        if (resolved?.accessToken) {
-          accessToken = resolved.accessToken;
-          refreshed = resolved.tokenData;
-        }
-      } catch {
-        // Keep the Authorization bearer when cookie refresh is unavailable.
-      }
-    }
+    const { accessToken, refreshed } = await resolveAccess(req, bearer);
 
     if (!accessToken) {
       return res.status(401).json({ error: 'Missing Yahoo access token. Connect Yahoo again.' });
     }
 
-    // importYahooLeagues parses editorial_team_abbr and backfills blanks via Sleeper.
-    const leagues = await importYahooLeagues(accessToken);
+    if (wantsInspect(req)) {
+      const inspect = await inspectYahooPayload(accessToken, { week });
+      if (refreshed?.access_token) {
+        res.setHeader('Set-Cookie', yahooTokenSetCookieHeaders(secure, refreshed));
+      }
+      return res.status(200).json({ inspectYahoo: true, ...inspect });
+    }
+
+    // importYahooLeagues parses editorial_team_abbr, real league names, and week points.
+    const leagues = await importYahooLeagues(accessToken, { week });
     if (refreshed?.access_token) {
       res.setHeader('Set-Cookie', yahooTokenSetCookieHeaders(secure, refreshed));
     }
 
-    return res.status(200).json({ leagues, count: leagues.length });
+    return res.status(200).json({
+      leagues,
+      count: leagues.length,
+      week: week || leagues[0]?.lineupWeek || null
+    });
   } catch (err) {
     console.error('Sync failure:', err);
     const status = err?.status && Number.isFinite(Number(err.status)) ? Number(err.status) : 500;
