@@ -1,5 +1,6 @@
 import { Capacitor } from '@capacitor/core';
 import { activeOrProjected, isActiveEspnSlot } from './activeLineup';
+import { canonTeamCode, displayPlayerPosition } from './playerIdentity';
 import { SITE_ORIGIN } from './siteOrigin';
 
 const ESPN_ORIGIN = 'https://lm-api-reads.fantasy.espn.com';
@@ -80,7 +81,10 @@ const PRIVATE_LEAGUE_ERROR = "This ESPN league is private. Ask your commissioner
 
 function espnViewQuery(week) {
   const params = new URLSearchParams();
-  ['mMatchup', 'mRoster', 'mTeam', 'mSettings'].forEach((view) => params.append('view', view));
+  // mScoreboard carries richer weekly player stats/projections than mRoster alone.
+  ['mMatchup', 'mRoster', 'mScoreboard', 'mTeam', 'mSettings'].forEach((view) => {
+    params.append('view', view);
+  });
   params.set('scoringPeriodId', String(week));
   params.set('matchupPeriodId', String(week));
   return params.toString();
@@ -311,6 +315,20 @@ function findWeekStat(stats, weekNumber, sourceId) {
   return matches.find((stat) => Number(stat.statSplitTypeId) === 1) || matches[0] || null;
 }
 
+function bestWeekStatTotal(stats, weekNumber, sourceId) {
+  const preferred = statTotal(findWeekStat(stats, weekNumber, sourceId));
+  if (preferred != null && preferred > 0) return preferred;
+  let best = preferred;
+  (Array.isArray(stats) ? stats : []).forEach((stat) => {
+    if (!stat || Number(stat.statSourceId) !== sourceId) return;
+    if (Number(stat.scoringPeriodId) !== weekNumber) return;
+    const total = statTotal(stat);
+    if (total == null) return;
+    if (best == null || (total > 0 && !(best > 0)) || total > best) best = total;
+  });
+  return best;
+}
+
 function statLineStarted(stat) {
   if (!stat) return false;
   const total = statTotal(stat);
@@ -319,13 +337,31 @@ function statLineStarted(stat) {
   return Boolean(raw && typeof raw === 'object' && Object.keys(raw).length);
 }
 
+function espnNflTeam(player, pool) {
+  const byId = PRO_TEAM_BY_ID[Number(player?.proTeamId)];
+  if (byId) return byId;
+  const poolTeam = PRO_TEAM_BY_ID[Number(pool?.proTeamId)];
+  if (poolTeam) return poolTeam;
+  const abbr = canonTeamCode(
+    player?.proTeamAbbreviation
+    || player?.proTeam
+    || player?.team
+    || pool?.proTeamAbbreviation
+    || pool?.team
+  );
+  return abbr || '';
+}
+
 function espnScore(player, pool, weekNumber) {
   const actualStat = findWeekStat(player?.stats, weekNumber, 0);
-  const projStat = findWeekStat(player?.stats, weekNumber, 1);
-  const actual = statTotal(actualStat);
-  const projected = statTotal(projStat);
+  const actual = bestWeekStatTotal(player?.stats, weekNumber, 0);
+  let projected = bestWeekStatTotal(player?.stats, weekNumber, 1);
   const poolTotal = Number(pool?.appliedStatTotal);
   const poolPoints = Number.isFinite(poolTotal) ? poolTotal : null;
+  // appliedStatTotal on the pool is often live actual; only use as proj fallback when no actual yet.
+  if ((projected == null || projected === 0) && poolPoints != null && poolPoints > 0 && actual == null) {
+    projected = poolPoints;
+  }
   const started = statLineStarted(actualStat);
   const actualPoints = started ? (actual ?? 0) : null;
   const points = actualPoints != null ? actualPoints : (projected ?? poolPoints ?? 0);
@@ -346,17 +382,20 @@ function starterFromEntry(entry, weekNumber) {
   if (!player || typeof player !== 'object') return null;
   const positionId = Number(player.defaultPositionId);
   const slotLabel = SLOT_BY_ID[slotId] || '';
-  const position = POSITION_BY_ID[positionId] || slotLabel || 'FLEX';
-  const defense = position === 'D/ST' || slotId === 16;
-  const slot = defense ? 'D/ST' : (slotLabel || position);
-  const nflTeam = PRO_TEAM_BY_ID[Number(player.proTeamId)] || '';
+  const rawPosition = POSITION_BY_ID[positionId] || slotLabel || 'FLEX';
+  const defense = rawPosition === 'D/ST' || slotId === 16 || positionId === 16;
+  const slot = defense ? 'D/ST' : (slotLabel || rawPosition);
+  const position = defense
+    ? 'D/ST'
+    : displayPlayerPosition({ position: POSITION_BY_ID[positionId] || rawPosition, slot });
+  const nflTeam = espnNflTeam(player, pool);
   const name = playerName(player, defense, nflTeam);
   if (!name) return null;
   const score = espnScore(player, pool, weekNumber);
   return {
     name,
     slot,
-    position: defense ? 'D/ST' : position,
+    position,
     nflTeam,
     team: nflTeam,
     points: score.points,

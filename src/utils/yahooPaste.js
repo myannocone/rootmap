@@ -1,3 +1,5 @@
+import { canonTeamCode, displayPlayerPosition } from './playerIdentity';
+
 const SLOT_TOKEN_RE = /^(QB|RB|WR|TE|W\/R\/T|FLEX|K|DEF|D\/ST|DST|IDP|D|DB|DL|LB)$/i;
 const HEADER_CELL_RE = /^(stats|player|proj|pts|projected|points|pos)$/i;
 const GENERIC_YAHOO_RE = /^(my team|league|matchup|players|standings)$/i;
@@ -97,10 +99,9 @@ function isNameLine(line) {
 function parseTeamPos(line) {
   const match = String(line || '').trim().match(TEAM_POS_RE);
   if (!match) return { nflTeam: '', position: '' };
-  const raw = String(match[1] || '').trim().toUpperCase();
-  const aliases = { WSH: 'WAS', JAC: 'JAX', LA: 'LAR', OAK: 'LV', SD: 'LAC', ARZ: 'ARI', SFO: 'SF' };
+  const rawTeam = match[1].toUpperCase();
   return {
-    nflTeam: aliases[raw] || raw,
+    nflTeam: canonTeamCode(rawTeam) || rawTeam,
     position: normalizePosition(match[2])
   };
 }
@@ -236,15 +237,21 @@ function readScorePair(nums, projFirst) {
 
 function toStarterRecord(player, side) {
   const isMine = side === 'mine';
-  const proj = player.projPoints ?? player.points ?? 0;
+  const explicitProj = player.projPoints;
+  const storedPoints = player.points;
+  const proj = explicitProj != null
+    ? explicitProj
+    : (storedPoints != null && Number(storedPoints) !== 0 ? storedPoints : null);
   const actual = player.actualPoints ?? null;
+  const slot = player.slot || player.position;
+  const teamRaw = player.nflTeam || player.team || '';
   return {
     name: cleanYahooPlayerName(player.name),
-    nflTeam: player.nflTeam,
-    position: player.position,
-    slot: player.slot || player.position,
+    nflTeam: canonTeamCode(teamRaw) || String(teamRaw || '').toUpperCase(),
+    position: displayPlayerPosition({ position: player.position, slot }),
+    slot,
     points: actual ?? proj ?? 0,
-    projPoints: proj ?? 0,
+    projPoints: proj,
     actualPoints: actual,
     isLive: /^(1st|2nd|3rd|4th|OT|Q)/i.test(player.gameClock || ''),
     inRedZone: false,

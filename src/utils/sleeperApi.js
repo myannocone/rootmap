@@ -1,4 +1,5 @@
 import { resolveNflTeam } from './leagueParser.js';
+import { canonTeamCode, displayPlayerPosition, normalizePlayerMatchName } from './playerIdentity.js';
 import { activeOrProjected } from './activeLineup.js';
 
 const SLEEPER_BASE = 'https://api.sleeper.app/v1';
@@ -81,15 +82,11 @@ export function sleeperLineStarted(line) {
 }
 
 function normalizePlayerName(name) {
-  return String(name || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  return normalizePlayerMatchName(name);
 }
 
 function sleeperTeam(value) {
-  const key = String(value || '').trim().toUpperCase();
-  if (key === 'WSH' || key === 'WAS') return 'WAS';
-  if (key === 'JAC') return 'JAX';
-  if (key === 'LA') return 'LAR';
-  return key;
+  return canonTeamCode(value) || String(value || '').trim().toUpperCase();
 }
 
 export function buildSleeperLiveIndex(stats, projections, players = {}, onlyIds = null) {
@@ -179,8 +176,6 @@ export function sleeperLiveNumbers(player, bundle) {
     team: resolveNflTeam(live.team) || sleeperTeam(live.team) || null
   };
 }
-
-export { sleeperTeam };
 
 export function prefetchSleeperPlayers() {
   if (playerDirectoryCache) return Promise.resolve(playerDirectoryCache);
@@ -280,8 +275,11 @@ function starterFromId(playerId, slotHint, score, players) {
   const meta = players?.[playerId] || players?.[String(playerId)] || {};
   const defense = isDefense(playerId, meta, slotHint);
   const slot = defense ? 'D/ST' : (slotHint || meta.position || 'FLEX');
-  const position = defense ? 'D/ST' : (meta.position || slot);
-  const nflTeam = meta.team || (defense ? String(playerId).toUpperCase() : '');
+  const position = defense
+    ? 'D/ST'
+    : displayPlayerPosition({ position: meta.position || slot, slot });
+  const teamRaw = meta.team || (defense ? String(playerId).toUpperCase() : '');
+  const nflTeam = resolveNflTeam(teamRaw) || sleeperTeam(teamRaw) || '';
   const person = meta.full_name || [meta.first_name, meta.last_name].filter(Boolean).join(' ').trim();
   const name = defense
     ? `${meta.last_name || meta.first_name || nflTeam || playerId} D/ST`

@@ -1,7 +1,7 @@
 import { registerPlugin } from '@capacitor/core';
 import { resolveNflTeam } from './leagueParser';
+import { canonTeamCode, displayPlayerPosition } from './playerIdentity';
 import { cleanYahooPlayerName, parseYahooMatchupText } from './yahooPaste';
-import { canonTeamCode } from './playerTeam';
 
 export const YahooLogin = registerPlugin('YahooLogin');
 
@@ -124,18 +124,22 @@ function starterFromStructured(player, side) {
   const name = cleanYahooPlayerName(player?.name);
   if (!name || isOpponentLabel(name)) return null;
   const actualPoints = numberOrNull(player.actualPoints ?? player.points);
+  const projPoints = numberOrNull(player.projPoints ?? player.projectedPoints ?? player.projected);
+  const teamRaw = player.nflTeam || player.team || '';
+  const nflTeam = canonTeamCode(teamRaw)
+    || resolveNflTeam(teamRaw)
+    || String(teamRaw || '').trim().toUpperCase();
+  const slot = player.slot || player.position || '';
+  const position = displayPlayerPosition({ position: player.position || slot, slot });
   const isMine = side === 'mine';
-  const nflTeam = canonTeamCode(player.nflTeam || player.team)
-    || resolveNflTeam(player.nflTeam || player.team)
-    || String(player.nflTeam || player.team || '').trim().toUpperCase();
   return {
     name,
     nflTeam,
     team: nflTeam,
-    position: player.position || player.slot || '',
-    slot: player.slot || player.position || '',
-    points: actualPoints ?? 0,
-    projPoints: null,
+    position,
+    slot,
+    points: actualPoints ?? projPoints ?? 0,
+    projPoints,
     actualPoints,
     isLive: /^(Q[1-4]|OT|Halftime)/i.test(player.gameClock || ''),
     inRedZone: false,

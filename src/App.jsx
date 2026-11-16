@@ -5,6 +5,15 @@ import { fetchLiveNFLSlate, gamePhase } from './services/espnScoreboard';
 import { FALLBACK_NFL_WEEK, getActiveSlate, getSlateByWeek } from './data/nflSchedule';
 import { isEspnMatchupText, parseEspnMatchupText, resolveNflTeam } from './utils/leagueParser';
 import {
+  displayPlayerPosition,
+  normalizePlayerMatchName,
+  playerMatchKey,
+  playerPosTeamLabel,
+  positionsCompatible,
+  preferFiniteNumber,
+  preferTeamCode
+} from './utils/playerIdentity';
+import {
   backfillPlayerTeam,
   canonTeamCode,
   needsTeamBackfill,
@@ -706,9 +715,10 @@ function TrashIcon() {
   );
 }
 
-function playerCardKey(name, nflTeam) {
-  const team = knownTeam(nflTeam);
-  return `${String(name || '').trim().toLowerCase()}|${team}`;
+function playerCardKey(name, nflTeam, position = '', slot = '') {
+  const match = playerMatchKey(name, position, slot);
+  const team = resolveNflTeam(nflTeam) || canonTeamCode(nflTeam);
+  return team ? `${match}|${team}` : match;
 }
 
 function knownTeam(value) {
@@ -722,21 +732,53 @@ function resolvePlayerTeam(player, sleeperPlayers = null, teamIndex = null) {
 
 function buildPlayerMasterIndex(leagueList, games = [], defenseLeagues = null, liveScores = null, sleeperPlayers = null) {
   const map = new Map();
+  const byName = new Map();
   const teamIndex = sleeperPlayers ? sleeperTeamIndexFrom(sleeperPlayers) : null;
 
+  const registerName = (nameKey, item) => {
+    const list = byName.get(nameKey) || [];
+    if (!list.includes(item)) list.push(item);
+    byName.set(nameKey, list);
+  };
+
+  const findExisting = (nameKey, team, position, slot) => {
+    const candidates = byName.get(nameKey) || [];
+    if (!candidates.length) return null;
+    const compatible = candidates.filter((item) => (
+      positionsCompatible(position, slot, item.position, item.slot)
+    ));
+    const pool = compatible.length ? compatible : candidates;
+    if (team) {
+      const exact = pool.find((item) => knownTeam(item.nflTeam) === team);
+      if (exact) return exact;
+      const blank = pool.find((item) => !knownTeam(item.nflTeam));
+      if (blank) return blank;
+      // Do not split on empty vs filled team; only keep separate when both have different teams.
+      return null;
+    }
+    if (pool.length === 1) return pool[0];
+    return pool.find((item) => knownTeam(item.nflTeam)) || pool[0];
+  };
+
   const getOrCreate = (name, nflTeam, position, points = 0, isLive = false, inRedZone = false, gameClock = 'Scheduled', bigPlay = null, sourcePlayer = null) => {
+    const slot = sourcePlayer?.slot || '';
     const team = resolvePlayerTeam(
-      { name, nflTeam, team: nflTeam, position, slot: sourcePlayer?.slot },
+      { name, nflTeam, team: nflTeam, position, slot },
       sleeperPlayers,
       teamIndex
     ) || knownTeam(nflTeam);
-    const key = playerCardKey(name, team);
-    if (!map.has(key)) {
-      map.set(key, {
+    const nameKey = normalizePlayerMatchName(name);
+    const matchKey = playerMatchKey(name, position, slot);
+    let item = findExisting(nameKey, team, position, slot);
+    if (!item) {
+      const key = playerCardKey(name, team, position, slot);
+      item = {
         cardKey: key,
+        matchKey,
         name,
         nflTeam: team || String(nflTeam || '').trim(),
-        position,
+        position: displayPlayerPosition({ position, slot }) || position,
+        slot: slot || position || '',
         points,
         isLive,
         inRedZone,
@@ -746,11 +788,28 @@ function buildPlayerMasterIndex(leagueList, games = [], defenseLeagues = null, l
         myLeagues: [],
         oppShares: 0,
         oppLeagues: []
-      });
+      };
+      map.set(key, item);
+      registerName(nameKey, item);
+    } else {
+      registerName(nameKey, item);
+      const mergedTeam = preferTeamCode(item.nflTeam, team || nflTeam);
+      if (mergedTeam && knownTeam(mergedTeam) && knownTeam(mergedTeam) !== knownTeam(item.nflTeam)) {
+        const oldKey = item.cardKey;
+        item.nflTeam = knownTeam(mergedTeam);
+        item.cardKey = playerCardKey(item.name, item.nflTeam, item.position, item.slot);
+        if (oldKey !== item.cardKey) {
+          map.delete(oldKey);
+          map.set(item.cardKey, item);
+        }
+      } else if (mergedTeam && (needsTeamBackfill(item.nflTeam) || !knownTeam(item.nflTeam))) {
+        item.nflTeam = knownTeam(mergedTeam) || mergedTeam;
+      }
+      const shownPos = displayPlayerPosition({ position, slot: slot || item.slot });
+      if (shownPos && (!item.position || item.position === 'FLEX' || item.position === 'OP')) {
+        item.position = shownPos;
+      }
     }
-    const item = map.get(key);
-    if (team && needsTeamBackfill(item.nflTeam)) item.nflTeam = team;
-    else if (team && !knownTeam(item.nflTeam)) item.nflTeam = team;
     if (points || isLive) item.points = points;
     if (isLive) item.isLive = true;
     if (inRedZone) item.inRedZone = true;
@@ -760,16 +819,22 @@ function buildPlayerMasterIndex(leagueList, games = [], defenseLeagues = null, l
   };
 
   const rememberScore = (item, player) => {
-    if (player?.projPoints != null && Number.isFinite(Number(player.projPoints))) {
-      item.projPoints = Number(player.projPoints);
-    }
-    if (player?.actualPoints != null && Number.isFinite(Number(player.actualPoints))) {
-      item.actualPoints = Number(player.actualPoints);
-    }
+    item.projPoints = preferFiniteNumber(item.projPoints, player?.projPoints ?? player?.projected, { preferPositive: true });
+    item.actualPoints = preferFiniteNumber(item.actualPoints, player?.actualPoints, { preferPositive: true });
     if (player?.sleeperId) item.sleeperId = String(player.sleeperId);
     if (player?.scoringKey) item.scoringKey = player.scoringKey;
-    const team = resolvePlayerTeam(player, sleeperPlayers, teamIndex);
-    if (team && needsTeamBackfill(item.nflTeam)) item.nflTeam = team;
+    const team = resolvePlayerTeam(player, sleeperPlayers, teamIndex) || preferTeamCode(item.nflTeam, player?.nflTeam || player?.team);
+    if (team && knownTeam(team) && knownTeam(team) !== knownTeam(item.nflTeam)) {
+      const oldKey = item.cardKey;
+      item.nflTeam = knownTeam(team);
+      item.cardKey = playerCardKey(item.name, item.nflTeam, item.position, item.slot || player?.slot);
+      if (oldKey !== item.cardKey) {
+        map.delete(oldKey);
+        map.set(item.cardKey, item);
+      }
+    } else if (team && (needsTeamBackfill(item.nflTeam) || !knownTeam(item.nflTeam))) {
+      item.nflTeam = knownTeam(team) || team;
+    }
   };
 
   (leagueList || []).forEach((lg) => {
@@ -1004,9 +1069,11 @@ function applyLiveToPlayer(player, games, liveScores, now = new Date(), sleeperP
     player.opponent = 'BYE';
     player.gameClock = 'Bye';
     live = sleeperLiveNumbers(player, liveScores) || live;
-    if (live?.proj != null) player.projPoints = live.proj;
-    if (live?.team && needsTeamBackfill(player.nflTeam)) {
-      player.nflTeam = knownTeam(live.team) || live.team;
+    if (live?.proj != null) {
+      player.projPoints = preferFiniteNumber(player.projPoints, live.proj, { preferPositive: true });
+    }
+    if (live?.team && (needsTeamBackfill(player.nflTeam) || !knownTeam(player.nflTeam))) {
+      player.nflTeam = preferTeamCode(player.nflTeam, live.team) || knownTeam(live.team) || live.team;
       player.team = player.nflTeam;
     }
     return player;
@@ -1024,17 +1091,19 @@ function applyLiveToPlayer(player, games, liveScores, now = new Date(), sleeperP
     if (clock) player.gameClock = clock;
   }
   live = sleeperLiveNumbers(player, liveScores) || live;
-  if (live?.team && needsTeamBackfill(player.nflTeam)) {
-    player.nflTeam = knownTeam(live.team) || live.team;
+  if (live?.team && (needsTeamBackfill(player.nflTeam) || !knownTeam(player.nflTeam))) {
+    player.nflTeam = preferTeamCode(player.nflTeam, live.team) || knownTeam(live.team) || live.team;
     player.team = player.nflTeam;
   }
-  if (live?.proj != null) player.projPoints = live.proj;
+  if (live?.proj != null) {
+    player.projPoints = preferFiniteNumber(player.projPoints, live.proj, { preferPositive: true });
+  }
   player.zeroProjection = Boolean(starterProjectionStatus(player, { games, liveScores, now })?.zero);
   const storedActual = finiteNumber(player.actualPoints);
   const needsPublicLine = !player.sleeperId && (storedActual == null || storedActual === 0);
   if (live?.actual != null && live.started && phase !== 'UPCOMING' && (player.sleeperId || needsPublicLine)) {
-    player.actualPoints = live.actual;
-    player.points = live.actual;
+    player.actualPoints = preferFiniteNumber(player.actualPoints, live.actual, { preferPositive: true });
+    if (finiteNumber(player.actualPoints) != null) player.points = player.actualPoints;
   }
   return player;
 }
@@ -1044,20 +1113,7 @@ function decorateStoredPlayer(player, games, liveScores, sleeperPlayers = null) 
 }
 
 function lookupMasterPlayerStats(player, masterIndex) {
-  if (!player || !masterIndex) return null;
-  const team = knownTeam(player.nflTeam || player.team);
-  const direct = masterIndex.get(playerCardKey(player.name, team));
-  if (direct) return direct;
-  const nameKey = String(player.name || '').trim().toLowerCase();
-  if (!nameKey) return null;
-  let fallback = null;
-  masterIndex.forEach((entry) => {
-    if (fallback) return;
-    if (String(entry?.name || '').trim().toLowerCase() !== nameKey) return;
-    if (team && knownTeam(entry.nflTeam) && knownTeam(entry.nflTeam) !== team) return;
-    fallback = entry;
-  });
-  return fallback;
+  return findMasterCard(masterIndex, player);
 }
 
 /** Enrich Matchups starters with the same Sleeper/live stats RootMap uses, then re-sum team totals. */
@@ -1138,7 +1194,9 @@ function liveScoreView(player) {
     ? explicitProj
     : (actual == null && stored != null && stored !== 0 ? stored : null);
   const hasActual = actual != null && (live || finalGame);
-  const shown = hasActual ? actual : (live ? 0 : (stored ?? 0));
+  const pregameValue = proj != null ? proj : (stored != null && stored !== 0 ? stored : null);
+  const unknownProj = !bye && !live && !finalGame && pregameValue == null;
+  const shown = hasActual ? actual : (live ? 0 : (pregameValue ?? 0));
   const delta = hasActual && proj != null ? actual - proj : null;
   return {
     live,
@@ -1147,6 +1205,7 @@ function liveScoreView(player) {
     shown,
     proj,
     delta,
+    unknownProj,
     awaiting: live && !hasActual,
     showProj: Boolean((live || finalGame) && proj != null && (live || hasActual))
   };
@@ -1247,6 +1306,7 @@ function LivePoints({ player, isLight, tone = 'for', layout = 'inline', onScoreJ
     const preGame = !view.live && !view.final && !view.bye;
     const scoreLabel = view.bye ? 'BYE' : (view.live || view.final) ? 'PTS' : 'PROJ';
     const mainShown = preGame && view.proj != null ? view.proj : view.shown;
+    const showDash = Boolean(view.unknownProj || (preGame && view.proj == null && !(mainShown > 0)));
     const projLine = (view.live || view.final) && view.proj != null
       ? (deltaText ? `Proj ${view.proj.toFixed(1)} (${deltaText})` : `Proj ${view.proj.toFixed(1)}`)
       : null;
@@ -1254,7 +1314,7 @@ function LivePoints({ player, isLight, tone = 'for', layout = 'inline', onScoreJ
       <div className="relative text-right shrink-0 leading-none min-w-0">
         {floatNode}
         <div className={`font-black tabular-nums text-[15px] tracking-tight ${color} ${scorePop ? 'rootmap-score-pop' : ''}`}>
-          {mainShown.toFixed(1)}
+          {showDash ? '—' : mainShown.toFixed(1)}
           <span className={`ml-0.5 text-[9px] font-black uppercase ${muted}`}>{scoreLabel}</span>
         </div>
         {projLine && (
@@ -1473,8 +1533,8 @@ function RosterCard({
           </div>
           {/* Row 2: POS • TEAM left, score + Proj differential right */}
           <div className="mt-0.5 flex items-start justify-between gap-2 min-w-0">
-            <div className={`min-w-0 text-[9px] font-bold leading-tight ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
-              {player.position} • {knownTeam(player.nflTeam) || player.nflTeam || ''}
+            <div className={`min-w-0 text-[9px] font-bold leading-tight whitespace-nowrap ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+              {playerPosTeamLabel(player)}
             </div>
             <LivePoints
               player={player}
@@ -1744,6 +1804,24 @@ function defenseFaces(defPlayer, games, offenseTeam) {
   return defenseOpponentTeam(defPlayer?.nflTeam, games) === offenseTeam;
 }
 
+function findMasterCard(playerMap, player) {
+  if (!player || !playerMap) return null;
+  if (player.cardKey && playerMap.get(player.cardKey)) return playerMap.get(player.cardKey);
+  const direct = playerMap.get(playerCardKey(player.name, player.nflTeam || player.team, player.position, player.slot));
+  if (direct) return direct;
+  const nameKey = normalizePlayerMatchName(player.name);
+  const team = knownTeam(player.nflTeam || player.team);
+  let fallback = null;
+  for (const item of playerMap.values()) {
+    if (normalizePlayerMatchName(item.name) !== nameKey) continue;
+    if (!positionsCompatible(player.position, player.slot, item.position, item.slot)) continue;
+    if (team && knownTeam(item.nflTeam) && knownTeam(item.nflTeam) !== team) continue;
+    if (team && knownTeam(item.nflTeam) === team) return item;
+    if (!fallback) fallback = item;
+  }
+  return fallback;
+}
+
 function markExposureTags(playerMap, leagueList, games) {
   playerMap.forEach((player) => {
     player.friendlyFire = false;
@@ -1761,7 +1839,7 @@ function markExposureTags(playerMap, leagueList, games) {
     const oppDefs = theirs.filter((player) => isTeamDefense(player));
     mine.filter((player) => isUserScoringStarter(player)).forEach((player) => {
       const team = canonTeam(player.nflTeam);
-      const card = playerMap.get(playerCardKey(player.name, team));
+      const card = findMasterCard(playerMap, player);
       if (!card || !team) return;
       if (myDefs.some((def) => defenseFaces(def, games, team))) {
         card.friendlyFire = true;
@@ -1879,13 +1957,7 @@ const NFL_TEAM_SECONDARY = {
 let headshotIndexMemory = null;
 
 function normalizePlayerName(name) {
-  return cleanYahooPlayerName(name)
-    .toLowerCase()
-    .replace(/['’.]/g, '')
-    .replace(/\b(jr|sr|ii|iii|iv|v)\b/g, '')
-    .replace(/[^a-z0-9\s-]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
+  return normalizePlayerMatchName(cleanYahooPlayerName(name) || name);
 }
 
 function getPlayerInitials(playerName) {
@@ -3379,11 +3451,7 @@ export default function App() {
   }, [playerMasterIndex]);
 
   const drawerPlayer = selectedPlayer
-    ? (
-      playerMasterIndex.get(selectedPlayer.cardKey)
-      || playerMasterIndex.get(playerCardKey(selectedPlayer.name, selectedPlayer.nflTeam))
-      || selectedPlayer
-    )
+    ? (findMasterCard(playerMasterIndex, selectedPlayer) || selectedPlayer)
     : null;
 
   const rankedBoard = useMemo(() => {
@@ -4225,7 +4293,7 @@ export default function App() {
                                 <PlayerHeadshot key={`${player.name}-${headshotTick}`} name={player.name} team={player.nflTeam} defense={isTeamDefense(player)} size={28} />
                                 <div className="min-w-0">
                                   <div className={`font-extrabold text-[12px] truncate leading-tight ${isLight ? 'text-slate-900' : 'text-white'}`}>{player.name}</div>
-                                  <div className={`text-[9px] font-bold ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>{player.position} • {player.nflTeam}</div>
+                                  <div className={`text-[9px] font-bold whitespace-nowrap ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>{playerPosTeamLabel(player)}</div>
                                   <SlateLeaguePills exposure={exposure} isLight={isLight} />
                                 </div>
                               </div>
@@ -4548,7 +4616,7 @@ export default function App() {
                   )}
                 </h3>
                 <div className={`text-xs font-semibold flex flex-wrap items-center gap-2 mt-0.5 ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
-                  <span>{drawerPlayer.position} • {drawerPlayer.nflTeam}</span>
+                  <span className="whitespace-nowrap">{playerPosTeamLabel(drawerPlayer)}</span>
                   <span>•</span>
                   <LivePoints player={drawerPlayer} isLight={isLight} />
                   <span>•</span>
