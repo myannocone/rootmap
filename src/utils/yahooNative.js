@@ -1,4 +1,5 @@
 import { registerPlugin } from '@capacitor/core';
+import { resolveNflTeam } from './leagueParser';
 import { canonTeamCode, displayPlayerPosition } from './playerIdentity';
 import { cleanYahooPlayerName, parseYahooMatchupText } from './yahooPaste';
 
@@ -125,13 +126,16 @@ function starterFromStructured(player, side) {
   const actualPoints = numberOrNull(player.actualPoints ?? player.points);
   const projPoints = numberOrNull(player.projPoints ?? player.projectedPoints ?? player.projected);
   const teamRaw = player.nflTeam || player.team || '';
-  const nflTeam = canonTeamCode(teamRaw) || String(teamRaw || '').toUpperCase();
+  const nflTeam = canonTeamCode(teamRaw)
+    || resolveNflTeam(teamRaw)
+    || String(teamRaw || '').trim().toUpperCase();
   const slot = player.slot || player.position || '';
   const position = displayPlayerPosition({ position: player.position || slot, slot });
   const isMine = side === 'mine';
   return {
     name,
     nflTeam,
+    team: nflTeam,
     position,
     slot,
     points: actualPoints ?? projPoints ?? 0,

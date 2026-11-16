@@ -1,7 +1,22 @@
 import { App } from '@capacitor/app';
 import { Browser } from '@capacitor/browser';
+import { isGenericYahooLeagueName, preferYahooLeagueName } from './utils/yahooSync';
 
 const LEAGUES_KEY = 'rootmap_leagues';
+
+function mergeOne(prev, next) {
+  if (!next) return prev;
+  if (!prev) return next;
+  const name = preferYahooLeagueName(next.leagueName, next.name, prev.leagueName, prev.name);
+  return {
+    ...prev,
+    ...next,
+    id: prev.id || next.id,
+    name,
+    leagueName: name,
+    myTeamName: preferYahooLeagueName(next.myTeamName, prev.myTeamName) || name
+  };
+}
 
 function mergeLeagues(incoming) {
   let existing = [];
@@ -17,7 +32,20 @@ function mergeLeagues(incoming) {
     byId.set(league.id ? String(league.id) : `legacy-${index}`, league);
   });
   incoming.forEach((league) => {
-    if (league?.id) byId.set(String(league.id), league);
+    if (!league?.id) return;
+    byId.set(String(league.id), mergeOne(byId.get(String(league.id)), league));
+  });
+  incoming.forEach((league) => {
+    if (!league) return;
+    const leagueKey = String(league.leagueKey || league.yahooLeagueId || '');
+    if (!leagueKey) return;
+    byId.forEach((saved, id) => {
+      const savedKey = String(saved.leagueKey || saved.yahooLeagueId || '');
+      if (savedKey !== leagueKey || id === String(league.id)) return;
+      if (isGenericYahooLeagueName(saved.name) || isGenericYahooLeagueName(saved.leagueName)) {
+        byId.set(id, mergeOne(saved, { ...league, id: saved.id }));
+      }
+    });
   });
   localStorage.setItem(LEAGUES_KEY, JSON.stringify([...byId.values()]));
 }

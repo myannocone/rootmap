@@ -5,7 +5,6 @@ import { fetchLiveNFLSlate, gamePhase } from './services/espnScoreboard';
 import { FALLBACK_NFL_WEEK, getActiveSlate, getSlateByWeek } from './data/nflSchedule';
 import { isEspnMatchupText, parseEspnMatchupText, resolveNflTeam } from './utils/leagueParser';
 import {
-  canonTeamCode,
   displayPlayerPosition,
   normalizePlayerMatchName,
   playerMatchKey,
@@ -14,6 +13,12 @@ import {
   preferFiniteNumber,
   preferTeamCode
 } from './utils/playerIdentity';
+import {
+  backfillPlayerTeam,
+  canonTeamCode,
+  needsTeamBackfill,
+  sleeperTeamIndexFrom
+} from './utils/playerTeam';
 import { cleanYahooPlayerName, parseYahooMatchupText } from './utils/yahooPaste';
 import {
   fetchNflState,
@@ -35,6 +40,12 @@ import {
   writeYahooSession,
   YahooLogin
 } from './utils/yahooNative';
+import {
+  isGenericYahooLeagueName,
+  preferYahooLeagueName,
+  syncYahooLeaguesFromApi,
+  yahooLeagueIdOf
+} from './utils/yahooSync';
 import { SITE_ORIGIN } from './utils/siteOrigin';
 import { Capacitor } from '@capacitor/core';
 import { notifyCrossFire, notifyZeroProjectionAlerts, prepareCrossFireAlerts, prepareZeroProjectionAlerts, tapHaptic } from './utils/nativeFeedback';
@@ -64,7 +75,8 @@ const MISSING_OPPONENT_NAME = 'Opponent';
 
 const ROOTING_LEGEND = [
   { icon: '🟢', title: 'Root For', detail: 'Started only on your rosters.' },
-  { icon: '🟢', title: 'Double Down (+2 or more)', detail: 'Started on multiple of your rosters.' },
+  { icon: '🔥', title: 'Double Down (2X+ FOR)', detail: 'Started on 2+ of your rosters — multi-league leverage.' },
+  { icon: '🚨', title: 'Double Down (2X+ AGAINST)', detail: 'Started by opponents in 2+ leagues — shared threat.' },
   { icon: '🔴', title: 'Root Against', detail: 'Started only by an opponent.' },
   { icon: '⚡', title: 'Cross Fire', detail: 'The same player is in your starters and an opponent’s starters.' },
   { icon: '🎯', title: 'Double Dip', detail: 'Offense vs Opponent DEF (Dual point swing on TDs).' },
@@ -113,11 +125,64 @@ function getLeagueThreats(lg) {
 }
 
 function getLeagueDisplayName(lg) {
-  return lg?.name || lg?.myTeamName || lg?.userTeam?.name || 'My Team';
+  const teamName = String(lg?.myTeamName || lg?.userTeam?.name || '').trim();
+  const candidates = [lg?.leagueName, lg?.name];
+  for (const candidate of candidates) {
+    const name = String(candidate || '').trim();
+    if (!name || isGenericYahooLeagueName(name)) continue;
+    // Yahoo sync used to fall back to the team name ("YANNACONDA") as the league name.
+    if (teamName && name === teamName) continue;
+    return name;
+  }
+  for (const candidate of candidates) {
+    const name = String(candidate || '').trim();
+    if (name && !isGenericYahooLeagueName(name)) return name;
+  }
+  return 'Yahoo League';
 }
 
 function getUserTeamName(lg) {
-  return lg?.myTeamName || lg?.userTeam?.name || getLeagueDisplayName(lg);
+  const team = preferYahooLeagueName(lg?.myTeamName, lg?.userTeam?.name);
+  if (team && !isGenericYahooLeagueName(team)) return team;
+  return team || 'My Team';
+}
+
+function sumActiveStarterPoints(starters) {
+  return listedStarters(starters).reduce((sum, player) => {
+    const actual = finiteNumber(player?.actualPoints);
+    if (actual != null && actual !== 0) return sum + actual;
+    return sum + (finiteNumber(player?.points) || 0);
+  }, 0);
+}
+
+function sumActiveStarterProjections(starters) {
+  return listedStarters(starters).reduce((sum, player) => {
+    const proj = finiteNumber(player?.projPoints)
+      ?? finiteNumber(player?.projected)
+      ?? finiteNumber(player?.projectedPoints);
+    return sum + (proj != null ? proj : 0);
+  }, 0);
+}
+
+function leagueSideScore(league, side = 'my') {
+  const top = side === 'opp' ? league?.oppScore : league?.myScore;
+  const parsed = finiteNumber(top);
+  if (parsed != null && parsed !== 0) return parsed;
+  const starters = side === 'opp' ? getLeagueThreats(league) : getLeaguePortfolio(league);
+  const fromStarters = sumActiveStarterPoints(starters);
+  if (fromStarters > 0) return fromStarters;
+  return parsed ?? 0;
+}
+
+function leagueFilterLabel(lg, leagues = []) {
+  const name = getLeagueDisplayName(lg);
+  const duplicates = (leagues || []).filter((other) => getLeagueDisplayName(other) === name);
+  if (duplicates.length <= 1) return name;
+  const team = getUserTeamName(lg);
+  if (team && team !== name) return `${name} · ${team}`;
+  const platform = String(lg?.platform || '').trim();
+  if (platform) return `${name} · ${platform}`;
+  return name;
 }
 
 function ordinalRank(value) {
@@ -146,8 +211,14 @@ function teamSeasonDetail(record, rank) {
 
 function starterActualLabel(player) {
   const actual = finiteNumber(player?.actualPoints);
-  if (actual == null) return '—';
-  return scoreText(actual);
+  const liveOrFinal = starterIsLive(player) || starterIsFinal(player);
+  // Yahoo often stores actualPoints: 0 pre-kickoff; only show a real line once live/final or non-zero.
+  if (actual != null && (liveOrFinal || actual !== 0)) return scoreText(actual);
+  const points = finiteNumber(player?.points);
+  const proj = finiteNumber(player?.projPoints);
+  // points often mirrors projection before kickoff — keep the dash in that case.
+  if (points == null || points === 0 || (proj != null && points === proj)) return '—';
+  return scoreText(points);
 }
 
 function leagueSideRecord(league, side) {
@@ -200,8 +271,8 @@ function sideLiveProjection(starters, liveScore, leagueProj) {
 }
 
 function matchupOutlook(league) {
-  const myLive = finiteNumber(league?.myScore) ?? 0;
-  const oppLive = finiteNumber(league?.oppScore) ?? 0;
+  const myLive = leagueSideScore(league, 'my');
+  const oppLive = leagueSideScore(league, 'opp');
   const mySide = sideLiveProjection(getLeaguePortfolio(league), myLive, league?.myProj ?? league?.myProjected);
   const oppSide = sideLiveProjection(getLeagueThreats(league), oppLive, league?.oppProj ?? league?.oppProjected);
   const myTotal = mySide.projected;
@@ -324,7 +395,7 @@ function MatchupLineups({ league, week, isLight }) {
             {player.name}
           </div>
           <div className={`truncate text-[9px] font-bold tabular-nums ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
-            {[canonTeamCode(player.nflTeam || player.team) || String(player.nflTeam || player.team || '').toUpperCase(), starterActualLabel(player)].filter(Boolean).join(' · ')}
+            {[knownTeam(player.nflTeam || player.team) || String(player.nflTeam || player.team || '').toUpperCase(), starterActualLabel(player)].filter(Boolean).join(' · ')}
           </div>
         </>
       ) : (
@@ -407,8 +478,8 @@ function LeagueScoreboard({ league, isLight, onRemove }) {
   const myName = getUserTeamName(league);
   const oppName = getLeagueOppName(league);
   const leagueName = getLeagueDisplayName(league);
-  const myScore = finiteNumber(league?.myScore) ?? 0;
-  const oppScore = finiteNumber(league?.oppScore) ?? 0;
+  const myScore = leagueSideScore(league, 'my');
+  const oppScore = leagueSideScore(league, 'opp');
   const mine = leagueSideRecord(league, 'my');
   const opp = leagueSideRecord(league, 'opp');
   const outlook = matchupOutlook(league);
@@ -503,17 +574,28 @@ function cleanListedPlayer(player) {
   return { ...player, name };
 }
 
+function normalizeListedPlayer(player) {
+  const cleaned = cleanListedPlayer(player);
+  if (!cleaned || typeof cleaned !== 'object') return cleaned;
+  const team = knownTeam(cleaned.nflTeam || cleaned.team);
+  if (!team || (cleaned.nflTeam === team && cleaned.team === team)) return cleaned;
+  return { ...cleaned, nflTeam: team, team };
+}
+
 function normalizeLeague(lg, index = 0) {
   if (!lg || typeof lg !== 'object') return null;
-  const portfolio = getLeaguePortfolio(lg).map(cleanListedPlayer);
-  const threats = getLeagueThreats(lg).map(cleanListedPlayer);
-  const name = getLeagueDisplayName(lg) || `League ${index + 1}`;
+  const portfolio = getLeaguePortfolio(lg).map(normalizeListedPlayer);
+  const threats = getLeagueThreats(lg).map(normalizeListedPlayer);
+  const myTeamName = preferYahooLeagueName(lg.myTeamName, lg.userTeam?.name) || 'My Team';
+  const name = getLeagueDisplayName({ ...lg, myTeamName }) || `League ${index + 1}`;
   const oppTeamName = getLeagueOppName(lg);
   return {
     ...lg,
     id: lg.id || `lg_${Date.now()}_${index}`,
     name,
-    myTeamName: lg.myTeamName || name,
+    leagueName: preferYahooLeagueName(lg.leagueName, name),
+    myTeamName: isGenericYahooLeagueName(myTeamName) ? 'My Team' : myTeamName,
+    teamName: preferYahooLeagueName(lg.teamName, myTeamName),
     oppTeamName,
     opponent: lg.opponent || oppTeamName,
     platform: lg.platform || 'Yahoo',
@@ -527,6 +609,48 @@ function normalizeLeague(lg, index = 0) {
     starters: portfolio,
     opponentStarters: threats
   };
+}
+
+function yahooLeagueNameCandidate(league, teamName) {
+  const team = String(teamName || league?.myTeamName || '').trim();
+  for (const candidate of [league?.leagueName, league?.name]) {
+    const name = String(candidate || '').trim();
+    if (!name || isGenericYahooLeagueName(name)) continue;
+    if (team && name === team) continue;
+    return name;
+  }
+  return '';
+}
+
+function mergeYahooSyncedLeague(existing, incoming) {
+  if (!incoming) return existing;
+  if (!existing) return normalizeLeague(incoming);
+  const teamName = preferYahooLeagueName(incoming.myTeamName, existing.myTeamName, incoming.teamName, existing.teamName);
+  const name = yahooLeagueNameCandidate(incoming, teamName)
+    || yahooLeagueNameCandidate(existing, teamName)
+    || preferYahooLeagueName(incoming.leagueName, existing.leagueName, incoming.name, existing.name)
+    || 'Yahoo League';
+  return normalizeLeague({
+    ...existing,
+    ...incoming,
+    id: existing.id,
+    name,
+    leagueName: name,
+    teamName,
+    yahooLeagueId: existing.yahooLeagueId || incoming.yahooLeagueId || incoming.leagueKey,
+    yahooTeamId: existing.yahooTeamId || incoming.yahooTeamId || incoming.teamKey,
+    yahooMatchupUrl: incoming.yahooMatchupUrl || existing.yahooMatchupUrl,
+    myTeamName: teamName,
+    oppTeamName: incoming.oppTeamName || existing.oppTeamName,
+    portfolio: incoming.portfolio || incoming.starters || existing.portfolio,
+    threats: incoming.threats || incoming.opponentStarters || existing.threats,
+    starters: incoming.starters || incoming.portfolio || existing.starters,
+    opponentStarters: incoming.opponentStarters || incoming.threats || existing.opponentStarters,
+    myScore: incoming.myScore ?? existing.myScore,
+    oppScore: incoming.oppScore ?? existing.oppScore,
+    myProj: incoming.myProj ?? existing.myProj,
+    oppProj: incoming.oppProj ?? existing.oppProj
+  });
 }
 
 function leagueNameKey(lg) {
@@ -601,9 +725,15 @@ function knownTeam(value) {
   return resolveNflTeam(value) || canonTeamCode(value) || '';
 }
 
-function buildPlayerMasterIndex(leagueList, games = [], defenseLeagues = null, liveScores = null) {
+function resolvePlayerTeam(player, sleeperPlayers = null, teamIndex = null) {
+  const filled = backfillPlayerTeam(player, sleeperPlayers, teamIndex);
+  return knownTeam(filled?.nflTeam || filled?.team || player?.nflTeam || player?.team);
+}
+
+function buildPlayerMasterIndex(leagueList, games = [], defenseLeagues = null, liveScores = null, sleeperPlayers = null) {
   const map = new Map();
   const byName = new Map();
+  const teamIndex = sleeperPlayers ? sleeperTeamIndexFrom(sleeperPlayers) : null;
 
   const registerName = (nameKey, item) => {
     const list = byName.get(nameKey) || [];
@@ -630,8 +760,13 @@ function buildPlayerMasterIndex(leagueList, games = [], defenseLeagues = null, l
     return pool.find((item) => knownTeam(item.nflTeam)) || pool[0];
   };
 
-  const getOrCreate = (name, nflTeam, position, points = 0, isLive = false, inRedZone = false, gameClock = 'Scheduled', bigPlay = null, slot = '') => {
-    const team = knownTeam(nflTeam);
+  const getOrCreate = (name, nflTeam, position, points = 0, isLive = false, inRedZone = false, gameClock = 'Scheduled', bigPlay = null, sourcePlayer = null) => {
+    const slot = sourcePlayer?.slot || '';
+    const team = resolvePlayerTeam(
+      { name, nflTeam, team: nflTeam, position, slot },
+      sleeperPlayers,
+      teamIndex
+    ) || knownTeam(nflTeam);
     const nameKey = normalizePlayerMatchName(name);
     const matchKey = playerMatchKey(name, position, slot);
     let item = findExisting(nameKey, team, position, slot);
@@ -667,8 +802,8 @@ function buildPlayerMasterIndex(leagueList, games = [], defenseLeagues = null, l
           map.delete(oldKey);
           map.set(item.cardKey, item);
         }
-      } else if (mergedTeam && !knownTeam(item.nflTeam)) {
-        item.nflTeam = mergedTeam;
+      } else if (mergedTeam && (needsTeamBackfill(item.nflTeam) || !knownTeam(item.nflTeam))) {
+        item.nflTeam = knownTeam(mergedTeam) || mergedTeam;
       }
       const shownPos = displayPlayerPosition({ position, slot: slot || item.slot });
       if (shownPos && (!item.position || item.position === 'FLEX' || item.position === 'OP')) {
@@ -684,11 +819,11 @@ function buildPlayerMasterIndex(leagueList, games = [], defenseLeagues = null, l
   };
 
   const rememberScore = (item, player) => {
-    item.projPoints = preferFiniteNumber(item.projPoints, player?.projPoints, { preferPositive: true });
+    item.projPoints = preferFiniteNumber(item.projPoints, player?.projPoints ?? player?.projected, { preferPositive: true });
     item.actualPoints = preferFiniteNumber(item.actualPoints, player?.actualPoints, { preferPositive: true });
     if (player?.sleeperId) item.sleeperId = String(player.sleeperId);
     if (player?.scoringKey) item.scoringKey = player.scoringKey;
-    const team = preferTeamCode(item.nflTeam, player?.nflTeam || player?.team);
+    const team = resolvePlayerTeam(player, sleeperPlayers, teamIndex) || preferTeamCode(item.nflTeam, player?.nflTeam || player?.team);
     if (team && knownTeam(team) && knownTeam(team) !== knownTeam(item.nflTeam)) {
       const oldKey = item.cardKey;
       item.nflTeam = knownTeam(team);
@@ -697,14 +832,14 @@ function buildPlayerMasterIndex(leagueList, games = [], defenseLeagues = null, l
         map.delete(oldKey);
         map.set(item.cardKey, item);
       }
-    } else if (team && !knownTeam(item.nflTeam)) {
-      item.nflTeam = team;
+    } else if (team && (needsTeamBackfill(item.nflTeam) || !knownTeam(item.nflTeam))) {
+      item.nflTeam = knownTeam(team) || team;
     }
   };
 
   (leagueList || []).forEach((lg) => {
     getLeaguePortfolio(lg).forEach((p) => {
-      const item = getOrCreate(p.name, p.nflTeam || p.team, p.position, p.points, p.isLive, p.inRedZone, p.gameClock, p.bigPlay, p.slot);
+      const item = getOrCreate(p.name, p.nflTeam || p.team, p.position, p.points, p.isLive, p.inRedZone, p.gameClock, p.bigPlay, p);
       item.myShares += 1;
       item.myLeagues.push({ league: getLeagueDisplayName(lg), opponent: getLeagueOppName(lg) });
       item.isStarter = true;
@@ -715,7 +850,7 @@ function buildPlayerMasterIndex(leagueList, games = [], defenseLeagues = null, l
 
   (leagueList || []).forEach((lg) => {
     getLeagueThreats(lg).forEach((p) => {
-      const item = getOrCreate(p.name, p.nflTeam || p.team, p.position, p.points, p.isLive, p.inRedZone, p.gameClock, p.bigPlay, p.slot);
+      const item = getOrCreate(p.name, p.nflTeam || p.team, p.position, p.points, p.isLive, p.inRedZone, p.gameClock, p.bigPlay, p);
       item.oppShares += 1;
       item.oppLeagues.push({ league: getLeagueDisplayName(lg), opponent: getLeagueOppName(lg) });
       item.isThreat = true;
@@ -724,7 +859,7 @@ function buildPlayerMasterIndex(leagueList, games = [], defenseLeagues = null, l
   });
 
   markExposureTags(map, defenseLeagues || leagueList, games);
-  map.forEach((player) => applyLiveToPlayer(player, games, liveScores));
+  map.forEach((player) => applyLiveToPlayer(player, games, liveScores, new Date(), sleeperPlayers, teamIndex));
   return map;
 }
 
@@ -885,16 +1020,42 @@ function compareBoardPlayers(a, b, sortMode) {
   return String(a.name || '').localeCompare(String(b.name || ''));
 }
 
+function isDoubleDownPlayer(player) {
+  const exposure = classifyPlayerExposure(player);
+  return exposure.kind === 'multiFor' || exposure.kind === 'multiAgainst';
+}
+
 function passesBoardFilters(player, filters) {
   if (filters?.hideFinal && (player?.gameStatus === 'FINAL')) return false;
   if (filters?.liveOnly && !(player?.isLive || player?.gameStatus === 'IN_PROGRESS')) return false;
   if (filters?.redZoneOnly && !player?.inRedZone) return false;
   if (filters?.outperformers && !(boomDelta(player) >= 4)) return false;
   if (filters?.conflicted && !((player?.myShares || 0) > 0 && (player?.oppShares || 0) > 0)) return false;
+  if (filters?.doubleDown && !isDoubleDownPlayer(player)) return false;
   return true;
 }
 
-function applyLiveToPlayer(player, games, liveScores, now = new Date()) {
+function applyLiveToPlayer(player, games, liveScores, now = new Date(), sleeperPlayers = null, teamIndex = null) {
+  if (needsTeamBackfill(player?.nflTeam || player?.team)) {
+    const filled = backfillPlayerTeam(player, sleeperPlayers, teamIndex);
+    if (filled?.nflTeam) {
+      player.nflTeam = filled.nflTeam;
+      player.team = filled.nflTeam;
+    }
+  } else {
+    const team = knownTeam(player?.nflTeam || player?.team);
+    if (team) {
+      player.nflTeam = team;
+      player.team = team;
+    }
+  }
+
+  let live = sleeperLiveNumbers(player, liveScores);
+  if (live?.team && needsTeamBackfill(player.nflTeam)) {
+    player.nflTeam = knownTeam(live.team) || live.team;
+    player.team = player.nflTeam;
+  }
+
   const game = gameForTeam(games, player?.nflTeam);
   const bye = playerIsBye(player, game);
   player.isBye = bye;
@@ -907,10 +1068,13 @@ function applyLiveToPlayer(player, games, liveScores, now = new Date()) {
     player.gameDate = null;
     player.opponent = 'BYE';
     player.gameClock = 'Bye';
-    const live = sleeperLiveNumbers(player, liveScores);
-    if (live?.team) player.nflTeam = preferTeamCode(player.nflTeam, live.team);
+    live = sleeperLiveNumbers(player, liveScores) || live;
     if (live?.proj != null) {
       player.projPoints = preferFiniteNumber(player.projPoints, live.proj, { preferPositive: true });
+    }
+    if (live?.team && (needsTeamBackfill(player.nflTeam) || !knownTeam(player.nflTeam))) {
+      player.nflTeam = preferTeamCode(player.nflTeam, live.team) || knownTeam(live.team) || live.team;
+      player.team = player.nflTeam;
     }
     return player;
   }
@@ -926,8 +1090,11 @@ function applyLiveToPlayer(player, games, liveScores, now = new Date()) {
     const clock = game.status || game.time;
     if (clock) player.gameClock = clock;
   }
-  const live = sleeperLiveNumbers(player, liveScores);
-  if (live?.team) player.nflTeam = preferTeamCode(player.nflTeam, live.team);
+  live = sleeperLiveNumbers(player, liveScores) || live;
+  if (live?.team && (needsTeamBackfill(player.nflTeam) || !knownTeam(player.nflTeam))) {
+    player.nflTeam = preferTeamCode(player.nflTeam, live.team) || knownTeam(live.team) || live.team;
+    player.team = player.nflTeam;
+  }
   if (live?.proj != null) {
     player.projPoints = preferFiniteNumber(player.projPoints, live.proj, { preferPositive: true });
   }
@@ -941,8 +1108,79 @@ function applyLiveToPlayer(player, games, liveScores, now = new Date()) {
   return player;
 }
 
-function decorateStoredPlayer(player, games, liveScores) {
-  return applyLiveToPlayer({ ...(player || {}) }, games, liveScores);
+function decorateStoredPlayer(player, games, liveScores, sleeperPlayers = null) {
+  return applyLiveToPlayer({ ...(player || {}) }, games, liveScores, new Date(), sleeperPlayers);
+}
+
+function lookupMasterPlayerStats(player, masterIndex) {
+  return findMasterCard(masterIndex, player);
+}
+
+/** Enrich Matchups starters with the same Sleeper/live stats RootMap uses, then re-sum team totals. */
+function hydrateLeagueForMatchups(league, games, liveScores, sleeperPlayers = null, masterIndex = null) {
+  if (!league) return league;
+  const hydrateOne = (player) => {
+    if (!player) return player;
+    const copy = { ...player };
+    const master = lookupMasterPlayerStats(copy, masterIndex);
+    if (master) {
+      const masterActual = finiteNumber(master.actualPoints) ?? finiteNumber(master.points);
+      const localActual = finiteNumber(copy.actualPoints) ?? finiteNumber(copy.points);
+      if ((localActual == null || localActual === 0) && masterActual != null && masterActual !== 0) {
+        copy.actualPoints = master.actualPoints ?? masterActual;
+        copy.points = masterActual;
+      }
+      const masterProj = finiteNumber(master.projPoints);
+      const localProj = finiteNumber(copy.projPoints) ?? finiteNumber(copy.projected);
+      if ((localProj == null || localProj === 0) && masterProj != null && masterProj !== 0) {
+        copy.projPoints = masterProj;
+        copy.projected = masterProj;
+      }
+      if (!knownTeam(copy.nflTeam || copy.team) && knownTeam(master.nflTeam)) {
+        copy.nflTeam = knownTeam(master.nflTeam);
+        copy.team = copy.nflTeam;
+      }
+      if (master.sleeperId && !copy.sleeperId) copy.sleeperId = master.sleeperId;
+      if (master.gameStatus) copy.gameStatus = master.gameStatus;
+      if (master.isLive != null) copy.isLive = master.isLive;
+      if (master.kickoff) copy.kickoff = master.kickoff;
+    }
+    return applyLiveToPlayer(copy, games, liveScores, new Date(), sleeperPlayers);
+  };
+
+  const portfolio = getLeaguePortfolio(league).map(hydrateOne);
+  const threats = getLeagueThreats(league).map(hydrateOne);
+  const myStarterScore = sumActiveStarterPoints(portfolio);
+  const oppStarterScore = sumActiveStarterPoints(threats);
+  const myStarterProj = sumActiveStarterProjections(portfolio);
+  const oppStarterProj = sumActiveStarterProjections(threats);
+  const myScoreRaw = finiteNumber(league.myScore);
+  const oppScoreRaw = finiteNumber(league.oppScore);
+  const myProjRaw = finiteNumber(league.myProj ?? league.myProjected);
+  const oppProjRaw = finiteNumber(league.oppProj ?? league.oppProjected);
+
+  return {
+    ...league,
+    name: getLeagueDisplayName(league),
+    leagueName: preferYahooLeagueName(league.leagueName, getLeagueDisplayName(league)),
+    myTeamName: getUserTeamName(league),
+    portfolio,
+    threats,
+    starters: portfolio,
+    opponentStarters: threats,
+    userTeam: league.userTeam
+      ? { ...league.userTeam, name: getUserTeamName(league), starters: portfolio }
+      : { name: getUserTeamName(league), starters: portfolio },
+    oppTeam: league.oppTeam
+      ? { ...league.oppTeam, starters: threats }
+      : league.oppTeam,
+    myScore: (myScoreRaw != null && myScoreRaw !== 0) ? myScoreRaw : myStarterScore,
+    oppScore: (oppScoreRaw != null && oppScoreRaw !== 0) ? oppScoreRaw : oppStarterScore,
+    myProj: (myProjRaw != null && myProjRaw !== 0) ? myProjRaw : (myStarterProj || myProjRaw),
+    oppProj: (oppProjRaw != null && oppProjRaw !== 0) ? oppProjRaw : (oppStarterProj || oppProjRaw),
+    myProjected: (myProjRaw != null && myProjRaw !== 0) ? myProjRaw : (myStarterProj || myProjRaw),
+    oppProjected: (oppProjRaw != null && oppProjRaw !== 0) ? oppProjRaw : (oppStarterProj || oppProjRaw)
+  };
 }
 
 function liveScoreView(player) {
@@ -1128,32 +1366,42 @@ function LivePoints({ player, isLight, tone = 'for', layout = 'inline', onScoreJ
   );
 }
 
-function rosterCardSurface(isLight, isLive, isConflict, isHovered, inRedZone, zeroProj, side = 'for') {
+function rosterCardSurface(isLight, isLive, isConflict, isHovered, inRedZone, zeroProj, side = 'for', isDoubleDown = false) {
   if (zeroProj && !isLive) {
     return isLight
-      ? 'border-rose-500 bg-amber-50 ring-2 ring-inset ring-amber-400'
-      : 'border-rose-400 bg-rose-950/40 ring-2 ring-inset ring-amber-400';
+      ? 'border border-rose-500 bg-amber-50 ring-2 ring-inset ring-amber-400 shadow-sm'
+      : 'border border-rose-400 bg-rose-950/40 ring-2 ring-inset ring-amber-400 shadow-sm';
   }
   const zone = inRedZone ? 'rootmap-redzone' : '';
   if (isConflict) {
     const pulse = inRedZone ? zone : 'rootmap-crossfire';
     if (isLive) {
       return isLight
-        ? `${pulse} border-violet-600 bg-violet-50 ring-2 ring-inset ring-violet-500 ${isHovered ? 'shadow-md' : ''}`
-        : `${pulse} border-violet-300 bg-violet-950/50 ring-2 ring-inset ring-violet-300 ${isHovered ? 'shadow-md' : ''}`;
+        ? `${pulse} border border-violet-600 bg-violet-50 ring-2 ring-inset ring-violet-500 ${isHovered ? 'shadow-md' : 'shadow-sm'}`
+        : `${pulse} border border-violet-300 bg-violet-950/50 ring-2 ring-inset ring-violet-300 ${isHovered ? 'shadow-md' : 'shadow-sm'}`;
     }
     return isLight
-      ? `${pulse} border-violet-500 bg-violet-50 ring-2 ring-violet-400 ${isHovered ? 'shadow-md' : ''}`
-      : `${pulse} border-violet-400 bg-violet-950/40 ring-2 ring-violet-400 ${isHovered ? 'shadow-md' : ''}`;
+      ? `${pulse} border border-violet-500 bg-violet-50 ring-2 ring-violet-400 ${isHovered ? 'shadow-md' : 'shadow-sm'}`
+      : `${pulse} border border-violet-400 bg-violet-950/40 ring-2 ring-violet-400 ${isHovered ? 'shadow-md' : 'shadow-sm'}`;
+  }
+  if (isDoubleDown && side === 'against') {
+    return isLight
+      ? `${zone} border-2 border-rose-500 bg-rose-100/90 shadow-[0_0_14px_rgba(244,63,94,0.25)] ${isHovered ? 'shadow-md' : ''}`
+      : `${zone} border-2 border-rose-400 bg-rose-950/55 shadow-[0_0_14px_rgba(244,63,94,0.25)] ${isHovered ? 'shadow-md' : ''}`;
+  }
+  if (isDoubleDown) {
+    return isLight
+      ? `${zone} border-2 border-emerald-500 bg-emerald-100/90 shadow-[0_0_14px_rgba(16,185,129,0.25)] ${isHovered ? 'shadow-md' : ''}`
+      : `${zone} border-2 border-emerald-400 bg-emerald-950/55 shadow-[0_0_14px_rgba(16,185,129,0.25)] ${isHovered ? 'shadow-md' : ''}`;
   }
   if (side === 'against') {
     return isLight
-      ? `${zone} border-rose-400/70 bg-rose-50 hover:shadow ${isHovered ? 'shadow-md' : ''}`
-      : `${zone} border-rose-400/70 bg-rose-950/35 hover:border-rose-400 ${isHovered ? 'shadow-md' : ''}`;
+      ? `${zone} border border-rose-400/70 bg-rose-50 hover:shadow ${isHovered ? 'shadow-md' : 'shadow-sm'}`
+      : `${zone} border border-rose-400/70 bg-rose-950/35 hover:border-rose-400 ${isHovered ? 'shadow-md' : 'shadow-sm'}`;
   }
   return isLight
-    ? `${zone} border-emerald-400/70 bg-emerald-50 hover:shadow ${isHovered ? 'shadow-md' : ''}`
-    : `${zone} border-emerald-400/70 bg-emerald-950/35 hover:border-emerald-400 ${isHovered ? 'shadow-md' : ''}`;
+    ? `${zone} border border-emerald-400/70 bg-emerald-50 hover:shadow ${isHovered ? 'shadow-md' : 'shadow-sm'}`
+    : `${zone} border border-emerald-400/70 bg-emerald-950/35 hover:border-emerald-400 ${isHovered ? 'shadow-md' : 'shadow-sm'}`;
 }
 
 function RosterCard({
@@ -1169,7 +1417,12 @@ function RosterCard({
   cardRef
 }) {
   const isConflict = side === 'cross' || ((player.myShares || 0) > 0 && (player.oppShares || 0) > 0);
-  const shares = side === 'against' ? player.oppShares : player.myShares;
+  const forCount = player.myShares || 0;
+  const againstCount = player.oppShares || 0;
+  const shares = side === 'against' ? againstCount : forCount;
+  const isDoubleFor = forCount >= 2 && againstCount === 0;
+  const isDoubleAgainst = againstCount >= 2 && forCount === 0;
+  const isDoubleDown = isDoubleFor || isDoubleAgainst;
   const live = Boolean(player.isLive || player.gameStatus === 'IN_PROGRESS');
   const hasBall = Boolean(player.hasPossession || (live && player.inRedZone));
   const accent = getTeamAccent(canonTeam(player.nflTeam) || player.nflTeam);
@@ -1178,9 +1431,8 @@ function RosterCard({
     setScorePulse(delta > 0 ? 'rootmap-score-border-up' : 'rootmap-score-border-down');
     window.setTimeout(() => setScorePulse(''), 720);
   };
-  const combined = getCombinedStance(player);
   const leagueCount = isConflict
-    ? (player.myShares || 0) + (player.oppShares || 0)
+    ? forCount + againstCount
     : (shares || 0);
   const timeBadge = playerTimeBadge(player);
   // Keep Double Down / Cross Fire badges; hide plain Root For / Root Against on single-league cards.
@@ -1189,16 +1441,32 @@ function RosterCard({
       <span className={`inline-flex items-center rounded-full px-1.5 py-0.5 text-[8px] font-black tracking-wide ${
         isLight ? 'bg-gradient-to-r from-emerald-100 to-rose-100 text-slate-800' : 'bg-gradient-to-r from-emerald-950 to-rose-950 text-slate-100'
       }`}>
-        ⚡ {player.myShares || 0} FOR • {player.oppShares || 0} AGAINST
+        ⚡ {forCount} FOR • {againstCount} AGAINST
       </span>
     )
-    : combined.tone === 'down'
+    : isDoubleFor
       ? (
-        <span className={`text-[9px] font-black uppercase ${isLight ? 'text-emerald-700' : 'text-emerald-300'}`}>
-          {combined.label}
+        <span className={`relative inline-flex items-center gap-1 overflow-hidden rounded-full border px-1.5 py-0.5 text-[8px] font-bold tracking-wide ${
+          isLight
+            ? 'bg-emerald-500/20 border-emerald-500 text-emerald-800'
+            : 'bg-emerald-500/25 border-emerald-400 text-emerald-200'
+        }`}>
+          <span aria-hidden="true" className="pointer-events-none absolute inset-0 animate-pulse bg-emerald-400/15" />
+          <span className="relative">🔥 {forCount}X FOR</span>
         </span>
       )
-      : null;
+      : isDoubleAgainst
+        ? (
+          <span className={`relative inline-flex items-center gap-1 overflow-hidden rounded-full border px-1.5 py-0.5 text-[8px] font-bold tracking-wide ${
+            isLight
+              ? 'bg-rose-500/20 border-rose-500 text-rose-800'
+              : 'bg-rose-500/25 border-rose-400 text-rose-200'
+          }`}>
+            <span aria-hidden="true" className="pointer-events-none absolute inset-0 animate-pulse bg-rose-400/15" />
+            <span className="relative">🚨 {againstCount}X AGAINST</span>
+          </span>
+        )
+        : null;
   const statusTone = side === 'against' ? 'against' : 'for';
   const pointsTone = side === 'against' ? 'against' : isConflict ? 'cross' : 'for';
   return (
@@ -1206,11 +1474,12 @@ function RosterCard({
       data-player-name={player.name}
       data-friendly-fire={player.friendlyFire ? 'true' : 'false'}
       data-double-dip={player.doubleDip ? 'true' : 'false'}
+      data-double-down={isDoubleDown ? 'true' : 'false'}
       ref={cardRef}
       onClick={onSelect}
       onMouseEnter={onHoverStart}
       onMouseLeave={onHoverEnd}
-      className={`relative w-full min-w-0 overflow-hidden rounded-xl px-2 py-1.5 pl-2.5 transition active:scale-[0.98] cursor-pointer border shadow-sm touch-manipulation ${scorePulse} ${rosterCardSurface(isLight, live, isConflict, isHovered, player.inRedZone, player.zeroProjection, side)}`}
+      className={`relative w-full min-w-0 overflow-hidden rounded-xl px-2 py-1.5 pl-2.5 transition active:scale-[0.98] cursor-pointer touch-manipulation ${scorePulse} ${rosterCardSurface(isLight, live, isConflict, isHovered, player.inRedZone, player.zeroProjection, side, isDoubleDown)}`}
     >
       <span
         aria-hidden="true"
@@ -1291,25 +1560,189 @@ function RosterCard({
   );
 }
 
+function uniqueLeagueEntries(entries) {
+  const seen = new Set();
+  const out = [];
+  for (const entry of entries || []) {
+    const name = String(entry?.league || '').trim();
+    if (!name) continue;
+    const key = name.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(entry);
+  }
+  return out;
+}
+
+/** Player-level exposure across connected leagues (canonical card / name+team key). */
+function classifyPlayerExposure(player) {
+  const forLeagues = uniqueLeagueEntries(player?.myLeagues);
+  const againstLeagues = uniqueLeagueEntries(player?.oppLeagues);
+  const forCount = forLeagues.length || (player?.myShares || 0);
+  const againstCount = againstLeagues.length || (player?.oppShares || 0);
+
+  if (forCount >= 1 && againstCount >= 1) {
+    return {
+      kind: 'conflict',
+      tone: 'cross',
+      label: 'CONFLICT',
+      forCount,
+      againstCount,
+      forLeagues,
+      againstLeagues
+    };
+  }
+  if (forCount >= 2 && againstCount === 0) {
+    return {
+      kind: 'multiFor',
+      tone: 'down',
+      label: `🔥 ${forCount}X FOR`,
+      forCount,
+      againstCount,
+      forLeagues,
+      againstLeagues
+    };
+  }
+  if (againstCount >= 2 && forCount === 0) {
+    return {
+      kind: 'multiAgainst',
+      tone: 'down-against',
+      label: `🚨 ${againstCount}X AGAINST`,
+      forCount,
+      againstCount,
+      forLeagues,
+      againstLeagues
+    };
+  }
+  if (forCount === 1 && againstCount === 0) {
+    return {
+      kind: 'for',
+      tone: 'pure',
+      label: 'FOR',
+      forCount,
+      againstCount,
+      forLeagues,
+      againstLeagues
+    };
+  }
+  if (againstCount === 1 && forCount === 0) {
+    return {
+      kind: 'against',
+      tone: 'threat',
+      label: 'AGAINST',
+      forCount,
+      againstCount,
+      forLeagues,
+      againstLeagues
+    };
+  }
+  return {
+    kind: 'neutral',
+    tone: 'neutral',
+    label: 'Neutral / Free Agent',
+    forCount,
+    againstCount,
+    forLeagues,
+    againstLeagues
+  };
+}
+
 function getCombinedStance(player) {
-  const mine = player?.myShares || 0;
-  const opp = player?.oppShares || 0;
-  if (mine > 0 && opp > 0) {
-    const net = mine - opp;
+  const exposure = classifyPlayerExposure(player);
+  if (exposure.kind === 'conflict') {
+    const net = exposure.forCount - exposure.againstCount;
     const swing = net > 0 ? ` (+${net})` : net < 0 ? ` (${net})` : '';
     return { label: `Cross Fire${swing}`, tone: 'cross' };
   }
-  if (mine > 0 && opp === 0) {
-    if (mine >= 2) return { label: `Double Down (+${mine})`, tone: 'down' };
-    return { label: 'Root For', tone: 'pure' };
-  }
-  if (opp > 0 && mine === 0) return { label: 'Root Against', tone: 'threat' };
+  if (exposure.kind === 'multiFor') return { label: exposure.label, tone: 'down' };
+  if (exposure.kind === 'for') return { label: 'Root For', tone: 'pure' };
+  if (exposure.kind === 'multiAgainst') return { label: exposure.label, tone: 'down-against' };
+  if (exposure.kind === 'against') return { label: 'Root Against', tone: 'threat' };
   return { label: 'Neutral / Free Agent', tone: 'neutral' };
 }
 
+function SlateExposureBadge({ exposure, isLight }) {
+  const { kind, label } = exposure;
+  if (kind === 'conflict') {
+    return (
+      <span className={`rounded-full border px-1.5 py-0.5 text-[8px] font-black uppercase tracking-wide whitespace-nowrap ${
+        isLight ? 'bg-amber-100 text-amber-800 border-amber-300' : 'bg-amber-950 text-amber-300 border-amber-700'
+      }`}>
+        ⚡ CONFLICT
+      </span>
+    );
+  }
+  if (kind === 'multiFor') {
+    return (
+      <span className={`relative inline-flex items-center gap-1 overflow-hidden rounded-full border px-1.5 py-0.5 text-[8px] font-black tracking-wide whitespace-nowrap ${
+        isLight
+          ? 'bg-emerald-500/20 border-emerald-500 text-emerald-800'
+          : 'bg-emerald-500/25 border-emerald-400 text-emerald-200'
+      }`}>
+        <span aria-hidden="true" className="pointer-events-none absolute inset-0 animate-pulse bg-emerald-400/20" />
+        <span className="relative">{label}</span>
+      </span>
+    );
+  }
+  if (kind === 'multiAgainst') {
+    return (
+      <span className={`relative inline-flex items-center gap-1 overflow-hidden rounded-full border px-1.5 py-0.5 text-[8px] font-black tracking-wide whitespace-nowrap ${
+        isLight
+          ? 'bg-rose-500/20 border-rose-500 text-rose-800'
+          : 'bg-rose-500/25 border-rose-400 text-rose-200'
+      }`}>
+        <span aria-hidden="true" className="pointer-events-none absolute inset-0 animate-pulse bg-rose-400/20" />
+        <span className="relative">{label}</span>
+      </span>
+    );
+  }
+  if (kind === 'against') {
+    return (
+      <span className={`rounded-full px-1.5 py-0.5 text-[8px] font-black uppercase tracking-wide whitespace-nowrap ${
+        isLight ? 'bg-rose-100 text-rose-700' : 'bg-rose-950 text-rose-300'
+      }`}>
+        {label}
+      </span>
+    );
+  }
+  if (kind === 'for') {
+    return (
+      <span className={`rounded-full px-1.5 py-0.5 text-[8px] font-black uppercase tracking-wide whitespace-nowrap ${
+        isLight ? 'bg-emerald-100 text-emerald-700' : 'bg-emerald-950 text-emerald-300'
+      }`}>
+        {label}
+      </span>
+    );
+  }
+  return null;
+}
+
+function SlateLeaguePills({ exposure, isLight }) {
+  const pills = [
+    ...exposure.forLeagues.map((entry) => ({ key: `for:${entry.league}`, name: entry.league, side: 'for' })),
+    ...exposure.againstLeagues.map((entry) => ({ key: `against:${entry.league}`, name: entry.league, side: 'against' }))
+  ];
+  if (!pills.length) return null;
+  return (
+    <div className="mt-0.5 flex flex-wrap gap-1">
+      {pills.map((pill) => (
+        <span
+          key={pill.key}
+          className={`rounded-full px-1.5 py-0.5 text-[7px] font-black uppercase tracking-wide whitespace-nowrap ${
+            pill.side === 'for'
+              ? isLight ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-emerald-950/60 text-emerald-300 border border-emerald-800'
+              : isLight ? 'bg-rose-50 text-rose-700 border border-rose-200' : 'bg-rose-950/60 text-rose-300 border border-rose-800'
+          }`}
+        >
+          {pill.name} · {pill.side === 'for' ? 'FOR' : 'AGAINST'}
+        </span>
+      ))}
+    </div>
+  );
+}
+
 function canonTeam(team) {
-  const key = String(team || '').toUpperCase().trim();
-  return TEAM_ALIASES[key] || key;
+  return knownTeam(team) || TEAM_ALIASES[String(team || '').toUpperCase().trim()] || String(team || '').toUpperCase().trim();
 }
 
 function isTeamDefense(player) {
@@ -1719,7 +2152,8 @@ export default function App() {
     redZoneOnly: false,
     hideFinal: false,
     outperformers: false,
-    conflicted: false
+    conflicted: false,
+    doubleDown: false
   });
   const [showSortSheet, setShowSortSheet] = useState(false);
   const [showAlertSheet, setShowAlertSheet] = useState(false);
@@ -1811,6 +2245,7 @@ export default function App() {
   const [mobileSyncNote, setMobileSyncNote] = useState('');
   const [filtersCollapsed, setFiltersCollapsed] = useState(false);
   const [notifPermission, setNotifPermission] = useState('unknown');
+  const [sleeperPlayers, setSleeperPlayers] = useState(null);
 
   const filterButtonRef = useRef(null);
   const swipeTouchRef = useRef(null);
@@ -1833,6 +2268,60 @@ export default function App() {
     media.addEventListener?.('change', sync);
     return () => media.removeEventListener?.('change', sync);
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    prefetchSleeperPlayers()
+      .then((players) => {
+        if (!cancelled) setSleeperPlayers(players && typeof players === 'object' ? players : {});
+      })
+      .catch(() => {
+        if (!cancelled) setSleeperPlayers({});
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!sleeperPlayers || !Object.keys(sleeperPlayers).length) return;
+    const index = sleeperTeamIndexFrom(sleeperPlayers);
+    setLeagues((prev) => {
+      let changed = false;
+      const next = prev.map((league) => {
+        let leagueChanged = false;
+        const fillList = (list) => (list || []).map((player) => {
+          if (!needsTeamBackfill(player?.nflTeam || player?.team)) return player;
+          const filled = backfillPlayerTeam(player, sleeperPlayers, index);
+          if (filled?.nflTeam && filled.nflTeam !== (player?.nflTeam || player?.team)) {
+            leagueChanged = true;
+            changed = true;
+            return filled;
+          }
+          return player;
+        });
+        const portfolio = fillList(getLeaguePortfolio(league));
+        const threats = fillList(getLeagueThreats(league));
+        if (!leagueChanged) return league;
+        return {
+          ...league,
+          portfolio,
+          threats,
+          starters: portfolio,
+          opponentStarters: threats,
+          userTeam: league.userTeam ? { ...league.userTeam, starters: portfolio } : league.userTeam,
+          oppTeam: league.oppTeam ? { ...league.oppTeam, starters: threats } : league.oppTeam
+        };
+      });
+      if (!changed) return prev;
+      try {
+        localStorage.setItem(LEAGUES_STORAGE_KEY, JSON.stringify(next));
+      } catch {
+        // storage is optional
+      }
+      return next;
+    });
+  }, [sleeperPlayers]);
 
   useEffect(() => () => {
     if (swipeAnimTimerRef.current) window.clearTimeout(swipeAnimTimerRef.current);
@@ -1919,6 +2408,26 @@ export default function App() {
       setSyncStatus(count === 1
         ? 'Yahoo connected. 1 league is on this phone.'
         : `Yahoo connected. ${count} leagues are on this phone.`);
+      // Re-pull Fantasy API data so cached "My Teams & Leagues" / 0.0 points get overwritten.
+      syncYahooLeaguesFromApi().then((imported) => {
+        if (!imported?.length) return;
+        setLeagues((prev) => {
+          const next = [...prev];
+          imported.forEach((league) => {
+            const key = yahooLeagueIdOf(league) || league.id;
+            const idx = next.findIndex((item) => (
+              item.id === league.id
+              || yahooLeagueIdOf(item) === key
+              || (item.yahooLeagueId && league.yahooLeagueId && item.yahooLeagueId === league.yahooLeagueId)
+            ));
+            if (idx >= 0) next[idx] = mergeYahooSyncedLeague(next[idx], league);
+            else next.push(normalizeLeague(league, next.length));
+          });
+          return next;
+        });
+      }).catch(() => {
+        // Cookie sync is best-effort after OAuth redirect.
+      });
     } else if (authError) {
       setSyncStatus(authError);
     }
@@ -2162,11 +2671,39 @@ export default function App() {
           console.warn('Yahoo lineup refresh failed', err);
         }
       }
+
+      // Cookie-backed Yahoo Fantasy API refresh — overwrites cached section names + 0.0 points.
+      try {
+        const hasYahoo = current.some((lg) => (
+          String(lg?.platform || '').toLowerCase().includes('yahoo')
+          || String(lg?.id || '').startsWith('yahoo-')
+          || lg?.leagueKey
+          || lg?.yahooLeagueId
+        ));
+        if (hasYahoo) {
+          const imported = await syncYahooLeaguesFromApi({ week });
+          if (imported?.length) {
+            imported.forEach((league) => {
+              const id = league.id || `yahoo-${league.leagueKey || league.yahooLeagueId || Date.now()}`;
+              updates.set(id, { ...league, id });
+            });
+          }
+        }
+      } catch (err) {
+        console.warn('Yahoo API sync failed', err);
+      }
+
       if (cancelled || !updates.size) return;
       setLeagues((prev) => {
         const used = new Set();
         const next = prev.map((lg) => {
           let updated = updates.get(lg.id);
+          if (!updated) {
+            const key = yahooLeagueIdOf(lg);
+            if (key) {
+              updated = [...updates.values()].find((item) => yahooLeagueIdOf(item) === key) || null;
+            }
+          }
           if (!updated && lg.yahooLeagueId) {
             const candidates = [...updates.values()].filter((item) => item.yahooLeagueId === lg.yahooLeagueId);
             updated = candidates.find((item) => item.yahooTeamId && lg.yahooTeamId && item.yahooTeamId === lg.yahooTeamId)
@@ -2174,20 +2711,25 @@ export default function App() {
               || candidates.find((item) => !item.yahooTeamId && !lg.yahooTeamId)
               || null;
           }
-          if (!updated) return lg;
+          if (!updated) {
+            // Still scrub a cached section header even when sync did not return this row.
+            if (isGenericYahooLeagueName(lg.name) || isGenericYahooLeagueName(lg.leagueName)) {
+              return normalizeLeague({
+                ...lg,
+                name: preferYahooLeagueName(lg.leagueName, lg.myTeamName, lg.userTeam?.name, lg.name)
+              });
+            }
+            return lg;
+          }
           used.add(updated.id);
-          return normalizeLeague({
-            ...lg,
-            ...updated,
-            id: lg.id,
-            yahooLeagueId: lg.yahooLeagueId || updated.yahooLeagueId,
-            yahooTeamId: lg.yahooTeamId || updated.yahooTeamId,
-            yahooMatchupUrl: updated.yahooMatchupUrl || lg.yahooMatchupUrl
-          });
+          return mergeYahooSyncedLeague(lg, updated);
         });
         updates.forEach((updated, id) => {
           if (used.has(id) || !String(id).startsWith('yahoo-')) return;
           if (next.some((lg) => lg.id === id || (
+            yahooLeagueIdOf(lg)
+            && yahooLeagueIdOf(lg) === yahooLeagueIdOf(updated)
+          ) || (
             updated.yahooLeagueId
             && lg.yahooLeagueId === updated.yahooLeagueId
             && ((updated.yahooTeamId && lg.yahooTeamId && lg.yahooTeamId === updated.yahooTeamId)
@@ -2843,8 +3385,8 @@ export default function App() {
   const hiddenCount = leagues.length - visibleLeagues.length;
 
   const playerMasterIndex = useMemo(
-    () => buildPlayerMasterIndex(visibleLeagues, games, null, liveScores),
-    [visibleLeagues, games, liveScores]
+    () => buildPlayerMasterIndex(visibleLeagues, games, null, liveScores, sleeperPlayers),
+    [visibleLeagues, games, liveScores, sleeperPlayers]
   );
 
   const crossFirePointsRef = useRef(null);
@@ -2935,7 +3477,8 @@ export default function App() {
     + Number(boardFilters.redZoneOnly)
     + Number(boardFilters.hideFinal)
     + Number(boardFilters.outperformers)
-    + Number(boardFilters.conflicted);
+    + Number(boardFilters.conflicted)
+    + Number(boardFilters.doubleDown);
   const leagueSortReadyRef = useRef(false);
 
   useEffect(() => {
@@ -2946,8 +3489,10 @@ export default function App() {
   }, [games]);
 
   const sortedLeagues = useMemo(() => {
-    const list = [...leagues];
-    list.sort((a, b) => {
+    const hydrated = leagues.map((league) => (
+      hydrateLeagueForMatchups(league, games, liveScores, sleeperPlayers, playerMasterIndex)
+    ));
+    hydrated.sort((a, b) => {
       if (leagueSort === 'standing') {
         const ar = Number(leagueSideRecord(a, 'my').rank) || 99;
         const br = Number(leagueSideRecord(b, 'my').rank) || 99;
@@ -2956,14 +3501,14 @@ export default function App() {
         const delta = matchupOutlook(b).myPct - matchupOutlook(a).myPct;
         if (delta) return delta;
       } else {
-        const ad = Math.abs((finiteNumber(a.myScore) ?? 0) - (finiteNumber(a.oppScore) ?? 0));
-        const bd = Math.abs((finiteNumber(b.myScore) ?? 0) - (finiteNumber(b.oppScore) ?? 0));
+        const ad = Math.abs(leagueSideScore(a, 'my') - leagueSideScore(a, 'opp'));
+        const bd = Math.abs(leagueSideScore(b, 'my') - leagueSideScore(b, 'opp'));
         if (ad !== bd) return ad - bd;
       }
       return getUserTeamName(a).localeCompare(getUserTeamName(b));
     });
-    return list;
-  }, [leagues, leagueSort]);
+    return hydrated;
+  }, [leagues, leagueSort, games, liveScores, sleeperPlayers, playerMasterIndex]);
 
   const getGamePlayers = (game) => {
     if (!game) return [];
@@ -3060,7 +3605,7 @@ export default function App() {
         </span>
       );
     }
-    if (stance.tone === 'threat') {
+    if (stance.tone === 'down-against' || stance.tone === 'threat') {
       return (
         <span className={`font-black text-right leading-tight ${isLight ? 'text-red-600' : 'text-rose-300'}`}>
           {stance.label}
@@ -3395,7 +3940,8 @@ export default function App() {
                 {[
                   { key: 'redZoneOnly', label: '🔴 RedZone', active: boardFilters.redZoneOnly },
                   { key: 'outperformers', label: '🔥 Outperformers', active: boardFilters.outperformers },
-                  { key: 'conflicted', label: '⚡ Conflicted', active: boardFilters.conflicted }
+                  { key: 'conflicted', label: '⚡ Conflicted', active: boardFilters.conflicted },
+                  { key: 'doubleDown', label: '🔥 Double Down', active: boardFilters.doubleDown }
                 ].map((pill) => (
                   <button
                     key={pill.key}
@@ -3406,7 +3952,7 @@ export default function App() {
                       setBoardFilters((current) => ({ ...current, [pill.key]: !current[pill.key] }));
                       tapHaptic();
                     }}
-                    className={`shrink-0 h-8 px-2 rounded-full border text-[10px] font-black whitespace-nowrap transition ${
+                    className={`shrink-0 h-8 px-1.5 rounded-full border text-[10px] font-black whitespace-nowrap transition ${
                       pill.active
                         ? isLight ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-950 border-white'
                         : isLight ? 'bg-white text-slate-700 border-slate-200' : 'bg-slate-900 text-slate-200 border-slate-700'
@@ -3541,7 +4087,7 @@ export default function App() {
               }`}>
                 {visibleLeagues.length === 0
                   ? 'Every league is filtered out. Turn one back on in Filter Leagues. Saved rosters stay on this device.'
-                  : (boardFilters.liveOnly || boardFilters.redZoneOnly || boardFilters.hideFinal)
+                  : (boardFilters.liveOnly || boardFilters.redZoneOnly || boardFilters.hideFinal || boardFilters.outperformers || boardFilters.conflicted || boardFilters.doubleDown)
                     ? 'No starters match this filter.'
                     : 'No starters in this view.'}
               </div>
@@ -3717,13 +4263,21 @@ export default function App() {
                       </div>
                     ) : (
                       activeMatchPlayers.map((player) => {
-                        const stance = getCombinedStance(player);
-                        const forSide = stance.tone === 'pure' || stance.tone === 'down';
-                        const againstSide = stance.tone === 'threat';
-                        const rowAccent = againstSide ? '#e11d48' : forSide ? '#059669' : '#8b5cf6';
+                        const exposure = classifyPlayerExposure(player);
+                        const forSide = exposure.kind === 'for' || exposure.kind === 'multiFor';
+                        const againstSide = exposure.kind === 'against' || exposure.kind === 'multiAgainst';
+                        const isConflict = exposure.kind === 'conflict';
+                        const rowAccent = againstSide
+                          ? '#e11d48'
+                          : forSide
+                            ? '#059669'
+                            : isConflict
+                              ? '#d97706'
+                              : '#64748b';
+                        const rowKey = player.cardKey || playerCardKey(player.name, player.nflTeam) || player.name;
                         return (
                           <div
-                            key={player.name}
+                            key={rowKey}
                             onClick={() => setSelectedPlayer(player)}
                             className={`relative px-2.5 py-1.5 cursor-pointer transition ${
                               isLight ? 'hover:bg-slate-50' : 'hover:bg-slate-800/40'
@@ -3740,24 +4294,17 @@ export default function App() {
                                 <div className="min-w-0">
                                   <div className={`font-extrabold text-[12px] truncate leading-tight ${isLight ? 'text-slate-900' : 'text-white'}`}>{player.name}</div>
                                   <div className={`text-[9px] font-bold whitespace-nowrap ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>{playerPosTeamLabel(player)}</div>
+                                  <SlateLeaguePills exposure={exposure} isLight={isLight} />
                                 </div>
                               </div>
                               <div className="flex items-center gap-1.5 shrink-0">
                                 <LivePoints
                                   player={player}
                                   isLight={isLight}
-                                  tone={againstSide ? 'against' : stance.tone === 'cross' ? 'cross' : 'for'}
+                                  tone={againstSide ? 'against' : isConflict ? 'cross' : 'for'}
                                   layout="compact"
                                 />
-                                <span className={`rounded-full px-1.5 py-0.5 text-[8px] font-black uppercase tracking-wide whitespace-nowrap ${
-                                  againstSide
-                                    ? isLight ? 'bg-rose-100 text-rose-700' : 'bg-rose-950 text-rose-300'
-                                    : forSide
-                                      ? isLight ? 'bg-emerald-100 text-emerald-700' : 'bg-emerald-950 text-emerald-300'
-                                      : isLight ? 'bg-violet-100 text-violet-700' : 'bg-violet-950 text-violet-300'
-                                }`}>
-                                  {againstSide ? 'ROOT AGAINST' : forSide ? 'ROOT FOR' : '⚡ CONFLICT'}
-                                </span>
+                                <SlateExposureBadge exposure={exposure} isLight={isLight} />
                               </div>
                             </div>
                           </div>
@@ -3794,7 +4341,7 @@ export default function App() {
                           isLight ? 'bg-white text-slate-700 border-slate-200' : 'bg-slate-900 text-slate-200 border-slate-700'
                         }`}
                       >
-                        {getLeagueDisplayName(lg)} · {outlook.myPct}%
+                        {leagueFilterLabel(lg, sortedLeagues)} · {outlook.myPct}%
                       </button>
                     );
                   })}
@@ -3854,7 +4401,7 @@ export default function App() {
                       }`}
                     >
                       {leagues.map((lg) => {
-                        const leagueName = getLeagueDisplayName(lg);
+                        const leagueName = leagueFilterLabel(lg, leagues);
                         const onBoard = !hiddenLeagueIds.has(lg.id);
                         return (
                           <div key={lg.id} className="flex items-center gap-1 rounded-lg">
@@ -4302,6 +4849,7 @@ export default function App() {
                 { key: 'redZoneOnly', label: 'Red Zone Only' },
                 { key: 'outperformers', label: 'Outperformers (+4.0)' },
                 { key: 'conflicted', label: 'Conflicted Only' },
+                { key: 'doubleDown', label: 'Double Down (2X+)' },
                 { key: 'hideFinal', label: 'Hide Completed Games' }
               ].map((option) => {
                 const on = boardFilters[option.key];
@@ -4649,7 +5197,7 @@ export default function App() {
               )}
               {leagues.map((lg) => {
                 const checked = !hiddenLeagueIds.has(lg.id);
-                const leagueName = getLeagueDisplayName(lg);
+                const leagueName = leagueFilterLabel(lg, leagues);
                 return (
                   <div
                     key={lg.id}
@@ -5484,7 +6032,7 @@ export default function App() {
             </div>
             <div className="overflow-y-auto space-y-2 py-3">
               {getLeaguePortfolio(activeLeagueDrawer).map((raw, idx) => {
-                const p = decorateStoredPlayer(raw, games, liveScores);
+                const p = decorateStoredPlayer(raw, games, liveScores, sleeperPlayers);
                 return (
                 <div key={idx} className={`rounded-xl p-2.5 flex justify-between items-center text-xs border ${
                   isLight ? 'bg-slate-50 border-slate-200' : 'bg-slate-800/60 border-slate-700/40'

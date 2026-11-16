@@ -173,7 +173,7 @@ export function sleeperLiveNumbers(player, bundle) {
     started: Boolean(live.started),
     actual: pickPoint(live.actual, key),
     proj: pickPoint(live.proj, key),
-    team: live.team || ''
+    team: resolveNflTeam(live.team) || sleeperTeam(live.team) || null
   };
 }
 

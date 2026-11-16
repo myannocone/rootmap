@@ -1,46 +1,10 @@
 /** Shared player name / team / position identity for cross-league merge. */
 
-const TEAM_ALIASES = {
-  WSH: 'WAS',
-  JAC: 'JAX',
-  LA: 'LAR',
-  OAK: 'LV',
-  SD: 'LAC',
-  ARZ: 'ARI',
-  GBP: 'GB',
-  GNB: 'GB',
-  KAN: 'KC',
-  NOR: 'NO',
-  TAM: 'TB',
-  SFO: 'SF',
-  NWE: 'NE'
-};
+import { canonTeamCode, normalizePlayerMatchName } from './playerTeam.js';
 
-const NFL_TEAMS = new Set([
-  'ARI', 'ATL', 'BAL', 'BUF', 'CAR', 'CHI', 'CIN', 'CLE', 'DAL', 'DEN', 'DET', 'GB',
-  'HOU', 'IND', 'JAX', 'KC', 'LAC', 'LAR', 'LV', 'MIA', 'MIN', 'NE', 'NO', 'NYG',
-  'NYJ', 'PHI', 'PIT', 'SEA', 'SF', 'TB', 'TEN', 'WAS'
-]);
+export { canonTeamCode, normalizePlayerMatchName };
 
 const FLEXISH = new Set(['FLEX', 'OP', 'RB/WR', 'WR/TE', 'W/R/T', 'W/R', 'UTIL', 'BN', 'BENCH']);
-
-export function canonTeamCode(team) {
-  const raw = String(team || '').toUpperCase().replace(/[^A-Z]/g, '');
-  if (!raw) return '';
-  const key = TEAM_ALIASES[raw] || raw;
-  return NFL_TEAMS.has(key) ? key : '';
-}
-
-/** Strip Jr/Sr/II/punctuation/casing for match keys. */
-export function normalizePlayerMatchName(name) {
-  return String(name || '')
-    .toLowerCase()
-    .replace(/['’.]/g, '')
-    .replace(/\b(jr|sr|ii|iii|iv|v)\b\.?/g, '')
-    .replace(/[^a-z0-9\s-]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
 
 export function normalizeMatchPosition(position, slot = '') {
   const pos = String(position || '').toUpperCase().trim();

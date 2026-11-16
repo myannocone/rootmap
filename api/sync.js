@@ -1,62 +1,88 @@
-﻿export default async function handler(req, res) {
-  const authHeader = req.headers.authorization;
+﻿import {
+  importYahooLeagues,
+  inspectYahooPayload,
+  resolveYahooAccessToken,
+  requestIsSecure,
+  yahooTokenSetCookieHeaders
+} from '../lib/yahooFantasy.js';
 
-  if (!authHeader) {
-    return res.status(401).json({ error: 'Missing Authorization header' });
+function bearerFrom(req) {
+  const header = String(req.headers?.authorization || '');
+  if (!header) return '';
+  return header.replace(/^Bearer\s+/i, '').trim();
+}
+
+function wantsInspect(req) {
+  const value = req.query?.inspectYahoo ?? req.query?.inspect;
+  return value === '1' || value === 'true' || value === 'yes';
+}
+
+function weekFrom(req) {
+  const week = Number(req.query?.week);
+  return week >= 1 && week <= 18 ? week : undefined;
+}
+
+async function resolveAccess(req, bearer) {
+  let accessToken = bearer;
+  let refreshed = null;
+
+  if (!accessToken) {
+    const resolved = await resolveYahooAccessToken(req, { forceRefresh: true });
+    accessToken = resolved.accessToken;
+    refreshed = resolved.tokenData;
+  } else {
+    // Prefer a refreshed cookie token when present so week stats never ride an expired bearer.
+    try {
+      const resolved = await resolveYahooAccessToken(req, { forceRefresh: true });
+      if (resolved?.accessToken) {
+        accessToken = resolved.accessToken;
+        refreshed = resolved.tokenData;
+      }
+    } catch {
+      // Keep the Authorization bearer when cookie refresh is unavailable.
+    }
   }
 
+  return { accessToken, refreshed };
+}
+
+export default async function handler(req, res) {
+  const secure = requestIsSecure(req);
+  const bearer = bearerFrom(req);
+  const week = weekFrom(req);
+
   try {
-    const gamesResponse = await fetch(
-      'https://fantasysports.yahooapis.com/fantasy/v2/users;use_login=1/games;game_keys=nfl?format=json',
-      {
-        headers: {
-          'Authorization': authHeader.startsWith('Bearer ') ? authHeader : `Bearer ${authHeader}`,
-          'Accept': 'application/json'
-        }
-      }
-    );
+    const { accessToken, refreshed } = await resolveAccess(req, bearer);
 
-    const gamesText = await gamesResponse.text();
-    let gamesData;
-    try {
-      gamesData = JSON.parse(gamesText);
-    } catch {
-      gamesData = { rawText: gamesText };
+    if (!accessToken) {
+      return res.status(401).json({ error: 'Missing Yahoo access token. Connect Yahoo again.' });
     }
 
-    if (!gamesResponse.ok) {
-      return res.status(gamesResponse.status).json({
-        error: 'Yahoo Games Fetch Error',
-        status: gamesResponse.status,
-        details: gamesData
-      });
+    if (wantsInspect(req)) {
+      const inspect = await inspectYahooPayload(accessToken, { week });
+      if (refreshed?.access_token) {
+        res.setHeader('Set-Cookie', yahooTokenSetCookieHeaders(secure, refreshed));
+      }
+      return res.status(200).json({ inspectYahoo: true, ...inspect });
     }
 
-    // Query active user leagues
-    const leaguesResponse = await fetch(
-      'https://fantasysports.yahooapis.com/fantasy/v2/users;use_login=1/games;game_keys=nfl/leagues?format=json',
-      {
-        headers: {
-          'Authorization': authHeader.startsWith('Bearer ') ? authHeader : `Bearer ${authHeader}`,
-          'Accept': 'application/json'
-        }
-      }
-    );
-
-    const leaguesText = await leaguesResponse.text();
-    let leaguesData;
-    try {
-      leaguesData = JSON.parse(leaguesText);
-    } catch {
-      leaguesData = { rawText: leaguesText };
+    // importYahooLeagues parses editorial_team_abbr, real league names, and week points.
+    const leagues = await importYahooLeagues(accessToken, { week });
+    if (refreshed?.access_token) {
+      res.setHeader('Set-Cookie', yahooTokenSetCookieHeaders(secure, refreshed));
     }
 
     return res.status(200).json({
-      games: gamesData,
-      leagues: leaguesData
+      leagues,
+      count: leagues.length,
+      week: week || leagues[0]?.lineupWeek || null
     });
   } catch (err) {
     console.error('Sync failure:', err);
-    return res.status(500).json({ error: 'Internal sync failure', details: err.message });
+    const status = err?.status && Number.isFinite(Number(err.status)) ? Number(err.status) : 500;
+    return res.status(status).json({
+      error: err?.message || 'Internal sync failure',
+      details: err?.message
+    });
   }
 }
