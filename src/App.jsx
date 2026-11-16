@@ -31,6 +31,12 @@ import {
   writeYahooSession,
   YahooLogin
 } from './utils/yahooNative';
+import {
+  isGenericYahooLeagueName,
+  preferYahooLeagueName,
+  syncYahooLeaguesFromApi,
+  yahooLeagueIdOf
+} from './utils/yahooSync';
 import { SITE_ORIGIN } from './utils/siteOrigin';
 import { Capacitor } from '@capacitor/core';
 import { notifyCrossFire, notifyZeroProjectionAlerts, prepareCrossFireAlerts, prepareZeroProjectionAlerts, tapHaptic } from './utils/nativeFeedback';
@@ -110,7 +116,12 @@ function getLeagueThreats(lg) {
 }
 
 function getLeagueDisplayName(lg) {
-  return lg?.name || lg?.myTeamName || lg?.userTeam?.name || 'My Team';
+  return preferYahooLeagueName(
+    lg?.leagueName,
+    lg?.name,
+    lg?.myTeamName,
+    lg?.userTeam?.name
+  ) || 'My Team';
 }
 
 function getUserTeamName(lg) {
@@ -543,11 +554,13 @@ function normalizeLeague(lg, index = 0) {
   const threats = getLeagueThreats(lg).map(normalizeListedPlayer);
   const name = getLeagueDisplayName(lg) || `League ${index + 1}`;
   const oppTeamName = getLeagueOppName(lg);
+  const myTeamName = preferYahooLeagueName(lg.myTeamName, lg.userTeam?.name) || name;
   return {
     ...lg,
     id: lg.id || `lg_${Date.now()}_${index}`,
     name,
-    myTeamName: lg.myTeamName || name,
+    leagueName: preferYahooLeagueName(lg.leagueName, name),
+    myTeamName: isGenericYahooLeagueName(myTeamName) ? name : myTeamName,
     oppTeamName,
     opponent: lg.opponent || oppTeamName,
     platform: lg.platform || 'Yahoo',
@@ -561,6 +574,37 @@ function normalizeLeague(lg, index = 0) {
     starters: portfolio,
     opponentStarters: threats
   };
+}
+
+function mergeYahooSyncedLeague(existing, incoming) {
+  if (!incoming) return existing;
+  if (!existing) return normalizeLeague(incoming);
+  const name = preferYahooLeagueName(
+    incoming.leagueName,
+    incoming.name,
+    existing.leagueName,
+    existing.name
+  );
+  return normalizeLeague({
+    ...existing,
+    ...incoming,
+    id: existing.id,
+    name,
+    leagueName: name,
+    yahooLeagueId: existing.yahooLeagueId || incoming.yahooLeagueId || incoming.leagueKey,
+    yahooTeamId: existing.yahooTeamId || incoming.yahooTeamId || incoming.teamKey,
+    yahooMatchupUrl: incoming.yahooMatchupUrl || existing.yahooMatchupUrl,
+    myTeamName: preferYahooLeagueName(incoming.myTeamName, existing.myTeamName),
+    oppTeamName: incoming.oppTeamName || existing.oppTeamName,
+    portfolio: incoming.portfolio || incoming.starters || existing.portfolio,
+    threats: incoming.threats || incoming.opponentStarters || existing.threats,
+    starters: incoming.starters || incoming.portfolio || existing.starters,
+    opponentStarters: incoming.opponentStarters || incoming.threats || existing.opponentStarters,
+    myScore: incoming.myScore ?? existing.myScore,
+    oppScore: incoming.oppScore ?? existing.oppScore,
+    myProj: incoming.myProj ?? existing.myProj,
+    oppProj: incoming.oppProj ?? existing.oppProj
+  });
 }
 
 function leagueNameKey(lg) {
@@ -2171,6 +2215,26 @@ export default function App() {
       setSyncStatus(count === 1
         ? 'Yahoo connected. 1 league is on this phone.'
         : `Yahoo connected. ${count} leagues are on this phone.`);
+      // Re-pull Fantasy API data so cached "My Teams & Leagues" / 0.0 points get overwritten.
+      syncYahooLeaguesFromApi().then((imported) => {
+        if (!imported?.length) return;
+        setLeagues((prev) => {
+          const next = [...prev];
+          imported.forEach((league) => {
+            const key = yahooLeagueIdOf(league) || league.id;
+            const idx = next.findIndex((item) => (
+              item.id === league.id
+              || yahooLeagueIdOf(item) === key
+              || (item.yahooLeagueId && league.yahooLeagueId && item.yahooLeagueId === league.yahooLeagueId)
+            ));
+            if (idx >= 0) next[idx] = mergeYahooSyncedLeague(next[idx], league);
+            else next.push(normalizeLeague(league, next.length));
+          });
+          return next;
+        });
+      }).catch(() => {
+        // Cookie sync is best-effort after OAuth redirect.
+      });
     } else if (authError) {
       setSyncStatus(authError);
     }
@@ -2414,11 +2478,39 @@ export default function App() {
           console.warn('Yahoo lineup refresh failed', err);
         }
       }
+
+      // Cookie-backed Yahoo Fantasy API refresh — overwrites cached section names + 0.0 points.
+      try {
+        const hasYahoo = current.some((lg) => (
+          String(lg?.platform || '').toLowerCase().includes('yahoo')
+          || String(lg?.id || '').startsWith('yahoo-')
+          || lg?.leagueKey
+          || lg?.yahooLeagueId
+        ));
+        if (hasYahoo) {
+          const imported = await syncYahooLeaguesFromApi({ week });
+          if (imported?.length) {
+            imported.forEach((league) => {
+              const id = league.id || `yahoo-${league.leagueKey || league.yahooLeagueId || Date.now()}`;
+              updates.set(id, { ...league, id });
+            });
+          }
+        }
+      } catch (err) {
+        console.warn('Yahoo API sync failed', err);
+      }
+
       if (cancelled || !updates.size) return;
       setLeagues((prev) => {
         const used = new Set();
         const next = prev.map((lg) => {
           let updated = updates.get(lg.id);
+          if (!updated) {
+            const key = yahooLeagueIdOf(lg);
+            if (key) {
+              updated = [...updates.values()].find((item) => yahooLeagueIdOf(item) === key) || null;
+            }
+          }
           if (!updated && lg.yahooLeagueId) {
             const candidates = [...updates.values()].filter((item) => item.yahooLeagueId === lg.yahooLeagueId);
             updated = candidates.find((item) => item.yahooTeamId && lg.yahooTeamId && item.yahooTeamId === lg.yahooTeamId)
@@ -2426,20 +2518,25 @@ export default function App() {
               || candidates.find((item) => !item.yahooTeamId && !lg.yahooTeamId)
               || null;
           }
-          if (!updated) return lg;
+          if (!updated) {
+            // Still scrub a cached section header even when sync did not return this row.
+            if (isGenericYahooLeagueName(lg.name) || isGenericYahooLeagueName(lg.leagueName)) {
+              return normalizeLeague({
+                ...lg,
+                name: preferYahooLeagueName(lg.leagueName, lg.myTeamName, lg.userTeam?.name, lg.name)
+              });
+            }
+            return lg;
+          }
           used.add(updated.id);
-          return normalizeLeague({
-            ...lg,
-            ...updated,
-            id: lg.id,
-            yahooLeagueId: lg.yahooLeagueId || updated.yahooLeagueId,
-            yahooTeamId: lg.yahooTeamId || updated.yahooTeamId,
-            yahooMatchupUrl: updated.yahooMatchupUrl || lg.yahooMatchupUrl
-          });
+          return mergeYahooSyncedLeague(lg, updated);
         });
         updates.forEach((updated, id) => {
           if (used.has(id) || !String(id).startsWith('yahoo-')) return;
           if (next.some((lg) => lg.id === id || (
+            yahooLeagueIdOf(lg)
+            && yahooLeagueIdOf(lg) === yahooLeagueIdOf(updated)
+          ) || (
             updated.yahooLeagueId
             && lg.yahooLeagueId === updated.yahooLeagueId
             && ((updated.yahooTeamId && lg.yahooTeamId && lg.yahooTeamId === updated.yahooTeamId)
