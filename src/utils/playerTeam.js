@@ -124,7 +124,7 @@ export function needsTeamBackfill(team) {
   return !canonTeamCode(raw) && !resolveNflTeam(raw);
 }
 
-/** Fill blank / FA team codes from a known abbreviation or Sleeper directory. */
+/** Fill blank / FA team codes from mascot/city names, abbreviation, or Sleeper directory. */
 export function backfillPlayerTeam(player, players = null, index = null) {
   if (!player || typeof player !== 'object') return player;
   const current = canonTeamCode(player.nflTeam || player.team) || resolveNflTeam(player.nflTeam || player.team);
@@ -134,6 +134,8 @@ export function backfillPlayerTeam(player, players = null, index = null) {
     }
     return player;
   }
+  // Yahoo D/ST entries are often mascot-only ("Bills", "Texans") with a blank team.
+  const fromName = resolveNflTeam(player.name);
   const fromSleeper = lookupTeamFromSleeper(
     player.name,
     player.position,
@@ -141,7 +143,7 @@ export function backfillPlayerTeam(player, players = null, index = null) {
     players,
     index
   );
-  const team = canonTeamCode(fromSleeper) || fromSleeper;
+  const team = fromName || canonTeamCode(fromSleeper) || fromSleeper;
   if (!team) return player;
   return { ...player, nflTeam: team, team };
 }
