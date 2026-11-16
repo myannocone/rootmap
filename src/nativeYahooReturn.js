@@ -1,20 +1,32 @@
 import { App } from '@capacitor/app';
 import { Browser } from '@capacitor/browser';
-import { isGenericYahooLeagueName, preferYahooLeagueName } from './utils/yahooSync';
+import {
+  isGenericYahooLeagueName,
+  preferYahooLeagueName,
+  preferYahooLeagueOverTeam
+} from './utils/yahooSync';
 
 const LEAGUES_KEY = 'rootmap_leagues';
 
 function mergeOne(prev, next) {
   if (!next) return prev;
   if (!prev) return next;
-  const name = preferYahooLeagueName(next.leagueName, next.name, prev.leagueName, prev.name);
+  const teamName = preferYahooLeagueName(next.myTeamName, prev.myTeamName, next.teamName, prev.teamName);
+  const name = preferYahooLeagueOverTeam(
+    teamName,
+    next.leagueName,
+    next.name,
+    prev.leagueName,
+    prev.name
+  );
   return {
     ...prev,
     ...next,
     id: prev.id || next.id,
     name,
     leagueName: name,
-    myTeamName: preferYahooLeagueName(next.myTeamName, prev.myTeamName) || name
+    teamName,
+    myTeamName: teamName || 'My Team'
   };
 }
 

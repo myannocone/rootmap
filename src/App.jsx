@@ -43,6 +43,7 @@ import {
 import {
   isGenericYahooLeagueName,
   preferYahooLeagueName,
+  preferYahooLeagueOverTeam,
   syncYahooLeaguesFromApi,
   yahooLeagueIdOf
 } from './utils/yahooSync';
@@ -124,19 +125,34 @@ function getLeagueThreats(lg) {
   return listedStarters(firstPlayerList(lg?.threats, lg?.opponentStarters, lg?.oppTeam?.starters));
 }
 
+function yahooNameKey(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, '');
+}
+
+function looksLikeYahooTeamName(name, lg) {
+  const key = yahooNameKey(name);
+  if (!key) return false;
+  const teamCandidates = [lg?.myTeamName, lg?.teamName, lg?.userTeam?.name];
+  return teamCandidates.some((candidate) => {
+    const teamKey = yahooNameKey(candidate);
+    return teamKey && teamKey === key;
+  });
+}
+
 function getLeagueDisplayName(lg) {
-  const teamName = String(lg?.myTeamName || lg?.userTeam?.name || '').trim();
   const candidates = [lg?.leagueName, lg?.name];
   for (const candidate of candidates) {
     const name = String(candidate || '').trim();
     if (!name || isGenericYahooLeagueName(name)) continue;
     // Yahoo sync used to fall back to the team name ("YANNACONDA") as the league name.
-    if (teamName && name === teamName) continue;
+    if (looksLikeYahooTeamName(name, lg)) continue;
     return name;
   }
   for (const candidate of candidates) {
     const name = String(candidate || '').trim();
-    if (name && !isGenericYahooLeagueName(name)) return name;
+    if (name && !isGenericYahooLeagueName(name) && !looksLikeYahooTeamName(name, lg)) return name;
   }
   return 'Yahoo League';
 }
@@ -612,11 +628,11 @@ function normalizeLeague(lg, index = 0) {
 }
 
 function yahooLeagueNameCandidate(league, teamName) {
-  const team = String(teamName || league?.myTeamName || '').trim();
+  const probe = { ...league, myTeamName: teamName || league?.myTeamName, teamName };
   for (const candidate of [league?.leagueName, league?.name]) {
     const name = String(candidate || '').trim();
     if (!name || isGenericYahooLeagueName(name)) continue;
-    if (team && name === team) continue;
+    if (looksLikeYahooTeamName(name, probe)) continue;
     return name;
   }
   return '';
@@ -1035,6 +1051,10 @@ function passesBoardFilters(player, filters) {
   return true;
 }
 
+function playerUsesYahooNativePoints(player) {
+  return Boolean(player?.yahooNative || player?.scoringSource === 'yahoo');
+}
+
 function applyLiveToPlayer(player, games, liveScores, now = new Date(), sleeperPlayers = null, teamIndex = null) {
   if (needsTeamBackfill(player?.nflTeam || player?.team)) {
     const filled = backfillPlayerTeam(player, sleeperPlayers, teamIndex);
@@ -1050,6 +1070,7 @@ function applyLiveToPlayer(player, games, liveScores, now = new Date(), sleeperP
     }
   }
 
+  const preserveYahooPoints = playerUsesYahooNativePoints(player);
   let live = sleeperLiveNumbers(player, liveScores);
   if (live?.team && needsTeamBackfill(player.nflTeam)) {
     player.nflTeam = knownTeam(live.team) || live.team;
@@ -1069,7 +1090,8 @@ function applyLiveToPlayer(player, games, liveScores, now = new Date(), sleeperP
     player.opponent = 'BYE';
     player.gameClock = 'Bye';
     live = sleeperLiveNumbers(player, liveScores) || live;
-    if (live?.proj != null) {
+    // Yahoo leagues keep Yahoo projections; Sleeper pts_ppr is full-PPR and mismatches 0.5-PPR.
+    if (!preserveYahooPoints && live?.proj != null) {
       player.projPoints = preferFiniteNumber(player.projPoints, live.proj, { preferPositive: true });
     }
     if (live?.team && (needsTeamBackfill(player.nflTeam) || !knownTeam(player.nflTeam))) {
@@ -1095,10 +1117,15 @@ function applyLiveToPlayer(player, games, liveScores, now = new Date(), sleeperP
     player.nflTeam = preferTeamCode(player.nflTeam, live.team) || knownTeam(live.team) || live.team;
     player.team = player.nflTeam;
   }
-  if (live?.proj != null) {
+  if (!preserveYahooPoints && live?.proj != null) {
     player.projPoints = preferFiniteNumber(player.projPoints, live.proj, { preferPositive: true });
   }
   player.zeroProjection = Boolean(starterProjectionStatus(player, { games, liveScores, now })?.zero);
+  if (preserveYahooPoints) {
+    // Keep Yahoo player_points.total even when 0 (pre-kickoff / IDP). Never copy Sleeper pts_ppr.
+    if (finiteNumber(player.actualPoints) != null) player.points = player.actualPoints;
+    return player;
+  }
   const storedActual = finiteNumber(player.actualPoints);
   const needsPublicLine = !player.sleeperId && (storedActual == null || storedActual === 0);
   if (live?.actual != null && live.started && phase !== 'UPCOMING' && (player.sleeperId || needsPublicLine)) {
@@ -1116,31 +1143,63 @@ function lookupMasterPlayerStats(player, masterIndex) {
   return findMasterCard(masterIndex, player);
 }
 
-/** Enrich Matchups starters with the same Sleeper/live stats RootMap uses, then re-sum team totals. */
+function isYahooPlatformLeague(league) {
+  if (!league) return false;
+  if (league.yahooNative || league.scoringSource === 'yahoo' || league.yahooStatsOk) return true;
+  const platform = String(league.platform || '').toLowerCase();
+  if (platform.includes('yahoo')) return true;
+  return Boolean(
+    league.yahooLeagueId
+    || league.leagueKey
+    || String(league.id || '').startsWith('yahoo-')
+  );
+}
+
+/** Enrich Matchups starters. Yahoo keeps native API points; Sleeper only when Yahoo stats are missing. */
 function hydrateLeagueForMatchups(league, games, liveScores, sleeperPlayers = null, masterIndex = null) {
   if (!league) return league;
+  const yahooLeague = isYahooPlatformLeague(league);
+  const allowSleeperPoints = !yahooLeague || league.yahooStatsOk === false;
   const hydrateOne = (player) => {
     if (!player) return player;
-    const copy = { ...player };
+    const copy = {
+      ...player,
+      yahooNative: Boolean(player.yahooNative || (yahooLeague && !allowSleeperPoints)),
+      scoringSource: player.scoringSource || (yahooLeague && !allowSleeperPoints ? 'yahoo' : player.scoringSource)
+    };
+    // Scrub cached projection-as-actual (pre-kickoff) left by the old Sleeper pts_ppr hydrate.
+    if (yahooLeague && !allowSleeperPoints && !player.yahooNative) {
+      const proj = finiteNumber(copy.projPoints) ?? finiteNumber(copy.projected);
+      const actual = finiteNumber(copy.actualPoints);
+      const points = finiteNumber(copy.points);
+      const game = gameForTeam(games, copy.nflTeam || copy.team);
+      const phase = game ? gamePhase(game, new Date()) : 'UPCOMING';
+      if (phase === 'UPCOMING' && proj != null && (actual === proj || points === proj || actual == null)) {
+        copy.actualPoints = 0;
+        copy.points = 0;
+      }
+    }
     const master = lookupMasterPlayerStats(copy, masterIndex);
     if (master) {
-      const masterActual = finiteNumber(master.actualPoints) ?? finiteNumber(master.points);
-      const localActual = finiteNumber(copy.actualPoints) ?? finiteNumber(copy.points);
-      if ((localActual == null || localActual === 0) && masterActual != null && masterActual !== 0) {
-        copy.actualPoints = master.actualPoints ?? masterActual;
-        copy.points = masterActual;
-      }
-      const masterProj = finiteNumber(master.projPoints);
-      const localProj = finiteNumber(copy.projPoints) ?? finiteNumber(copy.projected);
-      if ((localProj == null || localProj === 0) && masterProj != null && masterProj !== 0) {
-        copy.projPoints = masterProj;
-        copy.projected = masterProj;
+      if (allowSleeperPoints && !playerUsesYahooNativePoints(copy)) {
+        const masterActual = finiteNumber(master.actualPoints) ?? finiteNumber(master.points);
+        const localActual = finiteNumber(copy.actualPoints) ?? finiteNumber(copy.points);
+        if ((localActual == null || localActual === 0) && masterActual != null && masterActual !== 0) {
+          copy.actualPoints = master.actualPoints ?? masterActual;
+          copy.points = masterActual;
+        }
+        const masterProj = finiteNumber(master.projPoints);
+        const localProj = finiteNumber(copy.projPoints) ?? finiteNumber(copy.projected);
+        if ((localProj == null || localProj === 0) && masterProj != null && masterProj !== 0) {
+          copy.projPoints = masterProj;
+          copy.projected = masterProj;
+        }
       }
       if (!knownTeam(copy.nflTeam || copy.team) && knownTeam(master.nflTeam)) {
         copy.nflTeam = knownTeam(master.nflTeam);
         copy.team = copy.nflTeam;
       }
-      if (master.sleeperId && !copy.sleeperId) copy.sleeperId = master.sleeperId;
+      if (allowSleeperPoints && master.sleeperId && !copy.sleeperId) copy.sleeperId = master.sleeperId;
       if (master.gameStatus) copy.gameStatus = master.gameStatus;
       if (master.isLive != null) copy.isLive = master.isLive;
       if (master.kickoff) copy.kickoff = master.kickoff;
@@ -1158,6 +1217,8 @@ function hydrateLeagueForMatchups(league, games, liveScores, sleeperPlayers = nu
   const oppScoreRaw = finiteNumber(league.oppScore);
   const myProjRaw = finiteNumber(league.myProj ?? league.myProjected);
   const oppProjRaw = finiteNumber(league.oppProj ?? league.oppProjected);
+  // Yahoo scoreboard totals win; do not re-sum from Sleeper-hydrated starter lines.
+  const preferBoard = yahooLeague && !allowSleeperPoints;
 
   return {
     ...league,
@@ -1174,12 +1235,24 @@ function hydrateLeagueForMatchups(league, games, liveScores, sleeperPlayers = nu
     oppTeam: league.oppTeam
       ? { ...league.oppTeam, starters: threats }
       : league.oppTeam,
-    myScore: (myScoreRaw != null && myScoreRaw !== 0) ? myScoreRaw : myStarterScore,
-    oppScore: (oppScoreRaw != null && oppScoreRaw !== 0) ? oppScoreRaw : oppStarterScore,
-    myProj: (myProjRaw != null && myProjRaw !== 0) ? myProjRaw : (myStarterProj || myProjRaw),
-    oppProj: (oppProjRaw != null && oppProjRaw !== 0) ? oppProjRaw : (oppStarterProj || oppProjRaw),
-    myProjected: (myProjRaw != null && myProjRaw !== 0) ? myProjRaw : (myStarterProj || myProjRaw),
-    oppProjected: (oppProjRaw != null && oppProjRaw !== 0) ? oppProjRaw : (oppStarterProj || oppProjRaw)
+    myScore: preferBoard
+      ? (myScoreRaw != null ? myScoreRaw : myStarterScore)
+      : ((myScoreRaw != null && myScoreRaw !== 0) ? myScoreRaw : myStarterScore),
+    oppScore: preferBoard
+      ? (oppScoreRaw != null ? oppScoreRaw : oppStarterScore)
+      : ((oppScoreRaw != null && oppScoreRaw !== 0) ? oppScoreRaw : oppStarterScore),
+    myProj: preferBoard
+      ? (myProjRaw != null ? myProjRaw : (myStarterProj || myProjRaw))
+      : ((myProjRaw != null && myProjRaw !== 0) ? myProjRaw : (myStarterProj || myProjRaw)),
+    oppProj: preferBoard
+      ? (oppProjRaw != null ? oppProjRaw : (oppStarterProj || oppProjRaw))
+      : ((oppProjRaw != null && oppProjRaw !== 0) ? oppProjRaw : (oppStarterProj || oppProjRaw)),
+    myProjected: preferBoard
+      ? (myProjRaw != null ? myProjRaw : (myStarterProj || myProjRaw))
+      : ((myProjRaw != null && myProjRaw !== 0) ? myProjRaw : (myStarterProj || myProjRaw)),
+    oppProjected: preferBoard
+      ? (oppProjRaw != null ? oppProjRaw : (oppStarterProj || oppProjRaw))
+      : ((oppProjRaw != null && oppProjRaw !== 0) ? oppProjRaw : (oppStarterProj || oppProjRaw))
   };
 }
 
@@ -2713,10 +2786,15 @@ export default function App() {
           }
           if (!updated) {
             // Still scrub a cached section header even when sync did not return this row.
-            if (isGenericYahooLeagueName(lg.name) || isGenericYahooLeagueName(lg.leagueName)) {
+            if (isGenericYahooLeagueName(lg.name) || isGenericYahooLeagueName(lg.leagueName) || looksLikeYahooTeamName(lg.name, lg) || looksLikeYahooTeamName(lg.leagueName, lg)) {
+              const teamName = preferYahooLeagueName(lg.myTeamName, lg.teamName, lg.userTeam?.name);
+              const leagueName = preferYahooLeagueOverTeam(teamName, lg.leagueName, lg.name);
               return normalizeLeague({
                 ...lg,
-                name: preferYahooLeagueName(lg.leagueName, lg.myTeamName, lg.userTeam?.name, lg.name)
+                name: leagueName,
+                leagueName,
+                teamName,
+                myTeamName: teamName || lg.myTeamName
               });
             }
             return lg;
