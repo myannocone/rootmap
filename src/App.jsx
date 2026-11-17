@@ -35,8 +35,10 @@ import { ESPN_LOGIN_URL, openNativeEspnLogin, readEspnSession, writeEspnSession 
 import { openYahooLogin } from './utils/openYahooLogin';
 import {
   fetchYahooMatchupCapture,
+  isYahooMatchupHint,
   isYahooSessionExpired,
   leagueFromYahooCapture,
+  readYahooSession,
   readYahooSessions,
   YAHOO_MATCHUP_HINT,
   writeYahooSession,
@@ -2524,6 +2526,10 @@ export default function App() {
       }).catch(() => {
         // Cookie sync is best-effort after OAuth redirect.
       });
+    } else if (yahoo === 'matchup-hint') {
+      // QA/deep-link: show the actionable Yahoo Matchup fallback banner in the Connect modal.
+      setShowYahooIngest(true);
+      setSyncStatus(YAHOO_MATCHUP_HINT);
     } else if (authError) {
       setSyncStatus(authError);
     }
@@ -2531,45 +2537,89 @@ export default function App() {
     return undefined;
   }, []);
 
+  const applyImportedYahooLeague = (imported, week) => {
+    const normalized = normalizeLeague(imported, leaguesRef.current.length);
+    setLeagues((prev) => [
+      ...prev.filter((league) => {
+        if (league.id === normalized.id) return false;
+        if (normalized.yahooLeagueId && league.yahooLeagueId === normalized.yahooLeagueId) {
+          if (!normalized.yahooTeamId || !league.yahooTeamId || league.yahooTeamId === normalized.yahooTeamId) return false;
+        }
+        return true;
+      }),
+      normalized
+    ]);
+    setView('matchups');
+    setIsSyncing(false);
+    closeConnect();
+    setSyncStatus(`Synced ${imported.name} from Yahoo for Week ${week}.`);
+  };
+
+  const applyImportedYahooLeagues = (importedList, week) => {
+    if (!importedList?.length) return false;
+    setLeagues((prev) => {
+      const next = [...prev];
+      importedList.forEach((league) => {
+        const normalized = normalizeLeague(league, next.length);
+        const idx = next.findIndex((item) => (
+          item.id === normalized.id
+          || (normalized.yahooLeagueId && item.yahooLeagueId === normalized.yahooLeagueId && (
+            !normalized.yahooTeamId || !item.yahooTeamId || item.yahooTeamId === normalized.yahooTeamId
+          ))
+        ));
+        if (idx >= 0) next[idx] = mergeYahooSyncedLeague(next[idx], normalized);
+        else next.push(normalized);
+      });
+      return next;
+    });
+    setView('matchups');
+    setIsSyncing(false);
+    closeConnect();
+    setSyncStatus(importedList.length === 1
+      ? `Synced ${importedList[0].name} from Yahoo for Week ${week}.`
+      : `Synced ${importedList.length} Yahoo leagues for Week ${week}.`);
+    return true;
+  };
+
+  const captureYahooStarters = async (result, week) => {
+    writeYahooSession(result);
+    let imported = leagueFromYahooCapture(result, week);
+    if (!imported) {
+      setSyncStatus('Yahoo session saved. Reading this week’s matchup…');
+      try {
+        const refreshed = await fetchYahooMatchupCapture(result, week);
+        writeYahooSession(refreshed);
+        imported = leagueFromYahooCapture(refreshed, week);
+      } catch (refreshError) {
+        console.warn('Yahoo silent matchup fetch failed', refreshError);
+      }
+    }
+    if (!imported) {
+      try {
+        const apiLeagues = await syncYahooLeaguesFromApi({ week });
+        if (apiLeagues?.length) return { apiLeagues };
+      } catch (apiError) {
+        console.warn('Yahoo /api/sync fallback failed', apiError);
+      }
+    }
+    return { imported };
+  };
+
   const handleConnectYahoo = async () => {
     setIsSyncing(true);
     setSyncStatus('');
     try {
       if (Capacitor.isNativePlatform()) {
-        const result = await openYahooLogin();
         const week = selectedWeek;
-        writeYahooSession(result);
-        let imported = leagueFromYahooCapture(result, week);
-        if (!imported) {
-          setSyncStatus('Yahoo session saved. Reading this week’s matchup…');
-          try {
-            const refreshed = await fetchYahooMatchupCapture(result, week);
-            writeYahooSession(refreshed);
-            imported = leagueFromYahooCapture(refreshed, week);
-          } catch (refreshError) {
-            console.warn('Yahoo silent matchup fetch failed', refreshError);
-          }
-        }
-        if (!imported) {
-          setIsSyncing(false);
-          setSyncStatus(YAHOO_MATCHUP_HINT);
+        const result = await openYahooLogin();
+        const { imported, apiLeagues } = await captureYahooStarters(result, week);
+        if (imported) {
+          applyImportedYahooLeague(imported, week);
           return;
         }
-        const normalized = normalizeLeague(imported, leaguesRef.current.length);
-        setLeagues((prev) => [
-          ...prev.filter((league) => {
-            if (league.id === normalized.id) return false;
-            if (normalized.yahooLeagueId && league.yahooLeagueId === normalized.yahooLeagueId) {
-              if (!normalized.yahooTeamId || !league.yahooTeamId || league.yahooTeamId === normalized.yahooTeamId) return false;
-            }
-            return true;
-          }),
-          normalized
-        ]);
-        setView('matchups');
+        if (applyImportedYahooLeagues(apiLeagues, week)) return;
         setIsSyncing(false);
-        closeConnect();
-        setSyncStatus(`Synced ${imported.name} from Yahoo for Week ${week}.`);
+        setSyncStatus(YAHOO_MATCHUP_HINT);
         return;
       }
       await openYahooLogin();
@@ -2578,6 +2628,36 @@ export default function App() {
       const message = String(err?.message || '');
       if (message.toLowerCase().includes('cancel')) return;
       setSyncStatus(message || 'Missing Yahoo Client ID in .env');
+    }
+  };
+
+  const handleYahooMatchupHintTap = async () => {
+    if (isSyncing || !Capacitor.isNativePlatform()) return;
+    const week = selectedWeek;
+    const saved = readYahooSession();
+    setIsSyncing(true);
+    setSyncStatus('Opening Yahoo Matchup…');
+    try {
+      const result = await openYahooLogin({
+        matchupUrl: saved?.matchupUrl || '',
+        week
+      });
+      const { imported, apiLeagues } = await captureYahooStarters(result, week);
+      if (imported) {
+        applyImportedYahooLeague(imported, week);
+        return;
+      }
+      if (applyImportedYahooLeagues(apiLeagues, week)) return;
+      setIsSyncing(false);
+      setSyncStatus(YAHOO_MATCHUP_HINT);
+    } catch (err) {
+      setIsSyncing(false);
+      const message = String(err?.message || '');
+      if (message.toLowerCase().includes('cancel')) {
+        setSyncStatus(YAHOO_MATCHUP_HINT);
+        return;
+      }
+      setSyncStatus(message || YAHOO_MATCHUP_HINT);
     }
   };
 
@@ -4243,18 +4323,27 @@ export default function App() {
         ))}
 
         {syncStatus && (
-          <div
-            role="status"
-            className={`px-3 py-2.5 rounded-xl text-xs font-mono font-bold text-center shadow-lg border ${
-              syncStatus === YAHOO_MATCHUP_HINT || /open your matchup once/i.test(syncStatus)
-                ? 'bg-[#0D9488] text-white font-bold animate-pulse rootmap-pulse-blink border-teal-300'
-                : /missing|could not|did not/i.test(syncStatus)
+          isYahooMatchupHint(syncStatus) ? (
+            <button
+              type="button"
+              onClick={handleYahooMatchupHintTap}
+              disabled={isSyncing}
+              className="w-full px-3 py-2.5 rounded-xl text-xs font-bold text-center shadow-lg border bg-[#0D9488] text-white animate-pulse rootmap-pulse-blink border-teal-300 disabled:opacity-70"
+            >
+              {syncStatus}
+            </button>
+          ) : (
+            <div
+              role="status"
+              className={`px-3 py-2.5 rounded-xl text-xs font-mono font-bold text-center shadow-lg border ${
+                /missing|could not|did not/i.test(syncStatus)
                   ? 'bg-[#E11D48] text-white border-[#E11D48]'
                   : 'bg-[#0F9D68] text-white border-emerald-400'
-            }`}
-          >
-            {syncStatus}
-          </div>
+              }`}
+            >
+              {syncStatus}
+            </div>
+          )
         )}
 
         {/* VIEW 1: MATCHUPS */}
@@ -6282,18 +6371,27 @@ export default function App() {
             </button>
 
             {syncStatus && (
-              <div
-                role="alert"
-                className={`text-xs font-bold rounded-xl px-3 py-2 border ${
-                  syncStatus === YAHOO_MATCHUP_HINT || /open your matchup once/i.test(syncStatus)
-                    ? 'bg-[#0D9488] text-white font-bold animate-pulse rootmap-pulse-blink border-teal-300'
-                    : isLight
+              isYahooMatchupHint(syncStatus) ? (
+                <button
+                  type="button"
+                  onClick={handleYahooMatchupHintTap}
+                  disabled={isSyncing}
+                  className="w-full text-xs font-bold rounded-xl px-3 py-3 border bg-[#0D9488] text-white animate-pulse rootmap-pulse-blink border-teal-300 disabled:opacity-70 text-left leading-snug"
+                >
+                  {syncStatus}
+                </button>
+              ) : (
+                <div
+                  role="alert"
+                  className={`text-xs font-bold rounded-xl px-3 py-2 border ${
+                    isLight
                       ? 'bg-rose-50 text-rose-700 border-rose-200'
                       : 'bg-[#E11D48] text-white border-[#E11D48]'
-                }`}
-              >
-                {syncStatus}
-              </div>
+                  }`}
+                >
+                  {syncStatus}
+                </div>
+              )
             )}
 
             {syncPhoneButton}

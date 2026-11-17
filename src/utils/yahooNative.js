@@ -50,13 +50,24 @@ export function writeYahooSession(session) {
 }
 
 export function yahooIdentity(result) {
-  const matchupUrl = textValue(result?.matchupUrl);
+  let matchupUrl = textValue(result?.matchupUrl);
   let leagueId = textValue(result?.leagueId);
   let teamId = textValue(result?.teamId);
   const match = matchupUrl.match(/\/f1\/(\d+)(?:\/(\d+))?/);
   if (!leagueId && match) leagueId = match[1];
   if (!teamId && match?.[2]) teamId = match[2];
-  const url = matchupUrl || (leagueId ? `https://football.fantasysports.yahoo.com/f1/${leagueId}/matchup` : '');
+  const weekMatch = matchupUrl.match(/[?&]week=(\d+)/i);
+  const weekQuery = weekMatch ? `?week=${weekMatch[1]}` : '';
+  const preferred = leagueId
+    ? (teamId
+      ? `https://football.fantasysports.yahoo.com/f1/${leagueId}/${teamId}/matchup${weekQuery}`
+      : `https://football.fantasysports.yahoo.com/f1/${leagueId}/matchup${weekQuery}`)
+    : '';
+  // Always prefer a concrete /matchup URL — league home pages do not expose starters.
+  if (!matchupUrl || (leagueId && !/\/matchup(?:\/|$|\?)/i.test(matchupUrl))) {
+    matchupUrl = preferred;
+  }
+  const url = matchupUrl || preferred;
   return { leagueId, teamId, matchupUrl: url };
 }
 
@@ -67,7 +78,14 @@ export function isYahooSessionExpired(error) {
 
 /** Shown only when silent matchup refresh cannot read starters. */
 export const YAHOO_MATCHUP_HINT =
-  "Yahoo session saved. Open your matchup once so this week's starters can be read.";
+  "Yahoo connected! Tap here to open your Yahoo Matchup tab once so RootMap can load this week's starters.";
+
+export function isYahooMatchupHint(status) {
+  const text = String(status || '');
+  return text === YAHOO_MATCHUP_HINT
+    || /tap here to open your yahoo matchup/i.test(text)
+    || /open your matchup once/i.test(text);
+}
 
 function htmlToMatchupText(html) {
   return String(html || '')
