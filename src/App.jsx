@@ -182,7 +182,7 @@ function getLeagueDisplayName(lg) {
 }
 
 function getUserTeamName(lg) {
-  const team = preferYahooLeagueName(lg?.myTeamName, lg?.userTeam?.name);
+  const team = preferYahooLeagueName(lg?.myTeamName, lg?.userTeam?.name, lg?.teamName);
   if (team && !isGenericYahooLeagueName(team)) return team;
   return team || 'My Team';
 }
@@ -1225,13 +1225,24 @@ function hydrateLeagueForMatchups(league, games, liveScores, sleeperPlayers = nu
   const allowSleeperPoints = !yahooLeague || league.yahooStatsOk === false;
   const hydrateOne = (player) => {
     if (!player) return player;
+    const hasYahooWeekStats = finiteNumber(player.projPoints) != null
+      || finiteNumber(player.projected) != null
+      || finiteNumber(player.actualPoints) != null;
+    // Opp rows often arrive named but scoreless from the DOM scrape — allow public fill for those only.
+    const allowSleeperForPlayer = allowSleeperPoints
+      || (yahooLeague && player.yahooNative !== true && !hasYahooWeekStats);
     const copy = {
       ...player,
-      yahooNative: Boolean(player.yahooNative || (yahooLeague && !allowSleeperPoints)),
-      scoringSource: player.scoringSource || (yahooLeague && !allowSleeperPoints ? 'yahoo' : player.scoringSource)
+      yahooNative: Boolean(
+        (player.yahooNative && hasYahooWeekStats)
+        || (yahooLeague && !allowSleeperPoints && hasYahooWeekStats)
+      ),
+      scoringSource: (player.yahooNative && hasYahooWeekStats)
+        ? 'yahoo'
+        : (player.scoringSource || (yahooLeague && !allowSleeperForPlayer && hasYahooWeekStats ? 'yahoo' : player.scoringSource))
     };
     // Scrub cached projection-as-actual (pre-kickoff) left by the old Sleeper pts_ppr hydrate.
-    if (yahooLeague && !allowSleeperPoints && !player.yahooNative) {
+    if (yahooLeague && !allowSleeperForPlayer && !copy.yahooNative) {
       const proj = finiteNumber(copy.projPoints) ?? finiteNumber(copy.projected);
       const actual = finiteNumber(copy.actualPoints);
       const points = finiteNumber(copy.points);
@@ -1244,7 +1255,7 @@ function hydrateLeagueForMatchups(league, games, liveScores, sleeperPlayers = nu
     }
     const master = lookupMasterPlayerStats(copy, masterIndex);
     if (master) {
-      if (allowSleeperPoints && !playerUsesYahooNativePoints(copy)) {
+      if (allowSleeperForPlayer && !playerUsesYahooNativePoints(copy)) {
         const masterActual = finiteNumber(master.actualPoints) ?? finiteNumber(master.points);
         const localActual = finiteNumber(copy.actualPoints) ?? finiteNumber(copy.points);
         if ((localActual == null || localActual === 0) && masterActual != null && masterActual !== 0) {
@@ -1262,7 +1273,7 @@ function hydrateLeagueForMatchups(league, games, liveScores, sleeperPlayers = nu
         copy.nflTeam = knownTeam(master.nflTeam);
         copy.team = copy.nflTeam;
       }
-      if (allowSleeperPoints && master.sleeperId && !copy.sleeperId) copy.sleeperId = master.sleeperId;
+      if (allowSleeperForPlayer && master.sleeperId && !copy.sleeperId) copy.sleeperId = master.sleeperId;
       if (master.gameStatus) copy.gameStatus = master.gameStatus;
       if (master.isLive != null) copy.isLive = master.isLive;
       if (master.kickoff) copy.kickoff = master.kickoff;
@@ -3635,6 +3646,12 @@ export default function App() {
     const leagueName = typedName && typedName !== autoName ? typedName : fallbackName;
     const oppTeamName = parsed.oppTeam?.name || parsed.oppTeamName || MISSING_OPPONENT_NAME;
     const myTeamName = espnPaste ? (espnTeamName || leagueName) : (parsed.myTeamName || leagueName);
+    const myHasPasteStats = myStarters.some((player) => (
+      Number.isFinite(Number(player?.actualPoints)) || Number.isFinite(Number(player?.projPoints))
+    ));
+    const oppHasPasteStats = !oppStarters.length || oppStarters.some((player) => (
+      Number.isFinite(Number(player?.actualPoints)) || Number.isFinite(Number(player?.projPoints))
+    ));
     const imported = normalizeLeague({
       id: espnPaste ? (parsed.id || `espn-${Date.now()}`) : `lg_${Date.now()}`,
       name: leagueName,
@@ -3642,6 +3659,9 @@ export default function App() {
       oppTeamName,
       opponent: oppTeamName,
       platform: espnPaste ? 'ESPN' : 'Yahoo',
+      scoringSource: espnPaste ? 'espn' : 'yahoo',
+      yahooNative: !espnPaste,
+      yahooStatsOk: espnPaste ? undefined : (myHasPasteStats && oppHasPasteStats),
       myScore: parsed.myScore ?? parsed.userTeam?.score ?? 0,
       oppScore: parsed.oppScore ?? parsed.oppTeam?.score ?? 0,
       myProj: parsed.myProj ?? parsed.userTeam?.projectedScore ?? null,

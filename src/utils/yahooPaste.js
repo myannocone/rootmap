@@ -256,6 +256,7 @@ function toStarterRecord(player, side) {
     ? explicitProj
     : (storedPoints != null && Number(storedPoints) !== 0 ? storedPoints : null);
   const actual = player.actualPoints ?? null;
+  const hasYahooStats = actual != null || proj != null;
   const slot = player.slot || player.position;
   const teamRaw = player.nflTeam || player.team || '';
   return {
@@ -263,9 +264,11 @@ function toStarterRecord(player, side) {
     nflTeam: canonTeamCode(teamRaw) || String(teamRaw || '').toUpperCase(),
     position: displayPlayerPosition({ position: player.position, slot }),
     slot,
-    points: actual ?? proj ?? 0,
+    points: actual ?? 0,
     projPoints: proj,
     actualPoints: actual,
+    scoringSource: hasYahooStats ? 'yahoo' : undefined,
+    yahooNative: hasYahooStats,
     isLive: /^(1st|2nd|3rd|4th|OT|Q)/i.test(player.gameClock || ''),
     inRedZone: false,
     gameClock: player.gameClock || 'Scheduled',

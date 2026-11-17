@@ -179,11 +179,27 @@ function lineupObject(raw) {
   }
 }
 
+function starterHasYahooStats(player) {
+  // After mapping, yahooNative is only set when the scrape/API actually provided week stats.
+  if (player?.yahooNative || player?.scoringSource === 'yahoo') {
+    return numberOrNull(player?.actualPoints) != null || numberOrNull(player?.projPoints) != null;
+  }
+  return numberOrNull(player?.projPoints) != null
+    || numberOrNull(player?.projectedPoints) != null
+    || numberOrNull(player?.projected) != null
+    || numberOrNull(player?.actualPoints) != null;
+}
+
 function starterFromStructured(player, side) {
   const name = cleanYahooPlayerName(player?.name);
   if (!name || isOpponentLabel(name)) return null;
-  const actualPoints = numberOrNull(player.actualPoints ?? player.points);
+  // Empty string from the scraper means "unknown" — do not coerce to 0 or Yahoo-native.
+  const rawActual = player.actualPoints ?? player.points;
+  const actualPoints = (rawActual === '' || rawActual == null)
+    ? null
+    : numberOrNull(rawActual);
   const projPoints = numberOrNull(player.projPoints ?? player.projectedPoints ?? player.projected);
+  const hasYahooStats = actualPoints != null || projPoints != null;
   const teamRaw = player.nflTeam || player.team || '';
   const nflTeam = canonTeamCode(teamRaw)
     || resolveNflTeam(teamRaw)
@@ -203,9 +219,9 @@ function starterFromStructured(player, side) {
     slot,
     points,
     projPoints,
-    actualPoints: actualPoints != null ? actualPoints : 0,
-    scoringSource: 'yahoo',
-    yahooNative: true,
+    actualPoints: actualPoints != null ? actualPoints : null,
+    scoringSource: hasYahooStats ? 'yahoo' : undefined,
+    yahooNative: hasYahooStats,
     isLive: live,
     inRedZone: false,
     gameClock: clock,
@@ -269,13 +285,18 @@ export function leagueFromYahooCapture(result, week) {
   const myStarters = parsed.myStarters || [];
   const oppStarters = parsed.oppStarters || [];
   if (!myStarters.length && !oppStarters.length) return null;
-  const myTeamName = usableName(parsed.myTeamName || identity.teamName, 'My Team');
+  // Prefer scrape nicknames, then lobby/session identity (YANNACONDA), never "My Team" noise.
+  const myTeamName = usableName(parsed.myTeamName, '')
+    || usableName(identity.teamName, '')
+    || usableName(result?.teamName, '')
+    || 'My Team';
   const oppTeamName = usableName(
     parsed.oppTeamName && parsed.oppTeamName !== myTeamName ? parsed.oppTeamName : '',
     'Opponent'
   );
   // Prefer a real league title over the fantasy team nickname / generic fallback.
-  const leagueName = usableName(parsed.leagueName || identity.leagueName, '')
+  const leagueName = usableName(parsed.leagueName, '')
+    || usableName(identity.leagueName, '')
     || usableName(result?.leagueName, '')
     || 'Yahoo League';
   const teamKey = identity.teamId ? `${identity.leagueId}-${identity.teamId}` : identity.leagueId;
@@ -283,6 +304,15 @@ export function leagueFromYahooCapture(result, week) {
     ?? myStarters.reduce((sum, player) => sum + (numberOrNull(player.actualPoints) ?? 0), 0);
   const oppScore = numberOrNull(parsed.oppScore)
     ?? oppStarters.reduce((sum, player) => sum + (numberOrNull(player.actualPoints) ?? 0), 0);
+  const myHasStats = myStarters.some(starterHasYahooStats)
+    || numberOrNull(parsed.myScore) != null
+    || numberOrNull(parsed.myProj) != null;
+  const oppHasStats = !oppStarters.length
+    || oppStarters.some(starterHasYahooStats)
+    || numberOrNull(parsed.oppScore) != null
+    || numberOrNull(parsed.oppProj) != null;
+  // Only lock out Sleeper when BOTH sides actually carried Yahoo week stats.
+  const yahooStatsOk = myHasStats && oppHasStats;
   return {
     id: teamKey ? `yahoo-${teamKey}` : `yahoo-${Date.now()}`,
     yahooLeagueId: identity.leagueId,
@@ -296,9 +326,7 @@ export function leagueFromYahooCapture(result, week) {
     platform: 'Yahoo',
     scoringSource: 'yahoo',
     yahooNative: true,
-    yahooStatsOk: myStarters.some((player) => numberOrNull(player.actualPoints) != null || numberOrNull(player.projPoints) != null)
-      || numberOrNull(parsed.myScore) != null
-      || numberOrNull(parsed.myProj) != null,
+    yahooStatsOk,
     season: '2026',
     lineupWeek: Number(week) || null,
     myScore,
