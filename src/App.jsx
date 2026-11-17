@@ -34,6 +34,8 @@ import { fetchEspnFanLeagues, fetchEspnLeague, listEspnTeams, mapEspnLeague } fr
 import { ESPN_LOGIN_URL, openNativeEspnLogin, readEspnSession, writeEspnSession } from './utils/espnLogin';
 import { openYahooLogin } from './utils/openYahooLogin';
 import {
+  captureAllYahooLeagueMatchups,
+  discoverYahooLeagues,
   fetchYahooMatchupCapture,
   isYahooMatchupHint,
   isYahooSessionExpired,
@@ -2537,24 +2539,6 @@ export default function App() {
     return undefined;
   }, []);
 
-  const applyImportedYahooLeague = (imported, week) => {
-    const normalized = normalizeLeague(imported, leaguesRef.current.length);
-    setLeagues((prev) => [
-      ...prev.filter((league) => {
-        if (league.id === normalized.id) return false;
-        if (normalized.yahooLeagueId && league.yahooLeagueId === normalized.yahooLeagueId) {
-          if (!normalized.yahooTeamId || !league.yahooTeamId || league.yahooTeamId === normalized.yahooTeamId) return false;
-        }
-        return true;
-      }),
-      normalized
-    ]);
-    setView('matchups');
-    setIsSyncing(false);
-    closeConnect();
-    setSyncStatus(`Synced ${imported.name} from Yahoo for Week ${week}.`);
-  };
-
   const applyImportedYahooLeagues = (importedList, week) => {
     if (!importedList?.length) return false;
     setLeagues((prev) => {
@@ -2581,28 +2565,73 @@ export default function App() {
     return true;
   };
 
-  const captureYahooStarters = async (result, week) => {
-    writeYahooSession(result);
-    let imported = leagueFromYahooCapture(result, week);
-    if (!imported) {
-      setSyncStatus('Yahoo session saved. Reading this week’s matchup…');
-      try {
-        const refreshed = await fetchYahooMatchupCapture(result, week);
-        writeYahooSession(refreshed);
-        imported = leagueFromYahooCapture(refreshed, week);
-      } catch (refreshError) {
-        console.warn('Yahoo silent matchup fetch failed', refreshError);
-      }
-    }
-    if (!imported) {
+  const ingestYahooLoginResult = async (result, week) => {
+    const discovered = discoverYahooLeagues(result);
+    const direct = leagueFromYahooCapture(result, week);
+    if (direct) writeYahooSession(result);
+
+    if (!discovered.length && !direct) {
       try {
         const apiLeagues = await syncYahooLeaguesFromApi({ week });
         if (apiLeagues?.length) return { apiLeagues };
       } catch (apiError) {
         console.warn('Yahoo /api/sync fallback failed', apiError);
       }
+      return {
+        error: 'Could not find any Yahoo leagues on this account. Open Yahoo Fantasy, confirm your leagues, then try again.'
+      };
     }
-    return { imported };
+
+    const targets = discovered.length
+      ? discovered
+      : [{
+          leagueId: direct.yahooLeagueId,
+          teamId: direct.yahooTeamId,
+          matchupUrl: direct.yahooMatchupUrl,
+          leagueName: direct.name,
+          teamName: direct.myTeamName
+        }];
+
+    setSyncStatus(targets.length > 1
+      ? `Found ${targets.length} Yahoo leagues. Reading this week’s matchups…`
+      : 'Yahoo session saved. Reading this week’s matchup…');
+
+    const { imported, expired, lastError, discoveredCount } = await captureAllYahooLeagueMatchups(
+      targets,
+      week,
+      {
+        onProgress: ({ index, total }) => {
+          setSyncStatus(`Reading Yahoo matchup ${index + 1} of ${total}…`);
+        }
+      }
+    );
+
+    if (direct && !imported.some((league) => league.id === direct.id)) {
+      imported.unshift(direct);
+    }
+
+    if (imported.length) return { importedList: imported };
+
+    if (expired) {
+      return { error: 'Yahoo session expired. Connect Yahoo again.' };
+    }
+
+    try {
+      const apiLeagues = await syncYahooLeaguesFromApi({ week });
+      if (apiLeagues?.length) return { apiLeagues };
+    } catch (apiError) {
+      console.warn('Yahoo /api/sync fallback failed', apiError);
+    }
+
+    if (discoveredCount > 0) {
+      return {
+        keepHint: true,
+        error: lastError?.message
+          || `Found ${discoveredCount} Yahoo league${discoveredCount === 1 ? '' : 's'}, but could not read starters. Tap the banner to retry.`
+      };
+    }
+
+    return { keepHint: true, error: YAHOO_MATCHUP_HINT };
   };
 
   const handleConnectYahoo = async () => {
@@ -2611,15 +2640,16 @@ export default function App() {
     try {
       if (Capacitor.isNativePlatform()) {
         const week = selectedWeek;
-        const result = await openYahooLogin();
-        const { imported, apiLeagues } = await captureYahooStarters(result, week);
-        if (imported) {
-          applyImportedYahooLeague(imported, week);
+        // Always rediscover leagues from the Yahoo lobby — do not assume a saved leagueId.
+        const result = await openYahooLogin({ week });
+        const outcome = await ingestYahooLoginResult(result, week);
+        if (outcome.importedList?.length) {
+          applyImportedYahooLeagues(outcome.importedList, week);
           return;
         }
-        if (applyImportedYahooLeagues(apiLeagues, week)) return;
+        if (applyImportedYahooLeagues(outcome.apiLeagues, week)) return;
         setIsSyncing(false);
-        setSyncStatus(YAHOO_MATCHUP_HINT);
+        setSyncStatus(outcome.keepHint ? YAHOO_MATCHUP_HINT : (outcome.error || YAHOO_MATCHUP_HINT));
         return;
       }
       await openYahooLogin();
@@ -2627,7 +2657,11 @@ export default function App() {
       setIsSyncing(false);
       const message = String(err?.message || '');
       if (message.toLowerCase().includes('cancel')) return;
-      setSyncStatus(message || 'Missing Yahoo Client ID in .env');
+      if (isYahooSessionExpired(err)) {
+        setSyncStatus('Yahoo session expired. Connect Yahoo again.');
+        return;
+      }
+      setSyncStatus(message || 'Could not start Yahoo sign-in.');
     }
   };
 
@@ -2635,26 +2669,38 @@ export default function App() {
     if (isSyncing || !Capacitor.isNativePlatform()) return;
     const week = selectedWeek;
     const saved = readYahooSession();
+    const hasConcreteMatchup = Boolean(
+      saved?.leagueId
+      && saved?.matchupUrl
+      && /\/f1\/\d+/i.test(saved.matchupUrl)
+      && /\/matchup/i.test(saved.matchupUrl)
+    );
     setIsSyncing(true);
-    setSyncStatus('Opening Yahoo Matchup…');
+    setSyncStatus(hasConcreteMatchup
+      ? 'Opening Yahoo Matchup…'
+      : 'Opening Yahoo to find your leagues…');
     try {
-      const result = await openYahooLogin({
-        matchupUrl: saved?.matchupUrl || '',
-        week
-      });
-      const { imported, apiLeagues } = await captureYahooStarters(result, week);
-      if (imported) {
-        applyImportedYahooLeague(imported, week);
+      // Prefer lobby rediscovery when we don't already have a concrete /matchup URL.
+      const result = await openYahooLogin(hasConcreteMatchup
+        ? { matchupUrl: saved.matchupUrl, week }
+        : { week });
+      const outcome = await ingestYahooLoginResult(result, week);
+      if (outcome.importedList?.length) {
+        applyImportedYahooLeagues(outcome.importedList, week);
         return;
       }
-      if (applyImportedYahooLeagues(apiLeagues, week)) return;
+      if (applyImportedYahooLeagues(outcome.apiLeagues, week)) return;
       setIsSyncing(false);
-      setSyncStatus(YAHOO_MATCHUP_HINT);
+      setSyncStatus(outcome.keepHint ? YAHOO_MATCHUP_HINT : (outcome.error || YAHOO_MATCHUP_HINT));
     } catch (err) {
       setIsSyncing(false);
       const message = String(err?.message || '');
       if (message.toLowerCase().includes('cancel')) {
         setSyncStatus(YAHOO_MATCHUP_HINT);
+        return;
+      }
+      if (isYahooSessionExpired(err)) {
+        setSyncStatus('Yahoo session expired. Connect Yahoo again.');
         return;
       }
       setSyncStatus(message || YAHOO_MATCHUP_HINT);
@@ -4336,7 +4382,7 @@ export default function App() {
             <div
               role="status"
               className={`px-3 py-2.5 rounded-xl text-xs font-mono font-bold text-center shadow-lg border ${
-                /missing|could not|did not/i.test(syncStatus)
+                /missing|could not|did not|expired|no yahoo/i.test(syncStatus)
                   ? 'bg-[#E11D48] text-white border-[#E11D48]'
                   : 'bg-[#0F9D68] text-white border-emerald-400'
               }`}

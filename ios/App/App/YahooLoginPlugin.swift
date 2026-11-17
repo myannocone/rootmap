@@ -70,7 +70,7 @@ public class YahooLoginPlugin: CAPPlugin, CAPBridgedPlugin {
 }
 
 enum YahooLinks {
-    static let home = URL(string: "https://football.fantasysports.yahoo.com/")!
+    static let home = URL(string: "https://football.fantasysports.yahoo.com/f1")!
 
     static let extractScript = """
     (function(){
@@ -433,6 +433,74 @@ enum YahooLinks {
       function clean(value) {
         return String(value || '').replace(/\\s+/g, ' ').trim();
       }
+      function usableLeagueName(value) {
+        var text = clean(value);
+        if (!text || text.length > 60) return '';
+        if (/^(my teams?|leagues?|fantasy football|yahoo|home|matchup|standings|players)$/i.test(text)) return '';
+        return text;
+      }
+      function leagueNameNear(node) {
+        var el = node;
+        for (var depth = 0; depth < 7 && el; depth++) {
+          var heading = el.querySelector && el.querySelector('h1, h2, h3, h4, .Navmain-title, [class*="league-name"], [class*="LeagueName"]');
+          if (heading) {
+            var titled = usableLeagueName(heading.innerText || heading.textContent || '');
+            if (titled) return titled;
+          }
+          var prev = el.previousElementSibling;
+          while (prev) {
+            var sibling = usableLeagueName(prev.innerText || prev.textContent || '');
+            if (sibling && !/\\d+\\s*-\\s*\\d+/.test(sibling)) return sibling;
+            prev = prev.previousElementSibling;
+          }
+          el = el.parentElement;
+        }
+        return '';
+      }
+      function pushTeam(out, seen, leagueId, teamId, href, teamName, leagueName) {
+        if (!leagueId || !teamId) return;
+        var key = leagueId + ':' + teamId;
+        if (seen[key]) return;
+        seen[key] = true;
+        var name = clean(teamName).replace(/\\d+\\s*-\\s*\\d+\\s*-\\s*\\d+.*/, '').trim();
+        if (!name || name.length > 40) name = 'Team ' + teamId;
+        out.push({
+          leagueId: String(leagueId),
+          teamId: String(teamId),
+          href: href || ('https://football.fantasysports.yahoo.com/f1/' + leagueId + '/' + teamId),
+          name: name,
+          teamName: name,
+          leagueName: usableLeagueName(leagueName)
+        });
+      }
+      function dig(value, out, seen, depth) {
+        if (!value || typeof value !== 'object' || depth > 8) return;
+        if (Array.isArray(value)) {
+          for (var i = 0; i < value.length; i++) dig(value[i], out, seen, depth + 1);
+          return;
+        }
+        var leagueRaw = value.league_id || value.leagueId || value.league_key || value.leagueKey || '';
+        var teamRaw = value.team_id || value.teamId || value.team_key || value.teamKey || '';
+        var leagueNum = String(leagueRaw).match(/(?:\\.l\\.|\\/f1\\/)?(\\d+)/);
+        var teamNum = String(teamRaw).match(/(?:\\.t\\.|\\/)(\\d+)$/) || String(teamRaw).match(/^(\\d+)$/);
+        if (leagueNum && teamNum) {
+          pushTeam(
+            out,
+            seen,
+            leagueNum[1],
+            teamNum[1],
+            value.url || value.href || '',
+            value.name || value.team_name || value.teamName || '',
+            value.league_name || value.leagueName || ''
+          );
+        }
+        var keys = Object.keys(value);
+        for (var k = 0; k < keys.length; k++) {
+          var key = keys[k];
+          if (key === 'parent' || key === 'parentNode' || key === 'ownerDocument') continue;
+          try { dig(value[key], out, seen, depth + 1); } catch (err) {}
+        }
+      }
       var seen = {};
       var teams = [];
       var links = document.querySelectorAll('a[href]');
@@ -440,14 +508,25 @@ enum YahooLinks {
         var href = links[i].href || '';
         var match = href.match(/\\/f1\\/(\\d+)\\/(\\d+)(?:\\/|$|\\?)/);
         if (!match) continue;
-        var key = match[1] + ':' + match[2];
-        if (seen[key]) continue;
-        seen[key] = true;
-        var name = clean(links[i].innerText || links[i].textContent || '');
-        name = name.replace(/\\d+\\s*-\\s*\\d+\\s*-\\s*\\d+.*/, '').trim();
-        if (!name || name.length > 40) name = 'Team ' + match[2];
-        teams.push({ leagueId: match[1], teamId: match[2], href: href, name: name });
+        pushTeam(teams, seen, match[1], match[2], href, links[i].innerText || links[i].textContent || '', leagueNameNear(links[i]));
       }
+      try { if (window.App && App.main) dig(App.main, teams, seen, 0); } catch (err) {}
+      try { if (window.ydb) dig(window.ydb, teams, seen, 0); } catch (err) {}
+      try {
+        if (window.__NEXT_DATA__) dig(window.__NEXT_DATA__, teams, seen, 0);
+      } catch (err) {}
+      try {
+        var scripts = document.querySelectorAll('script:not([src])');
+        for (var s = 0; s < scripts.length; s++) {
+          var text = scripts[s].textContent || '';
+          if (text.indexOf('/f1/') === -1 && text.indexOf('league_key') === -1) continue;
+          var re = /\\/f1\\/(\\d+)\\/(\\d+)/g;
+          var found;
+          while ((found = re.exec(text))) {
+            pushTeam(teams, seen, found[1], found[2], '', 'Team ' + found[2], '');
+          }
+        }
+      } catch (err) {}
       return JSON.stringify(teams);
     })();
     """
@@ -647,13 +726,13 @@ final class YahooLoginSheet: UIViewController, WKNavigationDelegate, WKUIDelegat
     private var captureQueued = false
     private var pushedMatchup = false
     private var awaitingMatchup = false
-    private var awaitingChoice = false
     private var listScanInFlight = false
     private var listScanAt: Date?
     private var pendingLeagueId = ""
     private var pendingTeamId = ""
     private var matchupPushAttempts = 0
     private var lastCookieKickAt: Date?
+    private var listScanMisses = 0
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -670,7 +749,7 @@ final class YahooLoginSheet: UIViewController, WKNavigationDelegate, WKUIDelegat
         banner.backgroundColor = UIColor(red: 88.0 / 255.0, green: 28.0 / 255.0, blue: 135.0 / 255.0, alpha: 1)
         let instructions = UILabel()
         instructions.translatesAutoresizingMaskIntoConstraints = false
-        instructions.text = "1. Sign in to Yahoo  2. RootMap opens your Matchup tab automatically (or tap your team if you have several)."
+        instructions.text = "1. Sign in to Yahoo  2. RootMap finds all your leagues and loads this week’s matchups automatically."
         instructions.numberOfLines = 0
         instructions.font = .systemFont(ofSize: 13, weight: .semibold)
         instructions.textColor = .white
@@ -757,9 +836,10 @@ final class YahooLoginSheet: UIViewController, WKNavigationDelegate, WKUIDelegat
             maybeScanList()
             return
         }
-        if awaitingChoice {
-            awaitingChoice = false
+        if pendingLeagueId.isEmpty {
             pendingLeagueId = YahooLinks.leagueId(from: webView.url)
+        }
+        if pendingTeamId.isEmpty {
             pendingTeamId = YahooLinks.teamId(from: webView.url)
         }
         continueMatchup()
@@ -786,18 +866,16 @@ final class YahooLoginSheet: UIViewController, WKNavigationDelegate, WKUIDelegat
                 let loggedIn = YahooLinks.hasSession(cookies) && !onLogin
                 let leagueId = YahooLinks.leagueId(from: self.webView.url)
                 self.useButton.isEnabled = loggedIn
-                if self.awaitingChoice && YahooLinks.isLeagueList(self.webView.url) {
-                    self.navigationItem.title = "Tap your team"
-                } else if onLogin {
+                if onLogin {
                     self.navigationItem.title = "Sign in to Yahoo"
                 } else if YahooLinks.isMatchup(self.webView.url) {
                     self.navigationItem.title = "Reading Yahoo Matchup"
                 } else if leagueId.isEmpty {
-                    self.navigationItem.title = loggedIn ? "Choose your league" : "Sign in to Yahoo"
+                    self.navigationItem.title = loggedIn ? "Finding your leagues" : "Sign in to Yahoo"
                 } else {
                     self.navigationItem.title = "Yahoo connected"
                 }
-                // As soon as Yahoo login cookies appear, drive straight to /matchup.
+                // As soon as Yahoo login cookies appear, discover leagues / open matchup.
                 if loggedIn {
                     self.kickMatchupAfterCookies()
                 }
@@ -806,7 +884,7 @@ final class YahooLoginSheet: UIViewController, WKNavigationDelegate, WKUIDelegat
     }
 
     private func kickMatchupAfterCookies() {
-        guard !finished, !capturing, !captureQueued, !awaitingMatchup, !awaitingChoice else { return }
+        guard !finished, !capturing, !captureQueued, !awaitingMatchup else { return }
         if YahooLinks.isLogin(webView.url) { return }
         if let lastCookieKickAt, Date().timeIntervalSince(lastCookieKickAt) < 1.0 { return }
         lastCookieKickAt = Date()
@@ -830,20 +908,17 @@ final class YahooLoginSheet: UIViewController, WKNavigationDelegate, WKUIDelegat
             return
         }
         if YahooLinks.isLeagueList(webView.url) {
-            if awaitingChoice {
-                navigationItem.title = "Tap your team"
-                return
-            }
-            maybeScanList()
+            maybeScanList(force: true)
             return
         }
         continueMatchup()
     }
 
-    private func maybeScanList() {
-        guard !finished, !listScanInFlight, !awaitingChoice, YahooLinks.isLeagueList(webView.url) else { return }
-        if let listScanAt, Date().timeIntervalSince(listScanAt) < 1.2 { return }
+    private func maybeScanList(force: Bool = false) {
+        guard !finished, !listScanInFlight, YahooLinks.isLeagueList(webView.url) else { return }
+        if !force, let listScanAt, Date().timeIntervalSince(listScanAt) < 1.0 { return }
         listScanInFlight = true
+        navigationItem.title = "Finding your leagues"
         webView.evaluateJavaScript(YahooLinks.listTeamsScript) { [weak self] value, _ in
             DispatchQueue.main.async {
                 guard let self, !self.finished else { return }
@@ -851,13 +926,15 @@ final class YahooLoginSheet: UIViewController, WKNavigationDelegate, WKUIDelegat
                 self.listScanAt = Date()
                 guard YahooLinks.isLeagueList(self.webView.url) else { return }
                 let teams = self.teams(from: value)
-                if teams.count > 1 {
-                    self.awaitingChoice = true
-                    self.navigationItem.title = "Tap your team"
+                if !teams.isEmpty {
+                    self.listScanMisses = 0
+                    // Hand every discovered league back to JS for silent /matchup fetches.
+                    self.finishWithDiscoveredLeagues(teams)
                     return
                 }
-                if let only = teams.first {
-                    self.openTeam(only["leagueId"] ?? "", only["teamId"] ?? "")
+                self.listScanMisses += 1
+                if self.listScanMisses >= 6 {
+                    self.finishWithDiscoveredLeagues([])
                 }
             }
         }
@@ -873,7 +950,60 @@ final class YahooLoginSheet: UIViewController, WKNavigationDelegate, WKUIDelegat
             let leagueId = item["leagueId"] as? String ?? ""
             let teamId = item["teamId"] as? String ?? ""
             if leagueId.isEmpty || teamId.isEmpty { return nil }
-            return ["leagueId": leagueId, "teamId": teamId, "name": item["name"] as? String ?? ""]
+            let teamName = item["teamName"] as? String ?? item["name"] as? String ?? ""
+            let leagueName = item["leagueName"] as? String ?? ""
+            return [
+                "leagueId": leagueId,
+                "teamId": teamId,
+                "name": teamName,
+                "teamName": teamName,
+                "leagueName": leagueName
+            ]
+        }
+    }
+
+    private func finishWithDiscoveredLeagues(_ teams: [[String: String]]) {
+        guard !finished else { return }
+        capturing = true
+        finished = true
+        pollTimer?.invalidate()
+        let week = preferredWeek
+        let leagues: [[String: Any]] = teams.map { team in
+            let leagueId = team["leagueId"] ?? ""
+            let teamId = team["teamId"] ?? ""
+            let matchup = YahooLinks.matchupURL(
+                leagueId: leagueId,
+                teamId: teamId,
+                week: week,
+                fallback: URL(string: "https://football.fantasysports.yahoo.com/f1/\(leagueId)/\(teamId)/matchup")
+            )?.absoluteString ?? ""
+            return [
+                "leagueId": leagueId,
+                "teamId": teamId,
+                "teamName": team["teamName"] ?? team["name"] ?? "",
+                "leagueName": team["leagueName"] ?? "",
+                "matchupUrl": matchup
+            ]
+        }
+        var payload: [String: Any] = [
+            "leagues": leagues,
+            "discovered": true,
+            "pageText": "",
+            "html": "",
+            "lineup": ""
+        ]
+        if let first = leagues.first {
+            payload["leagueId"] = first["leagueId"] ?? ""
+            payload["teamId"] = first["teamId"] ?? ""
+            payload["matchupUrl"] = first["matchupUrl"] ?? ""
+        } else {
+            payload["leagueId"] = ""
+            payload["teamId"] = ""
+            payload["matchupUrl"] = ""
+        }
+        let finish = onFinish
+        dismiss(animated: true) {
+            finish?(payload)
         }
     }
 
@@ -904,6 +1034,11 @@ final class YahooLoginSheet: UIViewController, WKNavigationDelegate, WKUIDelegat
         guard !finished, !capturing, !captureQueued else { return }
         if YahooLinks.isLogin(webView.url) {
             navigationItem.title = "Finish Yahoo sign-in"
+            return
+        }
+        // Lobby / My Teams page: discover every league, then let JS silent-fetch matchups.
+        if YahooLinks.isLeagueList(webView.url) {
+            maybeScanList()
             return
         }
         let pageLeagueId = YahooLinks.leagueId(from: webView.url)
@@ -958,6 +1093,22 @@ final class YahooLoginSheet: UIViewController, WKNavigationDelegate, WKUIDelegat
         }
         if ((payload["teamId"] as? String) ?? "").isEmpty && !pendingTeamId.isEmpty {
             payload["teamId"] = pendingTeamId
+        }
+        let leagueId = (payload["leagueId"] as? String) ?? ""
+        let teamId = (payload["teamId"] as? String) ?? ""
+        let matchupUrl = (payload["matchupUrl"] as? String) ?? ""
+        if !leagueId.isEmpty {
+            payload["leagues"] = [[
+                "leagueId": leagueId,
+                "teamId": teamId,
+                "teamName": "",
+                "leagueName": "",
+                "matchupUrl": matchupUrl
+            ]]
+            payload["discovered"] = true
+        } else {
+            payload["leagues"] = []
+            payload["discovered"] = false
         }
         let finish = onFinish
         dismiss(animated: true) {
