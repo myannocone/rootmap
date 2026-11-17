@@ -11,11 +11,15 @@ function textValue(value) {
   return String(value || '').trim();
 }
 
+function isConcreteYahooMatchupUrl(url) {
+  return /football\.fantasysports\.yahoo\.com\/f1\/\d+/i.test(String(url || ''));
+}
+
 function sessionList(raw) {
   const rows = Array.isArray(raw) ? raw : (raw && typeof raw === 'object' ? [raw] : []);
   return rows
     .map((row) => yahooIdentity(row))
-    .filter((identity) => identity.matchupUrl || identity.leagueId);
+    .filter((identity) => identity.leagueId && identity.matchupUrl);
 }
 
 export function readYahooSessions() {
@@ -33,7 +37,8 @@ export function readYahooSession() {
 
 export function writeYahooSession(session) {
   const identity = yahooIdentity(session);
-  if (!identity.matchupUrl && !identity.leagueId) return;
+  // Never persist bare Yahoo home / lobby URLs — they poison later banner taps.
+  if (!identity.leagueId || !identity.matchupUrl || !isConcreteYahooMatchupUrl(identity.matchupUrl)) return;
   const next = readYahooSessions().filter((item) => {
     if (identity.matchupUrl && item.matchupUrl === identity.matchupUrl) return false;
     const sameLeague = identity.leagueId && item.leagueId === identity.leagueId;
@@ -47,6 +52,10 @@ export function writeYahooSession(session) {
   } catch {
     // private mode can block storage
   }
+}
+
+export function writeYahooSessions(sessions) {
+  (Array.isArray(sessions) ? sessions : []).forEach((session) => writeYahooSession(session));
 }
 
 export function yahooIdentity(result) {
@@ -67,8 +76,14 @@ export function yahooIdentity(result) {
   if (!matchupUrl || (leagueId && !/\/matchup(?:\/|$|\?)/i.test(matchupUrl))) {
     matchupUrl = preferred;
   }
-  const url = matchupUrl || preferred;
-  return { leagueId, teamId, matchupUrl: url };
+  const url = preferred || (isConcreteYahooMatchupUrl(matchupUrl) ? matchupUrl : '');
+  return {
+    leagueId,
+    teamId,
+    matchupUrl: url,
+    leagueName: textValue(result?.leagueName),
+    teamName: textValue(result?.teamName || result?.name)
+  };
 }
 
 export function isYahooSessionExpired(error) {
@@ -85,6 +100,28 @@ export function isYahooMatchupHint(status) {
   return text === YAHOO_MATCHUP_HINT
     || /tap here to open your yahoo matchup/i.test(text)
     || /open your matchup once/i.test(text);
+}
+
+/**
+ * Normalize leagues discovered by the native Yahoo lobby scan (or a single capture).
+ */
+export function discoverYahooLeagues(result) {
+  const rows = Array.isArray(result?.leagues) ? result.leagues : [];
+  const fromArray = rows
+    .map((row) => yahooIdentity(row))
+    .filter((identity) => identity.leagueId && identity.matchupUrl);
+  if (fromArray.length) {
+    const seen = new Set();
+    return fromArray.filter((identity) => {
+      const key = `${identity.leagueId}:${identity.teamId || ''}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+  const single = yahooIdentity(result);
+  if (single.leagueId && single.matchupUrl) return [single];
+  return [];
 }
 
 function htmlToMatchupText(html) {
@@ -213,9 +250,9 @@ export function leagueFromYahooCapture(result, week) {
   const myStarters = parsed.myStarters || [];
   const oppStarters = parsed.oppStarters || [];
   if (!myStarters.length && !oppStarters.length) return null;
-  const myTeamName = usableName(parsed.myTeamName, 'My Team');
+  const myTeamName = usableName(parsed.myTeamName || identity.teamName, 'My Team');
   const oppTeamName = usableName(parsed.oppTeamName, 'Opponent');
-  const leagueName = usableName(parsed.leagueName, myTeamName);
+  const leagueName = usableName(parsed.leagueName || identity.leagueName, myTeamName);
   const teamKey = identity.teamId ? `${identity.leagueId}-${identity.teamId}` : identity.leagueId;
   return {
     id: teamKey ? `yahoo-${teamKey}` : `yahoo-${Date.now()}`,
@@ -260,7 +297,7 @@ export function leagueFromYahooCapture(result, week) {
  */
 export async function fetchYahooMatchupCapture(session, week) {
   const identity = yahooIdentity(session);
-  if (!identity.matchupUrl) {
+  if (!identity.matchupUrl || !identity.leagueId) {
     throw new Error('A saved Yahoo matchup URL is required.');
   }
   const captured = await YahooLogin.refresh({
@@ -271,7 +308,56 @@ export async function fetchYahooMatchupCapture(session, week) {
     ...captured,
     leagueId: identity.leagueId || captured?.leagueId || '',
     teamId: identity.teamId || captured?.teamId || '',
-    matchupUrl: identity.matchupUrl || captured?.matchupUrl || ''
+    matchupUrl: identity.matchupUrl || captured?.matchupUrl || '',
+    leagueName: identity.leagueName || captured?.leagueName || '',
+    teamName: identity.teamName || captured?.teamName || ''
   };
 }
 
+/**
+ * After native login/lobby discovery, silently fetch each league's /matchup and parse starters.
+ */
+export async function captureAllYahooLeagueMatchups(leagues, week, { onProgress } = {}) {
+  const list = (Array.isArray(leagues) ? leagues : [])
+    .map((row) => yahooIdentity(row))
+    .filter((identity) => identity.leagueId && identity.matchupUrl);
+  const imported = [];
+  let expired = false;
+  let lastError = null;
+
+  for (let index = 0; index < list.length; index += 1) {
+    const league = list[index];
+    if (typeof onProgress === 'function') {
+      onProgress({
+        index,
+        total: list.length,
+        league
+      });
+    }
+    try {
+      writeYahooSession(league);
+      const refreshed = await fetchYahooMatchupCapture(league, week);
+      writeYahooSession(refreshed);
+      const parsed = leagueFromYahooCapture({
+        ...refreshed,
+        leagueName: league.leagueName || refreshed.leagueName,
+        teamName: league.teamName || refreshed.teamName
+      }, week);
+      if (parsed) imported.push(parsed);
+    } catch (error) {
+      lastError = error;
+      if (isYahooSessionExpired(error)) {
+        expired = true;
+        break;
+      }
+      console.warn('Yahoo league matchup capture failed', league.leagueId, error);
+    }
+  }
+
+  return {
+    imported,
+    expired,
+    lastError,
+    discoveredCount: list.length
+  };
+}
