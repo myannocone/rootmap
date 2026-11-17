@@ -46,7 +46,8 @@ function rememberBanner(entry) {
       body: entry.body,
       category: entry.category,
       outlook: entry.outlook,
-      accent: entry.accent
+      accent: entry.accent,
+      surfaceClass: entry.surfaceClass
     });
     localStorage.setItem(HISTORY_KEY, JSON.stringify(list.slice(0, MAX_HISTORY)));
   } catch {

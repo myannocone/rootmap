@@ -5354,7 +5354,9 @@ export default function App() {
               notifHistory.map((entry) => (
                 <div
                   key={entry.id}
-                  className={`rounded-2xl border px-3 py-2.5 shadow-sm ${notificationSurfaceClass(entry.category, entry.outlook)}`}
+                  className={`rounded-2xl border px-3 py-2.5 shadow-sm ${
+                    entry.surfaceClass || notificationSurfaceClass(entry.category, entry.outlook)
+                  }`}
                 >
                   <div className="text-[10px] font-black uppercase tracking-wide opacity-90">{entry.title}</div>
                   <div className="mt-0.5 text-xs font-semibold leading-snug">{entry.body}</div>
