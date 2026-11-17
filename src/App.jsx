@@ -4237,7 +4237,7 @@ export default function App() {
             role="status"
             className={`px-3 py-2.5 rounded-xl text-xs font-bold text-left shadow-lg border ${banner.surfaceClass || notificationSurfaceClass(banner.category, banner.outlook)}`}
           >
-            <div className="uppercase tracking-wide text-[10px] opacity-90">{banner.title}</div>
+            <div className="tracking-wide text-[10px] font-black opacity-90">{banner.title}</div>
             <div className="mt-0.5 font-semibold leading-snug">{banner.body}</div>
           </div>
         ))}
@@ -5358,7 +5358,7 @@ export default function App() {
                     entry.surfaceClass || notificationSurfaceClass(entry.category, entry.outlook)
                   }`}
                 >
-                  <div className="text-[10px] font-black uppercase tracking-wide opacity-90">{entry.title}</div>
+                  <div className="text-[10px] font-black tracking-wide opacity-90">{entry.title}</div>
                   <div className="mt-0.5 text-xs font-semibold leading-snug">{entry.body}</div>
                 </div>
               ))
