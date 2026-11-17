@@ -310,6 +310,20 @@ function sideLiveProjection(starters, liveScore, leagueProj) {
   return { live, remaining: 0, projected: live };
 }
 
+function yahooWinOddsPair(league) {
+  let mine = finiteNumber(league?.myWinOdds ?? league?.winOdds?.mine ?? league?.userTeam?.winOdds);
+  let opp = finiteNumber(league?.oppWinOdds ?? league?.winOdds?.opp ?? league?.oppTeam?.winOdds);
+  if (mine == null && opp == null) return null;
+  // Yahoo API often returns 0–1; DOM scrapes may already be 0–100.
+  if (mine != null && mine > 0 && mine <= 1) mine *= 100;
+  if (opp != null && opp > 0 && opp <= 1) opp *= 100;
+  if (mine == null && opp != null) mine = Math.max(0, 100 - opp);
+  if (opp == null && mine != null) opp = Math.max(0, 100 - mine);
+  if (mine == null || opp == null) return null;
+  const myPct = Math.max(0, Math.min(100, Math.round(mine)));
+  return { myPct, oppPct: Math.max(0, Math.min(100, 100 - myPct)) };
+}
+
 function matchupOutlook(league) {
   const myLive = leagueSideScore(league, 'my');
   const oppLive = leagueSideScore(league, 'opp');
@@ -317,9 +331,10 @@ function matchupOutlook(league) {
   const oppSide = sideLiveProjection(getLeagueThreats(league), oppLive, league?.oppProj ?? league?.oppProjected);
   const myTotal = mySide.projected;
   const oppTotal = oppSide.projected;
+  const yahooOdds = yahooWinOddsPair(league);
   const sum = myTotal + oppTotal;
-  const myPct = sum > 0 ? Math.round((myTotal / sum) * 100) : 50;
-  const oppPct = 100 - myPct;
+  const myPct = yahooOdds?.myPct ?? (sum > 0 ? Math.round((myTotal / sum) * 100) : 50);
+  const oppPct = yahooOdds?.oppPct ?? (100 - myPct);
   return {
     myLive,
     oppLive,
@@ -644,6 +659,10 @@ function normalizeLeague(lg, index = 0) {
     oppScore: lg.oppScore || 0,
     myProj: lg.myProj ?? lg.userTeam?.projectedScore ?? null,
     oppProj: lg.oppProj ?? lg.oppTeam?.projectedScore ?? null,
+    myWinOdds: lg.myWinOdds ?? lg.userTeam?.winOdds ?? null,
+    oppWinOdds: lg.oppWinOdds ?? lg.oppTeam?.winOdds ?? null,
+    myLogo: lg.myLogo || lg.userTeam?.logo || '',
+    oppLogo: lg.oppLogo || lg.oppTeam?.logo || '',
     portfolio,
     threats,
     starters: portfolio,
@@ -670,6 +689,11 @@ function mergeYahooSyncedLeague(existing, incoming) {
     || yahooLeagueNameCandidate(existing, teamName)
     || preferYahooLeagueName(incoming.leagueName, existing.leagueName, incoming.name, existing.name)
     || 'Yahoo League';
+  const incomingOpp = preferYahooLeagueName(incoming.oppTeamName, incoming.opponent, incoming.oppTeam?.name);
+  const existingOpp = preferYahooLeagueName(existing.oppTeamName, existing.opponent, existing.oppTeam?.name);
+  const oppTeamName = (incomingOpp && incomingOpp !== teamName)
+    ? incomingOpp
+    : (existingOpp && existingOpp !== teamName ? existingOpp : (incomingOpp || existingOpp || ''));
   return normalizeLeague({
     ...existing,
     ...incoming,
@@ -681,7 +705,8 @@ function mergeYahooSyncedLeague(existing, incoming) {
     yahooTeamId: existing.yahooTeamId || incoming.yahooTeamId || incoming.teamKey,
     yahooMatchupUrl: incoming.yahooMatchupUrl || existing.yahooMatchupUrl,
     myTeamName: teamName,
-    oppTeamName: incoming.oppTeamName || existing.oppTeamName,
+    oppTeamName,
+    opponent: oppTeamName,
     portfolio: incoming.portfolio || incoming.starters || existing.portfolio,
     threats: incoming.threats || incoming.opponentStarters || existing.threats,
     starters: incoming.starters || incoming.portfolio || existing.starters,
@@ -689,7 +714,21 @@ function mergeYahooSyncedLeague(existing, incoming) {
     myScore: incoming.myScore ?? existing.myScore,
     oppScore: incoming.oppScore ?? existing.oppScore,
     myProj: incoming.myProj ?? existing.myProj,
-    oppProj: incoming.oppProj ?? existing.oppProj
+    oppProj: incoming.oppProj ?? existing.oppProj,
+    myWinOdds: incoming.myWinOdds ?? existing.myWinOdds,
+    oppWinOdds: incoming.oppWinOdds ?? existing.oppWinOdds,
+    myLogo: incoming.myLogo || existing.myLogo || '',
+    oppLogo: incoming.oppLogo || existing.oppLogo || '',
+    myRecord: incoming.myRecord || existing.myRecord || null,
+    oppRecord: incoming.oppRecord || existing.oppRecord || null,
+    userTeam: incoming.userTeam || existing.userTeam,
+    oppTeam: incoming.oppTeam
+      ? {
+        ...incoming.oppTeam,
+        name: oppTeamName || incoming.oppTeam.name,
+        logo: incoming.oppLogo || incoming.oppTeam.logo || existing.oppLogo || ''
+      }
+      : existing.oppTeam
   });
 }
 
@@ -1276,23 +1315,31 @@ function hydrateLeagueForMatchups(league, games, liveScores, sleeperPlayers = nu
       : ((myProjRaw != null && myProjRaw !== 0) ? myProjRaw : (myStarterProj || myProjRaw)),
     oppProjected: preferBoard
       ? (oppProjRaw != null ? oppProjRaw : (oppStarterProj || oppProjRaw))
-      : ((oppProjRaw != null && oppProjRaw !== 0) ? oppProjRaw : (oppStarterProj || oppProjRaw))
+      : ((oppProjRaw != null && oppProjRaw !== 0) ? oppProjRaw : (oppStarterProj || oppProjRaw)),
+    myWinOdds: league.myWinOdds ?? league.userTeam?.winOdds ?? null,
+    oppWinOdds: league.oppWinOdds ?? league.oppTeam?.winOdds ?? null,
+    myLogo: league.myLogo || league.userTeam?.logo || '',
+    oppLogo: league.oppLogo || league.oppTeam?.logo || ''
   };
 }
 
 function liveScoreView(player) {
   const actual = finiteNumber(player?.actualPoints);
   const stored = finiteNumber(player?.points);
-  const explicitProj = finiteNumber(player?.projPoints);
+  const explicitProj = finiteNumber(player?.projPoints)
+    ?? finiteNumber(player?.projectedPoints)
+    ?? finiteNumber(player?.projected);
   const bye = Boolean(player?.isBye || player?.gameStatus === 'BYE');
   const live = !bye && (player?.gameStatus === 'IN_PROGRESS' || Boolean(player?.isLive) || clockIsLive(player?.gameClock));
   const finalGame = !bye && player?.gameStatus === 'FINAL';
+  const scheduled = !bye && !live && !finalGame;
   const proj = explicitProj != null
     ? explicitProj
     : (actual == null && stored != null && stored !== 0 ? stored : null);
-  const hasActual = actual != null && (live || finalGame);
+  // Non-zero Yahoo actuals win even when slate status still lags as "Scheduled".
+  const hasActual = actual != null && (live || finalGame || actual !== 0);
   const pregameValue = proj != null ? proj : (stored != null && stored !== 0 ? stored : null);
-  const unknownProj = !bye && !live && !finalGame && pregameValue == null;
+  const unknownProj = scheduled && pregameValue == null && !hasActual;
   const shown = hasActual ? actual : (live ? 0 : (pregameValue ?? 0));
   const delta = hasActual && proj != null ? actual - proj : null;
   return {
@@ -1304,8 +1351,20 @@ function liveScoreView(player) {
     delta,
     unknownProj,
     awaiting: live && !hasActual,
-    showProj: Boolean((live || finalGame) && proj != null && (live || hasActual))
+    showProj: Boolean((live || finalGame || hasActual) && proj != null && (live || finalGame || hasActual))
   };
+}
+
+/** Live / final only — never pre-game scheduled rows or zero-point stubs. */
+function playerEligibleForLiveAlert(player) {
+  if (!player) return false;
+  const status = String(player.gameStatus || '').toUpperCase();
+  if (status === 'SCHEDULED' || status === 'UPCOMING' || status === 'PREGAME' || status === 'BYE') return false;
+  const live = Boolean(player.isLive || status === 'IN_PROGRESS' || clockIsLive(player.gameClock));
+  const finalGame = status === 'FINAL' || Boolean(player.isFinal);
+  if (!live && !finalGame) return false;
+  const actual = finiteNumber(player.actualPoints) ?? finiteNumber(player.points);
+  return actual != null && actual > 0;
 }
 
 function LivePulse({ size = 6, tone = 'for' }) {
@@ -2256,7 +2315,8 @@ export default function App() {
   const [showAlertSheet, setShowAlertSheet] = useState(false);
   const [showNotifDrawer, setShowNotifDrawer] = useState(false);
   const [alertPrefs, setAlertPrefs] = useState(loadAlertPrefs);
-  const [liveBanners, setLiveBanners] = useState([]);
+  const [liveToast, setLiveToast] = useState(null);
+  const [notifUnread, setNotifUnread] = useState(0);
   const [notifHistory, setNotifHistory] = useState(() => readBannerHistory());
   const [jumpMenuOpen, setJumpMenuOpen] = useState(false);
   const [flashGameId, setFlashGameId] = useState(null);
@@ -3569,7 +3629,9 @@ export default function App() {
     const detectedLeague = parsed.leagueName || '';
     const fallbackName = espnPaste
       ? (detectedLeague || espnTeamName || 'ESPN League')
-      : (parsed.myTeamName && parsed.myTeamName !== 'My Team' ? parsed.myTeamName : autoName);
+      : (detectedLeague && !isGenericYahooLeagueName(detectedLeague)
+        ? detectedLeague
+        : autoName);
     const leagueName = typedName && typedName !== autoName ? typedName : fallbackName;
     const oppTeamName = parsed.oppTeam?.name || parsed.oppTeamName || MISSING_OPPONENT_NAME;
     const myTeamName = espnPaste ? (espnTeamName || leagueName) : (parsed.myTeamName || leagueName);
@@ -3699,12 +3761,14 @@ export default function App() {
   }, [visibleLeagues, games, liveScores, alertPrefs.finalSlateNailbiter, alertPrefs.lineupLock, alertPrefs.spoilerFreeDelay, selectedWeek]);
 
   useEffect(() => subscribeInAppBanners((entry) => {
-    setLiveBanners((current) => [entry, ...current].slice(0, 3));
+    // Single compact floating toast — never a multi-card stack above the board.
+    setLiveToast(entry);
     setNotifHistory(readBannerHistory());
+    setNotifUnread((count) => count + 1);
     const clearId = entry.id;
     window.setTimeout(() => {
-      setLiveBanners((current) => current.filter((row) => row.id !== clearId));
-    }, 6500);
+      setLiveToast((current) => (current?.id === clearId ? null : current));
+    }, 4000);
   }), []);
 
   useEffect(() => {
@@ -3712,27 +3776,32 @@ export default function App() {
     const timer = window.setTimeout(() => {
       playerMasterIndex.forEach((player) => {
         if (!player || !(player.myShares > 0)) return;
+        // Only live/final current-slate games with real points — never pre-game stubs.
+        if (!playerEligibleForLiveAlert(player)) return;
         const leagueName = player.myLeagues?.[0]?.league || 'your league';
+        const alertLeague = (!isGenericYahooLeagueName(leagueName) && !/^your league$/i.test(leagueName))
+          ? leagueName
+          : (visibleLeagues.map(getLeagueDisplayName).find((name) => name && !isGenericYahooLeagueName(name)) || leagueName);
         if (alertPrefs.redZoneTv && player.inRedZone) {
           notifyRedZoneAlert({
-            id: `rz|${player.cardKey || player.name}|${leagueName}`,
+            id: `rz|${player.cardKey || player.name}|${alertLeague}|${selectedWeek}`,
             playerName: player.name,
-            leagueName
+            leagueName: alertLeague
           });
         }
         const delta = boomDelta(player);
-        if (delta >= 4 && (player.isLive || player.gameStatus === 'IN_PROGRESS')) {
+        if (delta >= 4) {
           notifyOutperformerAlert({
-            id: `out|${player.cardKey || player.name}|${leagueName}`,
+            id: `out|${player.cardKey || player.name}|${alertLeague}|${selectedWeek}`,
             playerName: player.name,
-            leagueName,
+            leagueName: alertLeague,
             delta
           });
         }
       });
     }, delayMs);
     return () => window.clearTimeout(timer);
-  }, [playerMasterIndex, alertPrefs.redZoneTv, alertPrefs.spoilerFreeDelay]);
+  }, [playerMasterIndex, alertPrefs.redZoneTv, alertPrefs.spoilerFreeDelay, selectedWeek, visibleLeagues]);
 
   useEffect(() => {
     const next = new Map();
@@ -4150,15 +4219,17 @@ export default function App() {
             <button
               type="button"
               onClick={() => {
-                setShowAlertSheet(true);
+                setNotifHistory(readBannerHistory());
+                setShowNotifDrawer(true);
+                setNotifUnread(0);
                 prepareCrossFireAlerts();
                 prepareZeroProjectionAlerts({ request: false });
                 tapHaptic();
               }}
-              aria-label="Game-Day Alerts"
-              title="Game-Day Alerts"
-              className={`w-9 h-9 rounded-lg border flex items-center justify-center transition touch-manipulation ${
-                showAlertSheet || showNotifDrawer || alertPrefs.lineupRescue || alertPrefs.redZoneTv || alertPrefs.fourthQuarterSweat || alertPrefs.finalSlateNailbiter || alertPrefs.lineupLock
+              aria-label={notifUnread > 0 ? `Notifications, ${notifUnread} unread` : 'Notifications'}
+              title="Notifications"
+              className={`relative w-9 h-9 rounded-lg border flex items-center justify-center transition touch-manipulation ${
+                showAlertSheet || showNotifDrawer || notifUnread > 0 || alertPrefs.lineupRescue || alertPrefs.redZoneTv || alertPrefs.fourthQuarterSweat || alertPrefs.finalSlateNailbiter || alertPrefs.lineupLock
                   ? isLight ? 'bg-emerald-50 text-emerald-700 border-emerald-300' : 'bg-emerald-950/50 text-emerald-300 border-emerald-700'
                   : isLight ? 'bg-white text-slate-700 border-slate-200' : 'bg-slate-900 text-slate-200 border-slate-700'
               }`}
@@ -4166,6 +4237,11 @@ export default function App() {
               <svg viewBox="0 0 16 16" className="w-4 h-4" aria-hidden="true">
                 <path fill="currentColor" d="M8 1.5a3.5 3.5 0 0 0-3.5 3.5v1.3c0 .5-.2 1-.5 1.4L2.8 9.4A1.2 1.2 0 0 0 3.8 11h8.4a1.2 1.2 0 0 0 1-1.6l-1.2-1.7a2.2 2.2 0 0 1-.5-1.4V5A3.5 3.5 0 0 0 8 1.5Zm-1.3 11a1.3 1.3 0 1 0 2.6 0h-2.6Z" />
               </svg>
+              {notifUnread > 0 && (
+                <span className="absolute -top-1 -right-1 min-w-[1.05rem] h-[1.05rem] px-0.5 rounded-full bg-[#E11D48] text-white text-[9px] font-black leading-[1.05rem] text-center tabular-nums shadow">
+                  {notifUnread > 9 ? '9+' : notifUnread}
+                </span>
+              )}
             </button>
             <button
               type="button"
@@ -4352,22 +4428,24 @@ export default function App() {
       </header>
       </div>
 
+      {/* Single floating toast — never an inline multi-card stack above the board */}
+      {liveToast && (
+        <div className="pointer-events-none fixed inset-x-0 top-[calc(env(safe-area-inset-top)+3.75rem)] z-[70] flex justify-center px-3">
+          <div
+            role="status"
+            className={`pointer-events-auto max-w-md w-full px-3 py-2 rounded-xl text-xs font-bold text-left shadow-2xl border ${liveToast.surfaceClass || notificationSurfaceClass(liveToast.category, liveToast.outlook)}`}
+          >
+            <div className="tracking-wide text-[10px] font-black opacity-90">{liveToast.title}</div>
+            <div className="mt-0.5 font-semibold leading-snug">{liveToast.body}</div>
+          </div>
+        </div>
+      )}
+
       {/* Main Container */}
       <main
         className={`max-w-md mx-auto p-3 space-y-3 rootmap-view-track ${viewSlideClass} ${swipeDragging ? 'is-dragging' : ''}`}
         style={swipeDragX ? { transform: `translate3d(${swipeDragX}px, 0, 0)` } : undefined}
       >
-        {liveBanners.map((banner) => (
-          <div
-            key={banner.id}
-            role="status"
-            className={`px-3 py-2.5 rounded-xl text-xs font-bold text-left shadow-lg border ${banner.surfaceClass || notificationSurfaceClass(banner.category, banner.outlook)}`}
-          >
-            <div className="tracking-wide text-[10px] font-black opacity-90">{banner.title}</div>
-            <div className="mt-0.5 font-semibold leading-snug">{banner.body}</div>
-          </div>
-        ))}
-
         {syncStatus && (
           isYahooMatchupHint(syncStatus) ? (
             <button
@@ -5446,7 +5524,10 @@ export default function App() {
 
       {showNotifDrawer && (
         <div
-          onClick={() => setShowNotifDrawer(false)}
+          onClick={() => {
+            setShowNotifDrawer(false);
+            setNotifUnread(0);
+          }}
           className="fixed inset-0 z-[80] bg-black/60 backdrop-blur-sm flex items-end justify-center"
           role="presentation"
         >
@@ -5469,15 +5550,34 @@ export default function App() {
                   Recent RootMap alerts in brand colors.
                 </p>
               </div>
-              <button
-                type="button"
-                onClick={() => setShowNotifDrawer(false)}
-                className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold ${
-                  isLight ? 'bg-slate-100 text-slate-500' : 'bg-slate-800 text-slate-400'
-                }`}
-              >
-                ✕
-              </button>
+              <div className="flex items-center gap-1.5 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowAlertSheet(true);
+                    setShowNotifDrawer(false);
+                    setNotifUnread(0);
+                    tapHaptic();
+                  }}
+                  className={`h-8 px-2.5 rounded-full text-[10px] font-black border ${
+                    isLight ? 'bg-slate-100 text-slate-700 border-slate-200' : 'bg-slate-800 text-slate-200 border-slate-700'
+                  }`}
+                >
+                  Alert settings
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowNotifDrawer(false);
+                    setNotifUnread(0);
+                  }}
+                  className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold ${
+                    isLight ? 'bg-slate-100 text-slate-500' : 'bg-slate-800 text-slate-400'
+                  }`}
+                >
+                  ✕
+                </button>
+              </div>
             </div>
             {notifHistory.length === 0 ? (
               <div className={`rounded-2xl border px-3 py-4 text-xs font-semibold ${

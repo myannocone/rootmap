@@ -158,7 +158,7 @@ export function evaluateMatchupNailbiter(matchup, options = {}) {
 
   return {
     leagueId: matchup?.id || '',
-    leagueName: matchup?.name || matchup?.leagueName || 'Fantasy League',
+    leagueName: matchup?.leagueName || matchup?.name || 'Fantasy League',
     finalKickoffTime,
     myScore,
     oppScore,

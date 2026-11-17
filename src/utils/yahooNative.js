@@ -191,18 +191,24 @@ function starterFromStructured(player, side) {
   const slot = player.slot || player.position || '';
   const position = displayPlayerPosition({ position: player.position || slot, slot });
   const isMine = side === 'mine';
+  const clock = player.gameClock || 'Scheduled';
+  const live = /^(Q[1-4]|OT|Halftime|1st|2nd|3rd|4th)/i.test(clock);
+  // Keep actual and projection distinct — never copy proj into actualPoints.
+  const points = actualPoints != null ? actualPoints : 0;
   return {
     name,
     nflTeam,
     team: nflTeam,
     position,
     slot,
-    points: actualPoints ?? projPoints ?? 0,
+    points,
     projPoints,
-    actualPoints,
-    isLive: /^(Q[1-4]|OT|Halftime)/i.test(player.gameClock || ''),
+    actualPoints: actualPoints != null ? actualPoints : 0,
+    scoringSource: 'yahoo',
+    yahooNative: true,
+    isLive: live,
     inRedZone: false,
-    gameClock: player.gameClock || 'Scheduled',
+    gameClock: clock,
     bigPlay: null,
     isStarter: true,
     ownership: isMine ? 1 : 0,
@@ -217,18 +223,31 @@ function fromStructured(result) {
   const myStarters = (lineup.myStarters || []).map((player) => starterFromStructured(player, 'mine')).filter(Boolean);
   const oppStarters = (lineup.oppStarters || []).map((player) => starterFromStructured(player, 'opp')).filter(Boolean);
   if (!myStarters.length && !oppStarters.length) return null;
+  const myTeamName = usableName(lineup.myTeamName, '');
+  let oppTeamName = usableName(lineup.oppTeamName, '');
+  // Never allow Team 2 to clone Team 1's nickname when the scraper leaked mine onto opp.
+  if (oppTeamName && myTeamName && oppTeamName === myTeamName) {
+    const sameScore = numberOrNull(lineup.myScore) != null
+      && numberOrNull(lineup.myScore) === numberOrNull(lineup.oppScore);
+    const sameRecord = String(lineup.myRecord || '') === String(lineup.oppRecord || '');
+    if (sameScore || sameRecord) oppTeamName = '';
+  }
   return {
     leagueName: usableName(lineup.leagueName, ''),
-    myTeamName: usableName(lineup.myTeamName, ''),
-    oppTeamName: usableName(lineup.oppTeamName, ''),
+    myTeamName,
+    oppTeamName,
     myRecord: recordFrom(lineup.myRecord),
-    oppRecord: recordFrom(lineup.oppRecord),
+    oppRecord: oppTeamName ? recordFrom(lineup.oppRecord) : null,
     myRank: rankFrom(lineup.myRank),
-    oppRank: rankFrom(lineup.oppRank),
+    oppRank: oppTeamName ? rankFrom(lineup.oppRank) : null,
     myScore: numberOrNull(lineup.myScore),
-    oppScore: numberOrNull(lineup.oppScore),
-    myProj: null,
-    oppProj: null,
+    oppScore: oppTeamName ? numberOrNull(lineup.oppScore) : null,
+    myProj: numberOrNull(lineup.myProj ?? lineup.myProjected),
+    oppProj: oppTeamName ? numberOrNull(lineup.oppProj ?? lineup.oppProjected) : null,
+    myWinOdds: numberOrNull(lineup.myWinOdds),
+    oppWinOdds: oppTeamName ? numberOrNull(lineup.oppWinOdds) : null,
+    myLogo: textValue(lineup.myLogo),
+    oppLogo: oppTeamName ? textValue(lineup.oppLogo) : '',
     myStarters,
     oppStarters
   };
@@ -251,37 +270,63 @@ export function leagueFromYahooCapture(result, week) {
   const oppStarters = parsed.oppStarters || [];
   if (!myStarters.length && !oppStarters.length) return null;
   const myTeamName = usableName(parsed.myTeamName || identity.teamName, 'My Team');
-  const oppTeamName = usableName(parsed.oppTeamName, 'Opponent');
-  const leagueName = usableName(parsed.leagueName || identity.leagueName, myTeamName);
+  const oppTeamName = usableName(
+    parsed.oppTeamName && parsed.oppTeamName !== myTeamName ? parsed.oppTeamName : '',
+    'Opponent'
+  );
+  // Prefer a real league title over the fantasy team nickname / generic fallback.
+  const leagueName = usableName(parsed.leagueName || identity.leagueName, '')
+    || usableName(result?.leagueName, '')
+    || 'Yahoo League';
   const teamKey = identity.teamId ? `${identity.leagueId}-${identity.teamId}` : identity.leagueId;
+  const myScore = numberOrNull(parsed.myScore)
+    ?? myStarters.reduce((sum, player) => sum + (numberOrNull(player.actualPoints) ?? 0), 0);
+  const oppScore = numberOrNull(parsed.oppScore)
+    ?? oppStarters.reduce((sum, player) => sum + (numberOrNull(player.actualPoints) ?? 0), 0);
   return {
     id: teamKey ? `yahoo-${teamKey}` : `yahoo-${Date.now()}`,
     yahooLeagueId: identity.leagueId,
     yahooTeamId: identity.teamId,
     yahooMatchupUrl: identity.matchupUrl,
     name: leagueName,
+    leagueName,
     myTeamName,
     oppTeamName,
     opponent: oppTeamName,
     platform: 'Yahoo',
+    scoringSource: 'yahoo',
+    yahooNative: true,
+    yahooStatsOk: myStarters.some((player) => numberOrNull(player.actualPoints) != null || numberOrNull(player.projPoints) != null)
+      || numberOrNull(parsed.myScore) != null
+      || numberOrNull(parsed.myProj) != null,
     season: '2026',
     lineupWeek: Number(week) || null,
-    myScore: parsed.myScore ?? myStarters.reduce((sum, player) => sum + (numberOrNull(player.actualPoints) ?? 0), 0),
-    oppScore: parsed.oppScore ?? oppStarters.reduce((sum, player) => sum + (numberOrNull(player.actualPoints) ?? 0), 0),
+    myScore,
+    oppScore,
     myProj: parsed.myProj ?? null,
     oppProj: parsed.oppProj ?? null,
+    myProjected: parsed.myProj ?? null,
+    oppProjected: parsed.oppProj ?? null,
+    myWinOdds: parsed.myWinOdds ?? null,
+    oppWinOdds: parsed.oppWinOdds ?? null,
+    myLogo: parsed.myLogo || '',
+    oppLogo: parsed.oppLogo || '',
     myRecord: parsed.myRecord || null,
     oppRecord: parsed.oppRecord || null,
     myRank: parsed.myRank ?? null,
     oppRank: parsed.oppRank ?? null,
     userTeam: {
       name: myTeamName,
+      logo: parsed.myLogo || '',
+      winOdds: parsed.myWinOdds ?? null,
       starters: myStarters,
       record: parsed.myRecord || null,
       rank: parsed.myRank ?? null
     },
     oppTeam: {
       name: oppTeamName,
+      logo: parsed.oppLogo || '',
+      winOdds: parsed.oppWinOdds ?? null,
       starters: oppStarters,
       record: parsed.oppRecord || null,
       rank: parsed.oppRank ?? null

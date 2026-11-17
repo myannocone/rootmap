@@ -107,13 +107,21 @@ const scoreboard = parseScoreboard({
                       '0': {
                         team: [
                           [{ team_key: '461.l.1.t.1' }, { name: 'YANNACONDA 🐍' }],
-                          { team_points: { total: '111.46' }, team_projected_points: { total: '135.87' } }
+                          {
+                            team_points: { total: '107.32' },
+                            team_projected_points: { total: '135.87' },
+                            win_probability: 0.79
+                          }
                         ]
                       },
                       '1': {
                         team: [
-                          [{ team_key: '461.l.1.t.2' }, { name: 'Opponent' }],
-                          { team_points: { total: '107.94' }, team_projected_points: { total: '107.94' } }
+                          [{ team_key: '461.l.1.t.2' }, { name: 'SUCK CITY' }],
+                          {
+                            team_points: { total: '76.07' },
+                            team_projected_points: { total: '107.94' },
+                            win_probability: 0.21
+                          }
                         ]
                       },
                       count: 2
@@ -129,9 +137,14 @@ const scoreboard = parseScoreboard({
     ]
   }
 }, '461.l.1.t.1');
-assert(scoreboard.mine?.score === 111.46, `mine score ${scoreboard.mine?.score}`);
-assert(scoreboard.opp?.score === 107.94, `opp score ${scoreboard.opp?.score}`);
+assert(scoreboard.mine?.score === 107.32, `mine score ${scoreboard.mine?.score}`);
+assert(scoreboard.opp?.score === 76.07, `opp score ${scoreboard.opp?.score}`);
+assert(scoreboard.mine?.name === 'YANNACONDA 🐍', `mine name ${scoreboard.mine?.name}`);
+assert(scoreboard.opp?.name === 'SUCK CITY', `opp name ${scoreboard.opp?.name}`);
 assert(scoreboard.mine?.proj === 135.87, `mine proj ${scoreboard.mine?.proj}`);
+assert(scoreboard.opp?.proj === 107.94, `opp proj ${scoreboard.opp?.proj}`);
+assert(scoreboard.mine?.winOdds === 0.79, `mine winOdds ${scoreboard.mine?.winOdds}`);
+assert(scoreboard.opp?.winOdds === 0.21, `opp winOdds ${scoreboard.opp?.winOdds}`);
 
 // League names: section header must not win over BCliff Football / Mantasy
 const leagues = parseLeagues({

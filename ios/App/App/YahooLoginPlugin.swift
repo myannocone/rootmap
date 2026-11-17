@@ -116,8 +116,41 @@ enum YahooLinks {
         return '';
       }
       function pointsOf(value) {
-        var match = clean(value).match(/^(\\d+\\.\\d{1,2})$/);
+        var text = clean(value);
+        var labeled = text.match(/^(?:proj(?:ected)?\\s+)?(\\d+\\.\\d{1,2}|\\d+)(?:\\s+proj(?:ected)?)?$/i);
+        if (labeled) return labeled[1];
+        var match = text.match(/^(\\d+\\.\\d{1,2})$/);
         return match ? match[1] : '';
+      }
+      function floatsInText(value) {
+        var matches = clean(value).match(/\\d+\\.\\d{1,2}/g) || [];
+        return matches.map(function(item) { return item; });
+      }
+      function attachScores(player, floats) {
+        if (!player || !floats || !floats.length) return player;
+        var nums = floats.map(function(item) { return parseFloat(item); }).filter(function(n) { return isFinite(n); });
+        if (!nums.length) return player;
+        if (nums.length >= 2) {
+          player.projPoints = String(nums[nums.length - 2]);
+          player.projectedPoints = player.projPoints;
+          player.points = String(nums[nums.length - 1]);
+          player.actualPoints = player.points;
+        } else {
+          // Single float: treat as projection when still scheduled, else actual.
+          var clock = clean(player.gameClock || '');
+          if (/^(Final|Q[1-4]|OT|Halftime)\\b/i.test(clock)) {
+            player.points = String(nums[0]);
+            player.actualPoints = player.points;
+          } else {
+            player.projPoints = String(nums[0]);
+            player.projectedPoints = player.projPoints;
+            if (!player.points) {
+              player.points = '';
+              player.actualPoints = '';
+            }
+          }
+        }
+        return player;
       }
       function splitName(value) {
         var text = clean(value);
@@ -176,7 +209,9 @@ enum YahooLinks {
         var parts = pieces(node).filter(function(part) { return !isStatBlurb(part) && !isHeaderLabel(part); });
         var slot = '';
         var points = '';
+        var projPoints = '';
         var gameClock = '';
+        var seenFloats = [];
         for (var p = 0; p < parts.length; p++) {
           var part = parts[p];
           if (isOppMark(part)) continue;
@@ -194,11 +229,17 @@ enum YahooLinks {
           }
           var pts = pointsOf(part);
           if (pts) {
-            points = pts;
+            seenFloats.push(pts);
             continue;
           }
           var clock = clockOf(part);
           if (clock) gameClock = clock;
+        }
+        if (seenFloats.length >= 2) {
+          projPoints = seenFloats[seenFloats.length - 2];
+          points = seenFloats[seenFloats.length - 1];
+        } else if (seenFloats.length === 1) {
+          points = seenFloats[0];
         }
         return {
           name: name,
@@ -207,8 +248,21 @@ enum YahooLinks {
           slot: slot || position || '',
           points: points,
           actualPoints: points,
+          projPoints: projPoints,
+          projectedPoints: projPoints,
           gameClock: gameClock || 'Scheduled'
         };
+      }
+      function floatsFromCells(cellList) {
+        var out = [];
+        for (var i = 0; i < cellList.length; i++) {
+          var text = clean(cellList[i].innerText || cellList[i].textContent || '');
+          if (!text || isStatBlurb(text) || isHeaderLabel(text)) continue;
+          if (playerLink(cellList[i])) continue;
+          var floats = floatsInText(text);
+          for (var f = 0; f < floats.length; f++) out.push(floats[f]);
+        }
+        return out;
       }
       function harvest() {
         var mine = [];
@@ -228,12 +282,15 @@ enum YahooLinks {
             }
             if (bench) continue;
             var cells = rows[r].children || [];
+            var cellList = [];
+            for (var ci = 0; ci < cells.length; ci++) cellList.push(cells[ci]);
             var found = [];
+            var foundCells = [];
             var rowSlot = '';
             var headerCells = 0;
             var labeledCells = 0;
-            for (var c = 0; c < cells.length; c++) {
-              var cellText = clean(cells[c].innerText || '');
+            for (var c = 0; c < cellList.length; c++) {
+              var cellText = clean(cellList[c].innerText || '');
               if (!cellText || isOppMark(cellText)) continue;
               if (isBenchStop(cellText)) {
                 bench = true;
@@ -250,8 +307,11 @@ enum YahooLinks {
                 rowSlot = directSlot;
                 continue;
               }
-              var player = playerFrom(cells[c]);
-              if (player) found.push(player);
+              var player = playerFrom(cellList[c]);
+              if (player) {
+                found.push(player);
+                foundCells.push(c);
+              }
             }
             if (bench || (labeledCells > 0 && headerCells === labeledCells)) continue;
             if (rowSlot) {
@@ -260,8 +320,23 @@ enum YahooLinks {
                 if (!player.position || player.position === 'FLEX') player.position = rowSlot;
               });
             }
-            if (found.length >= 2) paired.push(found);
-            else if (found.length === 1) singles.push(found[0]);
+            if (found.length >= 2) {
+              // Points/proj live in sibling cells — split the row and attach each side's floats.
+              var mid = foundCells.length >= 2
+                ? Math.floor((foundCells[0] + foundCells[1]) / 2) + 1
+                : Math.floor(cellList.length / 2);
+              if (foundCells.length >= 2) mid = foundCells[1];
+              var leftFloats = floatsFromCells(cellList.slice(0, mid));
+              var rightFloats = floatsFromCells(cellList.slice(mid));
+              // Prefer row-level proj/actual cells over any float glued inside the name cell.
+              if (leftFloats.length) attachScores(found[0], leftFloats);
+              if (rightFloats.length) attachScores(found[1], rightFloats);
+              paired.push(found);
+            } else if (found.length === 1) {
+              var soloFloats = floatsFromCells(cellList);
+              if (soloFloats.length) attachScores(found[0], soloFloats);
+              singles.push(found[0]);
+            }
           }
           paired.forEach(function(pair) {
             mine.push(pair[0]);
@@ -320,54 +395,182 @@ enum YahooLinks {
         }
         return '';
       }
-      function describeSide(node) {
-        var container = node;
-        for (var i = 0; i < 3 && container && container.parentElement; i++) {
-          var parentText = clean(container.parentElement.innerText || '');
-          if (parentText.length < 140 && recordOf(parentText)) container = container.parentElement;
-          else break;
+      function emptySide() {
+        return { name: '', record: '', rank: '', score: '', proj: '', winOdds: '', logo: '', leagueId: '', teamId: '' };
+      }
+      function enrichSide(hit) {
+        if (!hit || !hit.node) return emptySide();
+        var container = hit.node;
+        for (var i = 0; i < 6 && container.parentElement; i++) {
+          var parent = container.parentElement;
+          var otherTeam = false;
+          var links = parent.querySelectorAll('a[href*="/f1/"]');
+          for (var j = 0; j < links.length; j++) {
+            var om = (links[j].href || '').match(/\\/f1\\/(\\d+)\\/(\\d+)/);
+            if (om && String(om[2]) !== String(hit.teamId)) { otherTeam = true; break; }
+          }
+          var ownText = clean(container.innerText || '');
+          if (otherTeam) {
+            if (recordOf(ownText) || scoreOf(ownText)) break;
+            break;
+          }
+          container = parent;
+          var parentText = clean(parent.innerText || '');
+          if (recordOf(parentText) && scoreOf(parentText)) break;
         }
         var text = clean(container.innerText || '');
-        var nameNode = container.querySelector('a[href*="/f1/"]');
-        var name = readableName(nameNode ? (nameNode.innerText || '') : '');
-        if (!name) {
-          var lines = String(container.innerText || '').split(/\\n/).map(clean).filter(Boolean);
-          for (var n = 0; n < lines.length; n++) {
-            if (recordOf(lines[n]) || rankOf(lines[n]) || scoreOf(lines[n]) || isStatBlurb(lines[n])) continue;
-            name = readableName(lines[n]);
-            if (name) break;
-          }
-        }
-        var link = nameNode ? (nameNode.href || '') : '';
-        var idMatch = link.match(/\\/f1\\/(\\d+)\\/(\\d+)/);
+        var logo = '';
+        var img = container.querySelector('img[src]');
+        if (img && img.src && !/spacer|blank|pixel/i.test(img.src)) logo = img.src;
+        var oddsMatch = text.match(/(\\d{1,3})\\s*%/);
         return {
-          name: name,
+          name: hit.name || '',
           record: recordOf(text),
           rank: rankOf(text),
           score: scoreOf(text),
-          leagueId: idMatch ? idMatch[1] : '',
-          teamId: idMatch ? idMatch[2] : ''
+          proj: '',
+          winOdds: oddsMatch ? oddsMatch[1] : '',
+          logo: logo,
+          leagueId: hit.leagueId || '',
+          teamId: hit.teamId || ''
         };
       }
       function scoreboardSides() {
+        var teams = [];
+        var seen = {};
+        var anchors = document.querySelectorAll('a[href*="/f1/"]');
+        for (var i = 0; i < anchors.length; i++) {
+          var link = anchors[i];
+          var match = (link.href || '').match(/\\/f1\\/(\\d+)\\/(\\d+)/);
+          if (!match) continue;
+          var rect = link.getBoundingClientRect();
+          if (!rect.width || rect.top > 460) continue;
+          var key = match[1] + ':' + match[2];
+          if (seen[key]) continue;
+          var name = readableName(link.innerText || link.textContent || '');
+          if (!name) continue;
+          seen[key] = true;
+          teams.push({
+            node: link,
+            leagueId: match[1],
+            teamId: match[2],
+            name: name,
+            top: rect.top,
+            left: rect.left
+          });
+        }
+        teams.sort(function(a, b) { return a.top - b.top || a.left - b.left; });
+        if (teams.length >= 2) {
+          var top = teams[0].top;
+          var band = teams.filter(function(item) { return Math.abs(item.top - top) < 140; });
+          band.sort(function(a, b) { return a.left - b.left; });
+          if (band.length >= 2) {
+            var mineHit = band[0];
+            var oppHit = band[band.length - 1];
+            if (teamId) {
+              var preferredMine = band.find(function(item) { return String(item.teamId) === String(teamId); });
+              var preferredOpp = band.find(function(item) { return String(item.teamId) !== String(teamId); });
+              if (preferredMine && preferredOpp) {
+                mineHit = preferredMine;
+                oppHit = preferredOpp;
+              }
+            }
+            // Never allow Team 2 to clone Team 1's identity.
+            if (String(mineHit.teamId) === String(oppHit.teamId)) {
+              oppHit = band.find(function(item) { return String(item.teamId) !== String(mineHit.teamId); }) || oppHit;
+            }
+            return { mine: enrichSide(mineHit), opp: enrichSide(oppHit) };
+          }
+        }
+        // Fallback: record-bearing nodes, but still require distinct team links when possible.
         var hits = [];
         var nodes = document.querySelectorAll('a, div, span, h2, h3, p');
-        for (var i = 0; i < nodes.length; i++) {
-          var value = clean(nodes[i].innerText || '');
-          if (!recordOf(value) || value.length > 90 || nodes[i].querySelector('table')) continue;
-          var rect = nodes[i].getBoundingClientRect();
-          if (!rect.width || rect.top > 520) continue;
-          hits.push({ node: nodes[i], top: rect.top, left: rect.left });
+        for (var n = 0; n < nodes.length; n++) {
+          var value = clean(nodes[n].innerText || '');
+          if (!recordOf(value) || value.length > 90 || nodes[n].querySelector('table')) continue;
+          var box = nodes[n].getBoundingClientRect();
+          if (!box.width || box.top > 520) continue;
+          hits.push({ node: nodes[n], top: box.top, left: box.left });
         }
         hits.sort(function(a, b) { return a.top - b.top || a.left - b.left; });
-        if (!hits.length) return { mine: describeSide(document.body), opp: { name: '', record: '', rank: '', score: '', leagueId: '', teamId: '' } };
-        var top = hits[0].top;
-        var band = hits.filter(function(item) { return Math.abs(item.top - top) < 90; });
-        band.sort(function(a, b) { return a.left - b.left; });
-        return {
-          mine: describeSide(band[0].node),
-          opp: band.length > 1 ? describeSide(band[band.length - 1].node) : { name: '', record: '', rank: '', score: '', leagueId: '', teamId: '' }
-        };
+        if (!hits.length) return { mine: emptySide(), opp: emptySide() };
+        var bandTop = hits[0].top;
+        var recordBand = hits.filter(function(item) { return Math.abs(item.top - bandTop) < 90; });
+        recordBand.sort(function(a, b) { return a.left - b.left; });
+        function sideFromRecordNode(node, fallbackName) {
+          var link = node.querySelector ? node.querySelector('a[href*="/f1/"]') : null;
+          if (!link && node.tagName && String(node.tagName).toUpperCase() === 'A') link = node;
+          var idMatch = link ? (link.href || '').match(/\\/f1\\/(\\d+)\\/(\\d+)/) : null;
+          return enrichSide({
+            node: node,
+            name: readableName(link ? (link.innerText || '') : '') || fallbackName || '',
+            leagueId: idMatch ? idMatch[1] : '',
+            teamId: idMatch ? idMatch[2] : ''
+          });
+        }
+        var left = sideFromRecordNode(recordBand[0].node, '');
+        var right = recordBand.length > 1 ? sideFromRecordNode(recordBand[recordBand.length - 1].node, '') : emptySide();
+        if (left.name && right.name && left.name === right.name && left.teamId && right.teamId && left.teamId === right.teamId) {
+          right = emptySide();
+        }
+        return { mine: left, opp: right };
+      }
+      function digYahooJson() {
+        var sources = [];
+        try { if (window.ydb) sources.push(window.ydb); } catch (err) {}
+        try { if (window.App && App.main) sources.push(App.main); } catch (err) {}
+        try { if (window.__NEXT_DATA__) sources.push(window.__NEXT_DATA__); } catch (err) {}
+        var teams = [];
+        var players = [];
+        function walk(value, depth) {
+          if (!value || typeof value !== 'object' || depth > 10) return;
+          if (Array.isArray(value)) {
+            for (var i = 0; i < value.length; i++) walk(value[i], depth + 1);
+            return;
+          }
+          var teamKey = value.team_key || value.teamKey || '';
+          var teamName = value.name || value.team_name || value.teamName || '';
+          if (teamKey && /\\.t\\.\\d+/.test(String(teamKey)) && teamName && typeof teamName === 'string') {
+            var points = value.team_points || value.points || value.score;
+            var total = points && (points.total != null ? points.total : points);
+            var projNode = value.team_projected_points || value.projected_points;
+            var proj = projNode && (projNode.total != null ? projNode.total : projNode);
+            var win = value.win_probability != null ? value.win_probability : value.winOdds;
+            teams.push({
+              teamKey: String(teamKey),
+              name: clean(teamName),
+              score: total != null ? String(total) : '',
+              proj: proj != null ? String(proj) : '',
+              winOdds: win != null ? String(win) : '',
+              logo: (value.team_logos && value.team_logos[0] && value.team_logos[0].url) || value.logo || ''
+            });
+          }
+          if (value.player_points || value.player_projected_points) {
+            var pname = '';
+            if (value.name && value.name.full) pname = value.name.full;
+            else if (typeof value.name === 'string') pname = value.name;
+            else if (value.player_name) pname = value.player_name;
+            if (pname) {
+              var pActual = value.player_points && value.player_points.total != null ? value.player_points.total : null;
+              var pProj = value.player_projected_points && value.player_projected_points.total != null ? value.player_projected_points.total : null;
+              players.push({
+                name: clean(pname),
+                points: pActual != null ? String(pActual) : '',
+                actualPoints: pActual != null ? String(pActual) : '',
+                projPoints: pProj != null ? String(pProj) : '',
+                projectedPoints: pProj != null ? String(pProj) : ''
+              });
+            }
+          }
+          var keys = Object.keys(value);
+          for (var k = 0; k < keys.length; k++) {
+            var key = keys[k];
+            if (key === 'parent' || key === 'parentNode' || key === 'ownerDocument') continue;
+            try { walk(value[key], depth + 1); } catch (err2) {}
+          }
+        }
+        for (var s = 0; s < sources.length; s++) walk(sources[s], 0);
+        return { teams: teams, players: players };
       }
       var leagueName = realLeagueName();
       var board = scoreboardSides();
@@ -375,15 +578,80 @@ enum YahooLinks {
       var oppSide = board.opp;
       if (!teamId && mineSide.teamId) teamId = mineSide.teamId;
       if (!leagueId && mineSide.leagueId) leagueId = mineSide.leagueId;
+      // Fill gaps / correct clones from embedded Yahoo JSON (ydb).
+      var ydb = digYahooJson();
+      if (ydb.teams && ydb.teams.length) {
+        var mineJson = null;
+        var oppJson = null;
+        for (var yt = 0; yt < ydb.teams.length; yt++) {
+          var row = ydb.teams[yt];
+          var idTail = (row.teamKey.match(/\\.t\\.(\\d+)$/) || [])[1] || '';
+          if (teamId && idTail && String(idTail) === String(teamId)) mineJson = row;
+          else if (!oppJson && (!teamId || String(idTail) !== String(teamId))) oppJson = row;
+        }
+        if (!mineJson && ydb.teams[0]) mineJson = ydb.teams[0];
+        if (!oppJson) {
+          for (var yo = 0; yo < ydb.teams.length; yo++) {
+            if (ydb.teams[yo] !== mineJson) { oppJson = ydb.teams[yo]; break; }
+          }
+        }
+        if (mineJson) {
+          if (!mineSide.name) mineSide.name = mineJson.name;
+          if (!mineSide.score && mineJson.score) mineSide.score = mineJson.score;
+          if (!mineSide.proj && mineJson.proj) mineSide.proj = mineJson.proj;
+          if (!mineSide.winOdds && mineJson.winOdds) mineSide.winOdds = mineJson.winOdds;
+          if (!mineSide.logo && mineJson.logo) mineSide.logo = mineJson.logo;
+        }
+        if (oppJson && oppJson.name && (!mineJson || oppJson.name !== mineJson.name || oppJson.teamKey !== mineJson.teamKey)) {
+          if (!oppSide.name || oppSide.name === mineSide.name) oppSide.name = oppJson.name;
+          if (!oppSide.score || oppSide.score === mineSide.score) oppSide.score = oppJson.score || oppSide.score;
+          if (!oppSide.proj || oppSide.proj === mineSide.proj) oppSide.proj = oppJson.proj || oppSide.proj;
+          if (!oppSide.winOdds || oppSide.winOdds === mineSide.winOdds) oppSide.winOdds = oppJson.winOdds || oppSide.winOdds;
+          if (!oppSide.logo || oppSide.logo === mineSide.logo) oppSide.logo = oppJson.logo || oppSide.logo;
+          if (oppJson.score) oppSide.score = oppJson.score;
+          if (oppJson.proj) oppSide.proj = oppJson.proj;
+          if (oppJson.winOdds) oppSide.winOdds = oppJson.winOdds;
+        }
+      }
+      if (oppSide.name && mineSide.name && oppSide.name === mineSide.name && oppSide.teamId && mineSide.teamId && oppSide.teamId === mineSide.teamId) {
+        oppSide = emptySide();
+      }
       var rosters = harvest();
+      // Overlay ydb player points onto roster rows matched by name when DOM missed totals.
+      if (ydb.players && ydb.players.length) {
+        function applyYdbPoints(list) {
+          for (var i = 0; i < list.length; i++) {
+            var starter = list[i];
+            if (!starter || !starter.name) continue;
+            if (starter.points && starter.projPoints) continue;
+            var key = clean(starter.name).toLowerCase();
+            for (var p = 0; p < ydb.players.length; p++) {
+              if (clean(ydb.players[p].name).toLowerCase() !== key) continue;
+              if (!starter.points && ydb.players[p].points) {
+                starter.points = ydb.players[p].points;
+                starter.actualPoints = ydb.players[p].actualPoints || ydb.players[p].points;
+              }
+              if (!starter.projPoints && ydb.players[p].projPoints) {
+                starter.projPoints = ydb.players[p].projPoints;
+                starter.projectedPoints = ydb.players[p].projectedPoints || ydb.players[p].projPoints;
+              }
+              break;
+            }
+          }
+        }
+        applyYdbPoints(rosters.mine);
+        applyYdbPoints(rosters.opp);
+      }
       var lines = [];
       if (leagueName) lines.push('League: ' + leagueName);
       lines.push(mineSide.name || 'My Team');
       if (mineSide.record) lines.push(mineSide.rank ? (mineSide.record + ' | ' + mineSide.rank) : mineSide.record);
       if (mineSide.score) lines.push(mineSide.score);
+      else if (mineSide.proj) lines.push(mineSide.proj);
       lines.push(oppSide.name || 'Opponent');
       if (oppSide.record) lines.push(oppSide.rank ? (oppSide.record + ' | ' + oppSide.rank) : oppSide.record);
       if (oppSide.score) lines.push(oppSide.score);
+      else if (oppSide.proj) lines.push(oppSide.proj);
       lines.push('Starters');
       var count = Math.max(rosters.mine.length, rosters.opp.length);
       for (var i = 0; i < count; i++) {
@@ -393,16 +661,24 @@ enum YahooLinks {
           lines.push(minePlayer.name);
           if (minePlayer.nflTeam) lines.push(minePlayer.nflTeam + ' - ' + (minePlayer.position || minePlayer.slot));
           if (minePlayer.gameClock) lines.push(minePlayer.gameClock);
+          if (minePlayer.projPoints) lines.push(minePlayer.projPoints);
           if (minePlayer.points) lines.push(minePlayer.points);
         }
         var rowSlot = (minePlayer && minePlayer.slot) || (oppPlayer && oppPlayer.slot) || '';
         if (rowSlot) lines.push(rowSlot);
         if (oppPlayer && !isOppMark(oppPlayer.name)) {
           if (oppPlayer.points) lines.push(oppPlayer.points);
+          if (oppPlayer.projPoints) lines.push(oppPlayer.projPoints);
           lines.push(oppPlayer.name);
           if (oppPlayer.nflTeam) lines.push(oppPlayer.nflTeam + ' - ' + (oppPlayer.position || oppPlayer.slot));
           if (oppPlayer.gameClock) lines.push(oppPlayer.gameClock);
         }
+      }
+      function winOddsNumber(value) {
+        var n = parseFloat(value);
+        if (!isFinite(n)) return '';
+        if (n > 0 && n <= 1) n = n * 100;
+        return String(Math.round(n));
       }
       var lineup = {
         leagueName: leagueName,
@@ -414,6 +690,12 @@ enum YahooLinks {
         oppRank: oppSide.rank,
         myScore: mineSide.score,
         oppScore: oppSide.score,
+        myProj: mineSide.proj,
+        oppProj: oppSide.proj,
+        myWinOdds: winOddsNumber(mineSide.winOdds),
+        oppWinOdds: winOddsNumber(oppSide.winOdds),
+        myLogo: mineSide.logo,
+        oppLogo: oppSide.logo,
         myStarters: rosters.mine,
         oppStarters: rosters.opp
       };
@@ -421,6 +703,7 @@ enum YahooLinks {
         href: href,
         leagueId: leagueId,
         teamId: teamId,
+        leagueName: leagueName,
         pageText: clip(lines.join('\\n'), 180000),
         html: '',
         lineup: clip(JSON.stringify(lineup), 180000)
