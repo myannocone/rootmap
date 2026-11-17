@@ -65,6 +65,10 @@ export function isYahooSessionExpired(error) {
   return message.includes('SESSION_EXPIRED');
 }
 
+/** Shown only when silent matchup refresh cannot read starters. */
+export const YAHOO_MATCHUP_HINT =
+  "Yahoo session saved. Open your matchup once so this week's starters can be read.";
+
 function htmlToMatchupText(html) {
   return String(html || '')
     .replace(/<script[\s\S]*?<\/script>/gi, '\n')
@@ -231,3 +235,25 @@ export function leagueFromYahooCapture(result, week) {
     threats: oppStarters
   };
 }
+
+/**
+ * Hidden WebView navigation to the saved matchup URL (uses Yahoo session cookies).
+ * Returns a capture payload suitable for leagueFromYahooCapture.
+ */
+export async function fetchYahooMatchupCapture(session, week) {
+  const identity = yahooIdentity(session);
+  if (!identity.matchupUrl) {
+    throw new Error('A saved Yahoo matchup URL is required.');
+  }
+  const captured = await YahooLogin.refresh({
+    matchupUrl: identity.matchupUrl,
+    week: week != null && week !== '' ? String(week) : undefined
+  });
+  return {
+    ...captured,
+    leagueId: identity.leagueId || captured?.leagueId || '',
+    teamId: identity.teamId || captured?.teamId || '',
+    matchupUrl: identity.matchupUrl || captured?.matchupUrl || ''
+  };
+}
+

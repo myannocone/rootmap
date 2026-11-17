@@ -34,9 +34,11 @@ import { fetchEspnFanLeagues, fetchEspnLeague, listEspnTeams, mapEspnLeague } fr
 import { ESPN_LOGIN_URL, openNativeEspnLogin, readEspnSession, writeEspnSession } from './utils/espnLogin';
 import { openYahooLogin } from './utils/openYahooLogin';
 import {
+  fetchYahooMatchupCapture,
   isYahooSessionExpired,
   leagueFromYahooCapture,
   readYahooSessions,
+  YAHOO_MATCHUP_HINT,
   writeYahooSession,
   YahooLogin
 } from './utils/yahooNative';
@@ -2516,10 +2518,20 @@ export default function App() {
         const result = await openYahooLogin();
         const week = selectedWeek;
         writeYahooSession(result);
-        const imported = leagueFromYahooCapture(result, week);
+        let imported = leagueFromYahooCapture(result, week);
+        if (!imported) {
+          setSyncStatus('Yahoo session saved. Reading this week’s matchup…');
+          try {
+            const refreshed = await fetchYahooMatchupCapture(result, week);
+            writeYahooSession(refreshed);
+            imported = leagueFromYahooCapture(refreshed, week);
+          } catch (refreshError) {
+            console.warn('Yahoo silent matchup fetch failed', refreshError);
+          }
+        }
         if (!imported) {
           setIsSyncing(false);
-          setSyncStatus('Yahoo session saved. Open your matchup once so this week’s starters can be read.');
+          setSyncStatus(YAHOO_MATCHUP_HINT);
           return;
         }
         const normalized = normalizeLeague(imported, leaguesRef.current.length);
@@ -2705,14 +2717,8 @@ export default function App() {
           for (const saved of sessions) {
             if (cancelled || expired) break;
             try {
-              const captured = await YahooLogin.refresh({ matchupUrl: saved.matchupUrl, week: String(week) });
-              if (cancelled || !captured) continue;
-              const stable = {
-                ...captured,
-                leagueId: saved.leagueId || captured.leagueId || '',
-                teamId: saved.teamId || captured.teamId || '',
-                matchupUrl: saved.matchupUrl || captured.matchupUrl || ''
-              };
+              const stable = await fetchYahooMatchupCapture(saved, week);
+              if (cancelled || !stable) continue;
               writeYahooSession(stable);
               const imported = leagueFromYahooCapture(stable, week);
               if (imported) {
@@ -4126,9 +4132,11 @@ export default function App() {
           <div
             role="status"
             className={`px-3 py-2.5 rounded-xl text-xs font-mono font-bold text-center shadow-lg border ${
-              /missing|could not|did not/i.test(syncStatus)
-                ? 'bg-rose-950/95 text-rose-100 border-rose-600'
-                : 'bg-purple-950/90 text-purple-200 border-purple-700'
+              syncStatus === YAHOO_MATCHUP_HINT || /open your matchup once/i.test(syncStatus)
+                ? 'bg-purple-700 text-white font-bold animate-pulse rootmap-pulse-blink border-purple-400'
+                : /missing|could not|did not/i.test(syncStatus)
+                  ? 'bg-rose-950/95 text-rose-100 border-rose-600'
+                  : 'bg-purple-950/90 text-purple-200 border-purple-700'
             }`}
           >
             {syncStatus}
@@ -6069,9 +6077,16 @@ export default function App() {
             </button>
 
             {syncStatus && (
-              <div role="alert" className={`text-xs font-bold rounded-xl px-3 py-2 border ${
-                isLight ? 'bg-rose-50 text-rose-700 border-rose-200' : 'bg-rose-950/70 text-rose-200 border-rose-700'
-              }`}>
+              <div
+                role="alert"
+                className={`text-xs font-bold rounded-xl px-3 py-2 border ${
+                  syncStatus === YAHOO_MATCHUP_HINT || /open your matchup once/i.test(syncStatus)
+                    ? 'bg-purple-700 text-white font-bold animate-pulse rootmap-pulse-blink border-purple-400'
+                    : isLight
+                      ? 'bg-rose-50 text-rose-700 border-rose-200'
+                      : 'bg-rose-950/70 text-rose-200 border-rose-700'
+                }`}
+              >
                 {syncStatus}
               </div>
             )}
