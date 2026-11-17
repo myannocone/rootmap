@@ -4,6 +4,7 @@
 import {
   evaluateMatchupNailbiter,
   formatFinalSlateNailbiterBody,
+  formatFinalSlateNailbiterNotification,
   groupNailbitersByKickoff,
   isLateSlateKickoff
 } from '../src/utils/finalSlateNailbiter.js';
@@ -70,6 +71,7 @@ const nailbiter = evaluateMatchupNailbiter({
 
 assert(nailbiter, 'expected a nailbiter evaluation');
 assert(nailbiter.leagueName === 'BCliff Football', 'league name');
+assert(nailbiter.outlook === 'upside', `outlook ${nailbiter.outlook}`);
 assert(Math.abs(nailbiter.myScore - 107.94) < 0.01, `myScore ${nailbiter.myScore}`);
 assert(Math.abs(nailbiter.oppScore - 111.46) < 0.01, `oppScore ${nailbiter.oppScore}`);
 assert(Math.abs(nailbiter.myRemProj - 14.4) < 0.01, `myRemProj ${nailbiter.myRemProj}`);
@@ -79,8 +81,9 @@ const body = formatFinalSlateNailbiterBody({
   finalKickoffTime: nailbiter.finalKickoffTime,
   matchups: [nailbiter]
 });
-assert(/Nailbiter in BCliff Football \(107\.9 vs 111\.5\)/.test(body), `body ${body}`);
+assert(/You have a chance to win!/.test(body), `body ${body}`);
 assert(/Zay Flowers/.test(body), `body players ${body}`);
+assert(body.length < 95, `body length ${body.length}`);
 
 // Too lopsided projected gap should not trigger.
 const blowout = evaluateMatchupNailbiter({
@@ -132,5 +135,8 @@ assert(earlyOnly == null, 'early Sunday slate must not qualify');
 const grouped = groupNailbitersByKickoff([nailbiter, { ...nailbiter, leagueId: 'lg9', leagueName: 'Mantasy' }]);
 assert(grouped.length === 1, 'same kickoff window groups together');
 assert(grouped[0].matchups.length === 2, 'two matchups in window');
+
+const formatted = formatFinalSlateNailbiterNotification(grouped[0]);
+assert(formatted.title === 'NAIL BITER • 2 RootMap Leagues', `multi title ${formatted.title}`);
 
 console.log('verify-final-slate-nailbiter: ok');

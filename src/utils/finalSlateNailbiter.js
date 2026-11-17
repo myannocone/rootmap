@@ -1,5 +1,10 @@
 import { Capacitor } from '@capacitor/core';
+import { publishInAppBanner } from './inAppBanner.js';
 import { prepareCrossFireAlerts } from './nativeFeedback.js';
+import {
+  formatRootMapNotification,
+  NOTIFICATION_CATEGORIES
+} from './notificationFormatter.js';
 import { isActiveStarterSlot, isBeforeKickoff, projectionReading } from './zeroProjection.js';
 
 const UPSIDE = 1.2;
@@ -13,11 +18,6 @@ function numeric(value) {
   if (value == null || value === '') return null;
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
-}
-
-function scoreText(value) {
-  const number = numeric(value) ?? 0;
-  return number.toFixed(1).replace(/\.0$/, '');
 }
 
 function etClock(kickoff) {
@@ -153,6 +153,9 @@ export function evaluateMatchupNailbiter(matchup, options = {}) {
       kickoff: row.player.kickoff || new Date(row.kickoffMs).toISOString()
     }));
 
+  // Behind (or tied) with upside flip → chance to win; ahead with opp upside → danger of loss.
+  const outlook = myScore <= oppScore ? 'upside' : 'danger';
+
   return {
     leagueId: matchup?.id || '',
     leagueName: matchup?.name || matchup?.leagueName || 'Fantasy League',
@@ -162,7 +165,8 @@ export function evaluateMatchupNailbiter(matchup, options = {}) {
     myRemProj,
     oppRemProj,
     decidingPlayers,
-    kickedOffShare: kickedOffProj / totalProj
+    kickedOffShare: kickedOffProj / totalProj,
+    outlook
   };
 }
 
@@ -177,43 +181,39 @@ export function finalSlateNailbiterNotificationId(week, kickoffMs) {
   return notificationId(`final-slate-nailbiter|${week}|${windowMs}`);
 }
 
-function formatKickoffEt(kickoffMs) {
-  const et = etClock(kickoffMs);
-  if (!et) return '';
-  const hour24 = Math.floor(et.minutes / 60);
-  const minute = et.minutes % 60;
-  const suffix = hour24 >= 12 ? 'PM' : 'AM';
-  const hour12 = hour24 % 12 || 12;
-  const day = et.weekday === 'Mon' ? 'Monday' : et.weekday === 'Sun' ? 'Sunday' : et.weekday;
-  return `${day} ${hour12}:${String(minute).padStart(2, '0')} ${suffix} ET`;
+function groupOutlook(rows) {
+  if (!rows?.length) return 'upside';
+  return rows.every((row) => row.outlook === 'danger') ? 'danger' : 'upside';
 }
 
-function decidingLabel(players) {
-  const list = players || [];
-  if (!list.length) return 'Final starters';
-  if (list.length === 1) {
-    const only = list[0];
-    return `${only.name} (Proj ${scoreText(only.proj)})`;
-  }
-  if (list.length === 2) {
-    return list.map((player) => `${player.name} (Proj ${scoreText(player.proj)})`).join(' & ');
-  }
-  return `${list.length} deciding starters`;
-}
-
-export function formatFinalSlateNailbiterBody(group) {
+export function formatFinalSlateNailbiterNotification(group) {
   const rows = group?.matchups || [];
-  if (!rows.length) return '';
+  if (!rows.length) {
+    return formatRootMapNotification(NOTIFICATION_CATEGORIES.NAIL_BITER, {
+      outlook: 'upside',
+      body: ''
+    });
+  }
+  const outlook = groupOutlook(rows);
   if (rows.length === 1) {
     const only = rows[0];
-    return `⚡ Nailbiter in ${only.leagueName} (${scoreText(only.myScore)} vs ${scoreText(only.oppScore)}): ${decidingLabel(only.decidingPlayers)} kicks off in 10 mins!`;
+    const playerName = only.decidingPlayers?.[0]?.name || null;
+    return formatRootMapNotification(NOTIFICATION_CATEGORIES.NAIL_BITER, {
+      leagueName: only.leagueName,
+      outlook: only.outlook || outlook,
+      playerName
+    });
   }
-  const summary = rows
-    .slice(0, 3)
-    .map((row) => `${row.leagueName} (${scoreText(row.myScore)}-${scoreText(row.oppScore)})`)
-    .join(' + ');
-  const extra = rows.length > 3 ? ` +${rows.length - 3} more` : '';
-  return `⚡ ${rows.length} Final-Slate Nailbiters at ${formatKickoffEt(group.finalKickoffTime)}: ${summary}${extra}`;
+  return formatRootMapNotification(NOTIFICATION_CATEGORIES.NAIL_BITER, {
+    leagueCount: rows.length,
+    outlook,
+    multiCount: rows.length
+  });
+}
+
+/** @deprecated Prefer formatFinalSlateNailbiterNotification — kept for smoke tests. */
+export function formatFinalSlateNailbiterBody(group) {
+  return formatFinalSlateNailbiterNotification(group).body;
 }
 
 function readScheduledIds() {
@@ -293,17 +293,24 @@ export async function syncFinalSlateNailbiterNotifications({
     const fireAt = group.finalKickoffTime - PRE_KICKOFF_MS;
     if (!(fireAt > instant) || !(group.finalKickoffTime > instant)) return;
     nextIds.push(id);
+    const formatted = formatFinalSlateNailbiterNotification(group);
     notifications.push({
       id,
-      title: 'Final-Slate Nailbiter',
-      body: formatFinalSlateNailbiterBody(group),
+      title: formatted.title,
+      body: formatted.body,
       schedule: { at: new Date(fireAt), allowWhileIdle: true },
       extra: {
         type: 'final-slate-nailbiter',
+        category: formatted.category,
+        outlook: formatted.outlook,
         week: Number(week) || null,
         kickoff: group.finalKickoffTime
       }
     });
+    // Foreground toast when the fire window is imminent (< 90s) so testers/devs see the banner.
+    if (fireAt - instant < 90_000) {
+      publishInAppBanner(formatted);
+    }
   });
 
   const stale = previous.filter((id) => !nextIds.includes(id));
