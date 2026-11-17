@@ -67,6 +67,7 @@ export default async function handler(req, res) {
     }
 
     // Yahoo-native weekly sync: scoreboard team_points + roster player_points/projections.
+    // Parsing uses findYahooKey (lib/yahooFantasy.js) — never hardcoded player[N][M] paths.
     // Sleeper pts_ppr is NOT used here — the client may fall back only when yahooStatsOk is false.
     const leagues = await importYahooLeagues(accessToken, { week });
     if (refreshed?.access_token) {
