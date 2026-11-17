@@ -1,4 +1,9 @@
 import { Capacitor } from '@capacitor/core';
+import { publishInAppBanner } from './inAppBanner.js';
+import {
+  formatRootMapNotification,
+  NOTIFICATION_CATEGORIES
+} from './notificationFormatter.js';
 
 export async function tapHaptic(kind = 'light') {
   if (!Capacitor.isNativePlatform()) return;
@@ -21,30 +26,74 @@ const notifiedZeroProj = new Set();
 let zeroProjLoaded = false;
 let zeroPermissionAsked = false;
 
-function loadZeroProjNotified() {
-  if (zeroProjLoaded) return;
-  zeroProjLoaded = true;
+const RED_ZONE_KEY = 'rootmap_redzone_notified';
+const notifiedRedZone = new Set();
+let redZoneLoaded = false;
+
+const OUTPERFORM_KEY = 'rootmap_outperform_notified';
+const notifiedOutperform = new Set();
+let outperformLoaded = false;
+
+function rememberSessionSet(key, target, ids) {
+  ids.forEach((id) => target.add(String(id)));
   try {
-    const saved = JSON.parse(sessionStorage.getItem(ZERO_ALERT_KEY) || '[]');
-    if (Array.isArray(saved)) saved.forEach((id) => notifiedZeroProj.add(String(id)));
+    sessionStorage.setItem(key, JSON.stringify([...target]));
   } catch {
     // session storage is optional
   }
 }
 
-function rememberZeroProj(ids) {
-  ids.forEach((id) => notifiedZeroProj.add(id));
+function loadSessionIds(key, target, loadedFlag) {
+  if (loadedFlag.value) return;
+  loadedFlag.value = true;
   try {
-    sessionStorage.setItem(ZERO_ALERT_KEY, JSON.stringify([...notifiedZeroProj]));
+    const saved = JSON.parse(sessionStorage.getItem(key) || '[]');
+    if (Array.isArray(saved)) saved.forEach((id) => target.add(String(id)));
   } catch {
     // session storage is optional
   }
+}
+
+function loadZeroProjNotified() {
+  const flag = { value: zeroProjLoaded };
+  loadSessionIds(ZERO_ALERT_KEY, notifiedZeroProj, flag);
+  zeroProjLoaded = flag.value;
+}
+
+function rememberZeroProj(ids) {
+  rememberSessionSet(ZERO_ALERT_KEY, notifiedZeroProj, ids);
 }
 
 function notificationId(text) {
   let hash = 0;
   for (const char of String(text || '')) hash = (hash * 33 + char.charCodeAt(0)) >>> 0;
   return (hash % 2147483646) + 1;
+}
+
+async function scheduleFormatted(formatted, id) {
+  publishInAppBanner(formatted);
+  if (Capacitor.isNativePlatform()) {
+    await prepareCrossFireAlerts();
+    if (!notificationsReady) return;
+    const { LocalNotifications } = await import('@capacitor/local-notifications');
+    await LocalNotifications.schedule({
+      notifications: [{
+        id,
+        title: formatted.title,
+        body: formatted.body,
+        schedule: { at: new Date(Date.now() + 800) },
+        extra: { category: formatted.category, outlook: formatted.outlook }
+      }]
+    });
+    return;
+  }
+  if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+    try {
+      new Notification(formatted.title, { body: formatted.body });
+    } catch {
+      // browser can refuse after permission changes
+    }
+  }
 }
 
 export async function prepareZeroProjectionAlerts({ request = false } = {}) {
@@ -69,41 +118,101 @@ export async function notifyZeroProjectionAlerts(alerts) {
   const fresh = (alerts || []).filter((alert) => alert?.id && alert?.name && !notifiedZeroProj.has(alert.id));
   if (!fresh.length) return;
   const granted = await prepareZeroProjectionAlerts();
-  if (!granted) return;
   rememberZeroProj(fresh.map((alert) => alert.id));
-  if (Capacitor.isNativePlatform()) {
-    const { LocalNotifications } = await import('@capacitor/local-notifications');
-    await LocalNotifications.schedule({
-      notifications: fresh.map((alert) => ({
-        id: notificationId(alert.id),
-        title: '🚨 Inactive Starter Alert',
-        body: `${alert.name} is starting in ${alert.leagueName} with 0.0 projected points. Tap to adjust your lineup before kickoff.`,
-        schedule: { at: new Date(Date.now() + 800) }
-      }))
+  for (const alert of fresh) {
+    const formatted = formatRootMapNotification(NOTIFICATION_CATEGORIES.INACTIVE, {
+      leagueName: alert.leagueName,
+      playerName: alert.name
     });
-    return;
-  }
-  fresh.forEach((alert) => {
-    const body = `${alert.name} is starting in ${alert.leagueName} with 0.0 projected points. Tap to adjust your lineup before kickoff.`;
-    try {
-      new Notification('🚨 Inactive Starter Alert', { body });
-    } catch {
-      // the browser can refuse a notification after permission changes
+    if (!granted) {
+      publishInAppBanner(formatted);
+      continue;
     }
-  });
+    await scheduleFormatted(formatted, notificationId(alert.id));
+  }
 }
 
 export async function notifyCrossFire({ name, delta, mine, opp }) {
-  if (!Capacitor.isNativePlatform()) return;
-  const { LocalNotifications } = await import('@capacitor/local-notifications');
+  const formatted = formatRootMapNotification(NOTIFICATION_CATEGORIES.CROSS_FIRE, {
+    context: name || 'Player',
+    playerName: name,
+    delta,
+    mine,
+    opp
+  });
+  if (!Capacitor.isNativePlatform()) {
+    publishInAppBanner(formatted);
+    return;
+  }
+  await scheduleFormatted(formatted, Math.floor(Date.now() % 2147483647));
+}
+
+export async function notifyRedZoneAlert({ id, playerName, leagueName }) {
+  const flag = { value: redZoneLoaded };
+  loadSessionIds(RED_ZONE_KEY, notifiedRedZone, flag);
+  redZoneLoaded = flag.value;
+  const key = String(id || `${leagueName}|${playerName}`);
+  if (notifiedRedZone.has(key)) return;
+  rememberSessionSet(RED_ZONE_KEY, notifiedRedZone, [key]);
+  const formatted = formatRootMapNotification(NOTIFICATION_CATEGORIES.RED_ZONE, {
+    leagueName,
+    playerName
+  });
+  const granted = await prepareZeroProjectionAlerts();
+  if (!granted) {
+    publishInAppBanner(formatted);
+    return;
+  }
+  await scheduleFormatted(formatted, notificationId(`redzone|${key}`));
+}
+
+export async function notifyOutperformerAlert({ id, playerName, leagueName, delta }) {
+  const flag = { value: outperformLoaded };
+  loadSessionIds(OUTPERFORM_KEY, notifiedOutperform, flag);
+  outperformLoaded = flag.value;
+  const key = String(id || `${leagueName}|${playerName}`);
+  if (notifiedOutperform.has(key)) return;
+  rememberSessionSet(OUTPERFORM_KEY, notifiedOutperform, [key]);
+  const formatted = formatRootMapNotification(NOTIFICATION_CATEGORIES.OUTPERFORMER, {
+    leagueName,
+    playerName,
+    delta
+  });
+  const granted = await prepareZeroProjectionAlerts();
+  if (!granted) {
+    publishInAppBanner(formatted);
+    return;
+  }
+  await scheduleFormatted(formatted, notificationId(`outperform|${key}`));
+}
+
+export async function notifyLineupLock({ windowLabel, id, fireAt } = {}) {
+  const formatted = formatRootMapNotification(NOTIFICATION_CATEGORIES.LINEUP_LOCK, {
+    windowLabel
+  });
+  if (!Capacitor.isNativePlatform()) {
+    publishInAppBanner(formatted);
+    return;
+  }
   await prepareCrossFireAlerts();
-  if (!notificationsReady) return;
+  if (!notificationsReady) {
+    publishInAppBanner(formatted);
+    return;
+  }
+  const { LocalNotifications } = await import('@capacitor/local-notifications');
+  const notifId = notificationId(id || `lineup-lock|${windowLabel}`);
+  const when = fireAt instanceof Date ? fireAt : (fireAt ? new Date(fireAt) : new Date(Date.now() + 800));
+  if (!(when.getTime() > Date.now())) {
+    publishInAppBanner(formatted);
+    return;
+  }
   await LocalNotifications.schedule({
     notifications: [{
-      id: Math.floor(Date.now() % 2147483647),
-      title: 'Cross Fire Alert',
-      body: `${name} scored! You gain +${delta} in ${mine}, but Opponent gains +${delta} in ${opp}.`,
-      schedule: { at: new Date(Date.now() + 800) }
+      id: notifId,
+      title: formatted.title,
+      body: formatted.body,
+      schedule: { at: when, allowWhileIdle: true },
+      extra: { category: formatted.category }
     }]
   });
 }

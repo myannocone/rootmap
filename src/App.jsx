@@ -51,13 +51,24 @@ import {
 } from './utils/yahooSync';
 import { SITE_ORIGIN } from './utils/siteOrigin';
 import { Capacitor } from '@capacitor/core';
-import { notifyCrossFire, notifyZeroProjectionAlerts, prepareCrossFireAlerts, prepareZeroProjectionAlerts, tapHaptic } from './utils/nativeFeedback';
+import {
+  notifyCrossFire,
+  notifyOutperformerAlert,
+  notifyRedZoneAlert,
+  notifyZeroProjectionAlerts,
+  prepareCrossFireAlerts,
+  prepareZeroProjectionAlerts,
+  tapHaptic
+} from './utils/nativeFeedback';
 import { checkZeroProjectionStarters, starterProjectionStatus } from './utils/zeroProjection';
 import {
   evaluateMatchupNailbiter,
   hydrateMatchupKickoffs,
   syncFinalSlateNailbiterNotifications
 } from './utils/finalSlateNailbiter';
+import { syncLineupLockNotifications } from './utils/lineupLockNotifications';
+import { notificationSurfaceClass } from './utils/notificationFormatter';
+import { readBannerHistory, subscribeInAppBanners } from './utils/inAppBanner';
 import { decodeSetupJson, encodeSetupPayload, linkIsLocalOnly, phoneSyncOrigin, setupLinkFor } from './utils/setupSync';
 
 const LEAGUES_STORAGE_KEY = 'rootmap_leagues';
@@ -68,6 +79,7 @@ const DEFAULT_ALERT_PREFS = {
   redZoneTv: true,
   fourthQuarterSweat: true,
   finalSlateNailbiter: true,
+  lineupLock: true,
   spoilerFreeDelay: false
 };
 const REMAINING_STARTER_FALLBACK = 12.5;
@@ -2238,7 +2250,10 @@ export default function App() {
   });
   const [showSortSheet, setShowSortSheet] = useState(false);
   const [showAlertSheet, setShowAlertSheet] = useState(false);
+  const [showNotifDrawer, setShowNotifDrawer] = useState(false);
   const [alertPrefs, setAlertPrefs] = useState(loadAlertPrefs);
+  const [liveBanners, setLiveBanners] = useState([]);
+  const [notifHistory, setNotifHistory] = useState(() => readBannerHistory());
   const [jumpMenuOpen, setJumpMenuOpen] = useState(false);
   const [flashGameId, setFlashGameId] = useState(null);
   const gameCardRefs = useRef(new Map());
@@ -3542,12 +3557,56 @@ export default function App() {
       }).catch((err) => {
         console.warn('Final-slate nailbiter schedule failed', err);
       });
+      syncLineupLockNotifications({
+        leagues: visibleLeagues,
+        games,
+        week: selectedWeek,
+        enabled: Boolean(alertPrefs.lineupLock)
+      }).catch((err) => {
+        console.warn('Lineup lock schedule failed', err);
+      });
     }, delayMs);
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [visibleLeagues, games, liveScores, alertPrefs.finalSlateNailbiter, alertPrefs.spoilerFreeDelay, selectedWeek]);
+  }, [visibleLeagues, games, liveScores, alertPrefs.finalSlateNailbiter, alertPrefs.lineupLock, alertPrefs.spoilerFreeDelay, selectedWeek]);
+
+  useEffect(() => subscribeInAppBanners((entry) => {
+    setLiveBanners((current) => [entry, ...current].slice(0, 3));
+    setNotifHistory(readBannerHistory());
+    const clearId = entry.id;
+    window.setTimeout(() => {
+      setLiveBanners((current) => current.filter((row) => row.id !== clearId));
+    }, 6500);
+  }), []);
+
+  useEffect(() => {
+    const delayMs = alertPrefs.spoilerFreeDelay ? 45000 : 0;
+    const timer = window.setTimeout(() => {
+      playerMasterIndex.forEach((player) => {
+        if (!player || !(player.myShares > 0)) return;
+        const leagueName = player.myLeagues?.[0]?.league || 'your league';
+        if (alertPrefs.redZoneTv && player.inRedZone) {
+          notifyRedZoneAlert({
+            id: `rz|${player.cardKey || player.name}|${leagueName}`,
+            playerName: player.name,
+            leagueName
+          });
+        }
+        const delta = boomDelta(player);
+        if (delta >= 4 && (player.isLive || player.gameStatus === 'IN_PROGRESS')) {
+          notifyOutperformerAlert({
+            id: `out|${player.cardKey || player.name}|${leagueName}`,
+            playerName: player.name,
+            leagueName,
+            delta
+          });
+        }
+      });
+    }, delayMs);
+    return () => window.clearTimeout(timer);
+  }, [playerMasterIndex, alertPrefs.redZoneTv, alertPrefs.spoilerFreeDelay]);
 
   useEffect(() => {
     const next = new Map();
@@ -3932,7 +3991,7 @@ export default function App() {
       }`}>
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-2 min-w-0">
-            <RootMapLogo className="w-8 h-8 shrink-0" showWordmark={false} />
+            <RootMapLogo className="w-10 h-10 rounded-xl shadow-sm ring-1 ring-white/10" showWordmark={false} />
             <span className={`font-extrabold text-lg tracking-tight ${isLight ? 'text-slate-900' : 'text-white'}`}>
               Root<span className="text-emerald-400">Map</span>
             </span>
@@ -3973,8 +4032,8 @@ export default function App() {
               aria-label="Game-Day Alerts"
               title="Game-Day Alerts"
               className={`w-9 h-9 rounded-lg border flex items-center justify-center transition touch-manipulation ${
-                showAlertSheet || alertPrefs.lineupRescue || alertPrefs.redZoneTv || alertPrefs.fourthQuarterSweat || alertPrefs.finalSlateNailbiter
-                  ? isLight ? 'bg-amber-50 text-amber-700 border-amber-300' : 'bg-amber-950/50 text-amber-300 border-amber-700'
+                showAlertSheet || showNotifDrawer || alertPrefs.lineupRescue || alertPrefs.redZoneTv || alertPrefs.fourthQuarterSweat || alertPrefs.finalSlateNailbiter || alertPrefs.lineupLock
+                  ? isLight ? 'bg-emerald-50 text-emerald-700 border-emerald-300' : 'bg-emerald-950/50 text-emerald-300 border-emerald-700'
                   : isLight ? 'bg-white text-slate-700 border-slate-200' : 'bg-slate-900 text-slate-200 border-slate-700'
               }`}
             >
@@ -4172,15 +4231,26 @@ export default function App() {
         className={`max-w-md mx-auto p-3 space-y-3 rootmap-view-track ${viewSlideClass} ${swipeDragging ? 'is-dragging' : ''}`}
         style={swipeDragX ? { transform: `translate3d(${swipeDragX}px, 0, 0)` } : undefined}
       >
+        {liveBanners.map((banner) => (
+          <div
+            key={banner.id}
+            role="status"
+            className={`px-3 py-2.5 rounded-xl text-xs font-bold text-left shadow-lg border ${banner.surfaceClass || notificationSurfaceClass(banner.category, banner.outlook)}`}
+          >
+            <div className="tracking-wide text-[10px] font-black opacity-90">{banner.title}</div>
+            <div className="mt-0.5 font-semibold leading-snug">{banner.body}</div>
+          </div>
+        ))}
+
         {syncStatus && (
           <div
             role="status"
             className={`px-3 py-2.5 rounded-xl text-xs font-mono font-bold text-center shadow-lg border ${
               syncStatus === YAHOO_MATCHUP_HINT || /open your matchup once/i.test(syncStatus)
-                ? 'bg-purple-700 text-white font-bold animate-pulse rootmap-pulse-blink border-purple-400'
+                ? 'bg-[#0D9488] text-white font-bold animate-pulse rootmap-pulse-blink border-teal-300'
                 : /missing|could not|did not/i.test(syncStatus)
-                  ? 'bg-rose-950/95 text-rose-100 border-rose-600'
-                  : 'bg-purple-950/90 text-purple-200 border-purple-700'
+                  ? 'bg-[#E11D48] text-white border-[#E11D48]'
+                  : 'bg-[#0F9D68] text-white border-emerald-400'
             }`}
           >
             {syncStatus}
@@ -4619,14 +4689,15 @@ export default function App() {
                 } ${nailbiter ? (isLight ? 'bg-white' : 'bg-slate-900') : ''}`}
               >
                 {finalSlate ? (
-                  <div className={`inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-black uppercase tracking-wider ${
-                    isLight ? 'bg-amber-100 text-amber-800' : 'bg-amber-500/20 text-amber-200'
-                  }`}>
-                    NAILBITER
+                  <div
+                    className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-black uppercase tracking-wider text-white"
+                    style={{ backgroundColor: finalSlate.outlook === 'danger' ? '#E11D48' : '#0F9D68' }}
+                  >
+                    NAIL BITER
                   </div>
                 ) : nailbiter ? (
-                  <div className={`text-[10px] font-black uppercase tracking-wider ${isLight ? 'text-amber-700' : 'text-amber-300'}`}>
-                    Nailbiter
+                  <div className={`text-[10px] font-black uppercase tracking-wider ${isLight ? 'text-emerald-700' : 'text-emerald-300'}`}>
+                    Nail Biter
                   </div>
                 ) : null}
                 <LeagueScoreboard
@@ -5169,8 +5240,13 @@ export default function App() {
                 },
                 {
                   key: 'finalSlateNailbiter',
-                  label: 'Final-Slate Nailbiter Alerts',
+                  label: 'Final-Slate Nail Biter Alerts',
                   detail: 'One pre-kickoff ping 10 minutes before the last Sunday/Monday slate when a matchup can still flip.'
+                },
+                {
+                  key: 'lineupLock',
+                  label: 'Lineup Lock Reminders',
+                  detail: 'Teal ping 30 minutes before each upcoming kickoff window so starters are set.'
                 },
                 {
                   key: 'spoilerFreeDelay',
@@ -5215,6 +5291,78 @@ export default function App() {
                 );
               })}
             </div>
+            <button
+              type="button"
+              onClick={() => {
+                setNotifHistory(readBannerHistory());
+                setShowNotifDrawer(true);
+                setShowAlertSheet(false);
+                tapHaptic();
+              }}
+              className={`w-full min-h-11 rounded-2xl border text-xs font-black ${
+                isLight ? 'border-slate-200 text-slate-800' : 'border-slate-700 text-slate-100'
+              }`}
+            >
+              Open notification drawer
+            </button>
+          </div>
+        </div>
+      )}
+
+      {showNotifDrawer && (
+        <div
+          onClick={() => setShowNotifDrawer(false)}
+          className="fixed inset-0 z-[80] bg-black/60 backdrop-blur-sm flex items-end justify-center"
+          role="presentation"
+        >
+          <div
+            onClick={(event) => event.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="notif-drawer-title"
+            className={`border-t rounded-t-3xl p-5 max-w-md w-full max-h-[min(88vh,36rem)] overflow-y-auto space-y-3 shadow-2xl pb-[calc(1.25rem+env(safe-area-inset-bottom))] ${
+              isLight ? 'bg-white border-slate-200' : 'bg-slate-900 border-slate-800'
+            }`}
+          >
+            <div className={`w-12 h-1.5 rounded-full mx-auto ${isLight ? 'bg-slate-300' : 'bg-slate-700'}`} />
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h3 id="notif-drawer-title" className={`text-base font-extrabold tracking-tight ${isLight ? 'text-slate-900' : 'text-white'}`}>
+                  Notifications
+                </h3>
+                <p className={`mt-1 text-[11px] font-semibold ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+                  Recent RootMap alerts in brand colors.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowNotifDrawer(false)}
+                className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold ${
+                  isLight ? 'bg-slate-100 text-slate-500' : 'bg-slate-800 text-slate-400'
+                }`}
+              >
+                ✕
+              </button>
+            </div>
+            {notifHistory.length === 0 ? (
+              <div className={`rounded-2xl border px-3 py-4 text-xs font-semibold ${
+                isLight ? 'border-slate-200 text-slate-500' : 'border-slate-800 text-slate-400'
+              }`}>
+                No alerts yet this session.
+              </div>
+            ) : (
+              notifHistory.map((entry) => (
+                <div
+                  key={entry.id}
+                  className={`rounded-2xl border px-3 py-2.5 shadow-sm ${
+                    entry.surfaceClass || notificationSurfaceClass(entry.category, entry.outlook)
+                  }`}
+                >
+                  <div className="text-[10px] font-black tracking-wide opacity-90">{entry.title}</div>
+                  <div className="mt-0.5 text-xs font-semibold leading-snug">{entry.body}</div>
+                </div>
+              ))
+            )}
           </div>
         </div>
       )}
@@ -6138,10 +6286,10 @@ export default function App() {
                 role="alert"
                 className={`text-xs font-bold rounded-xl px-3 py-2 border ${
                   syncStatus === YAHOO_MATCHUP_HINT || /open your matchup once/i.test(syncStatus)
-                    ? 'bg-purple-700 text-white font-bold animate-pulse rootmap-pulse-blink border-purple-400'
+                    ? 'bg-[#0D9488] text-white font-bold animate-pulse rootmap-pulse-blink border-teal-300'
                     : isLight
                       ? 'bg-rose-50 text-rose-700 border-rose-200'
-                      : 'bg-rose-950/70 text-rose-200 border-rose-700'
+                      : 'bg-[#E11D48] text-white border-[#E11D48]'
                 }`}
               >
                 {syncStatus}
