@@ -4,8 +4,10 @@
 import {
   mapYahooPlayer,
   parseLeagues,
+  parseRoster,
   parseScoreboard,
   extractYahooTotal,
+  findYahooKey,
   isGenericYahooSectionName
 } from '../lib/yahooFantasy.js';
 
@@ -183,5 +185,98 @@ assert(leagues[0].name === 'BCliff Football', leagues[0].name);
 assert(leagues[1].name === 'Mantasy', leagues[1].name);
 assert(!isGenericYahooSectionName('BCliff Football'), 'real name not generic');
 assert(isGenericYahooSectionName('My Teams & Leagues'), 'section is generic');
+
+// Deep numeric-key nesting (the shape that breaks hardcoded player[0][13] paths).
+const deepPlayer = {
+  '0': {
+    '0': { player_key: '461.p.30123' },
+    '5': { name: { full: 'Jahmyr Gibbs' } },
+    '8': { editorial_team_abbr: 'Det' },
+    '9': { display_position: 'RB' },
+    '10': { primary_position: 'RB' },
+    '13': {
+      selected_position: { position: 'RB' },
+      player_points: { '0': { total: '43.70' }, coverage_type: 'week' },
+      player_projected_points: [{ coverage_type: 'week' }, { total: '18.40' }]
+    }
+  }
+};
+assert(findYahooKey(deepPlayer, 'player_points') != null, 'findYahooKey player_points');
+assert(extractYahooTotal(findYahooKey(deepPlayer, 'player_points')) === 43.7, 'deep player total');
+const gibbs = mapYahooPlayer({ player: deepPlayer }, 11);
+assert(gibbs?.name === 'Jahmyr Gibbs', `deep name ${gibbs?.name}`);
+assert(gibbs?.actualPoints === 43.7, `deep actual ${gibbs?.actualPoints}`);
+assert(gibbs?.projPoints === 18.4, `deep proj ${gibbs?.projPoints}`);
+assert(gibbs?.points === 43.7, `deep points ${gibbs?.points}`);
+
+// Roster body with players buried under numeric keys (no fantasy_content.team.roster.players shortcut).
+const deepRoster = parseRoster({
+  fantasy_content: {
+    '0': {
+      team: {
+        '0': [{ team_key: '461.l.1.t.1' }, { name: 'YANNACONDA 🐍' }],
+        '1': {
+          roster: {
+            '0': {
+              players: {
+                '0': { player: deepPlayer },
+                count: 1
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}, 11);
+assert(deepRoster.length === 1, `deep roster count ${deepRoster.length}`);
+assert(deepRoster[0].actualPoints === 43.7, `deep roster points ${deepRoster[0].actualPoints}`);
+
+// League metadata as numeric-key object (mergeYahoo does not flatten these).
+const numericLeagues = parseLeagues({
+  fantasy_content: {
+    users: {
+      '0': {
+        user: {
+          '1': {
+            games: {
+              '0': {
+                game: {
+                  '1': {
+                    leagues: {
+                      '0': {
+                        league: {
+                          '0': {
+                            '0': { league_key: '461.l.100' },
+                            '2': { name: 'BCliff Football' },
+                            '4': { num_teams: 12 },
+                            '7': { current_week: 11 }
+                          }
+                        }
+                      },
+                      '1': {
+                        league: {
+                          '0': {
+                            '0': { league_key: '461.l.200' },
+                            '2': { name: 'Mantasy' },
+                            '4': { num_teams: 10 }
+                          }
+                        }
+                      },
+                      count: 2
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+});
+assert(numericLeagues.length === 2, `numeric league count ${numericLeagues.length}`);
+assert(numericLeagues[0].name === 'BCliff Football', numericLeagues[0].name);
+assert(numericLeagues[1].name === 'Mantasy', numericLeagues[1].name);
 
 console.log('verify-yahoo-native: ok');
