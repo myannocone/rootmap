@@ -204,11 +204,24 @@ function parseYahooHeader(lines) {
       score: null
     });
   });
-  if (teams.length && teams.every((team) => team.proj == null)) {
+  if (teams.length && teams.every((team) => team.proj == null && team.score == null)) {
     const floats = header.filter(isFloatLine).map((line) => parseFloat(line));
-    teams.forEach((team, index) => {
-      if (floats[index] != null) team.proj = floats[index];
-    });
+    // Header floats are usually live totals (one per team). Older layouts may only show proj.
+    if (floats.length >= teams.length) {
+      teams.forEach((team, index) => {
+        if (floats[index] != null) team.score = floats[index];
+      });
+      if (floats.length >= teams.length * 2) {
+        teams.forEach((team, index) => {
+          const proj = floats[teams.length + index];
+          if (proj != null) team.proj = proj;
+        });
+      }
+    } else {
+      teams.forEach((team, index) => {
+        if (floats[index] != null) team.proj = floats[index];
+      });
+    }
   }
   return {
     leagueName,

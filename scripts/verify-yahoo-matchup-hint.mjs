@@ -30,8 +30,16 @@ assert(swiftSource.includes('finishWithDiscoveredLeagues'), 'native multi-league
 assert(swiftSource.includes('listTeamsScript'), 'lobby scrape script exists');
 assert(swiftSource.includes('App.main'), 'lobby script probes App.main');
 assert(swiftSource.includes('window.ydb'), 'lobby script probes ydb');
+assert(swiftSource.includes('digYahooJson'), 'matchup extract digs ydb for points/odds');
+assert(swiftSource.includes('enrichSide'), 'matchup extract keeps team sides isolated');
+assert(swiftSource.includes('attachScores'), 'matchup extract maps proj/actual floats');
+assert(swiftSource.includes('myWinOdds'), 'matchup lineup carries win odds');
 assert(swiftSource.includes('Finding your leagues'), 'native title reflects discovery');
 assert(swiftSource.includes('https://football.fantasysports.yahoo.com/f1"'), 'home loads Fantasy lobby');
+assert(appSource.includes('liveToast'), 'home uses a single floating toast');
+assert(appSource.includes('notifUnread'), 'notification bell tracks unread badge');
+assert(appSource.includes('playerEligibleForLiveAlert'), 'live alerts gated on live/final + points');
+assert(!appSource.includes('liveBanners.map'), 'inline stacked banners removed from home');
 
 function textValue(value) {
   return String(value || '').trim();

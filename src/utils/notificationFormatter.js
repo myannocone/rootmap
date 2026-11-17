@@ -60,7 +60,9 @@ export function formatNotificationTitle(category, options = {}) {
   }
 
   const leagueName = String(options.leagueName || '').trim();
-  if (leagueName) return `${cat} • ${leagueName}`;
+  if (leagueName && !/^(yahoo\s*league|your league|fantasy league)$/i.test(leagueName)) {
+    return `${cat} • ${leagueName}`;
+  }
   return cat;
 }
 
