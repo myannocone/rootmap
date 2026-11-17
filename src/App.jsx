@@ -53,6 +53,11 @@ import { SITE_ORIGIN } from './utils/siteOrigin';
 import { Capacitor } from '@capacitor/core';
 import { notifyCrossFire, notifyZeroProjectionAlerts, prepareCrossFireAlerts, prepareZeroProjectionAlerts, tapHaptic } from './utils/nativeFeedback';
 import { checkZeroProjectionStarters, starterProjectionStatus } from './utils/zeroProjection';
+import {
+  evaluateMatchupNailbiter,
+  hydrateMatchupKickoffs,
+  syncFinalSlateNailbiterNotifications
+} from './utils/finalSlateNailbiter';
 import { decodeSetupJson, encodeSetupPayload, linkIsLocalOnly, phoneSyncOrigin, setupLinkFor } from './utils/setupSync';
 
 const LEAGUES_STORAGE_KEY = 'rootmap_leagues';
@@ -62,6 +67,7 @@ const DEFAULT_ALERT_PREFS = {
   lineupRescue: true,
   redZoneTv: true,
   fourthQuarterSweat: true,
+  finalSlateNailbiter: true,
   spoilerFreeDelay: false
 };
 const REMAINING_STARTER_FALLBACK = 12.5;
@@ -3505,6 +3511,44 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [zeroProjAlerts, alertPrefs.spoilerFreeDelay, leagues, games, liveScores]);
 
+  const [finalSlateNailbiters, setFinalSlateNailbiters] = useState(() => new Map());
+
+  useEffect(() => {
+    let cancelled = false;
+    const now = new Date();
+    const byId = new Map();
+    visibleLeagues.forEach((league) => {
+      const matchup = hydrateMatchupKickoffs({
+        id: league.id,
+        name: getLeagueDisplayName(league),
+        leagueName: getLeagueDisplayName(league),
+        myStarters: getLeaguePortfolio(league),
+        oppStarters: getLeagueThreats(league)
+      }, games);
+      const result = evaluateMatchupNailbiter(matchup, { games, liveScores, now });
+      if (result) byId.set(league.id, result);
+    });
+    setFinalSlateNailbiters(byId);
+
+    if (!Capacitor.isNativePlatform()) return undefined;
+    const results = [...byId.values()];
+    const delayMs = alertPrefs.spoilerFreeDelay ? 45000 : 0;
+    const timer = window.setTimeout(() => {
+      if (cancelled) return;
+      syncFinalSlateNailbiterNotifications({
+        results,
+        week: selectedWeek,
+        enabled: Boolean(alertPrefs.finalSlateNailbiter)
+      }).catch((err) => {
+        console.warn('Final-slate nailbiter schedule failed', err);
+      });
+    }, delayMs);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [visibleLeagues, games, liveScores, alertPrefs.finalSlateNailbiter, alertPrefs.spoilerFreeDelay, selectedWeek]);
+
   useEffect(() => {
     const next = new Map();
     playerMasterIndex.forEach((player) => {
@@ -3929,7 +3973,7 @@ export default function App() {
               aria-label="Game-Day Alerts"
               title="Game-Day Alerts"
               className={`w-9 h-9 rounded-lg border flex items-center justify-center transition touch-manipulation ${
-                showAlertSheet || alertPrefs.lineupRescue || alertPrefs.redZoneTv || alertPrefs.fourthQuarterSweat
+                showAlertSheet || alertPrefs.lineupRescue || alertPrefs.redZoneTv || alertPrefs.fourthQuarterSweat || alertPrefs.finalSlateNailbiter
                   ? isLight ? 'bg-amber-50 text-amber-700 border-amber-300' : 'bg-amber-950/50 text-amber-300 border-amber-700'
                   : isLight ? 'bg-white text-slate-700 border-slate-200' : 'bg-slate-900 text-slate-200 border-slate-700'
               }`}
@@ -4546,7 +4590,9 @@ export default function App() {
               const outlook = matchupOutlook(lg);
               const ahead = outlook.myTotal > outlook.oppTotal;
               const behind = outlook.oppTotal > outlook.myTotal;
-              const nailbiter = Math.abs(outlook.myTotal - outlook.oppTotal) <= 10 && leagueHasLivePlayers(lg, games);
+              const nailbiter = finalSlateNailbiters.has(lg.id)
+                || (Math.abs(outlook.myTotal - outlook.oppTotal) <= 10 && leagueHasLivePlayers(lg, games));
+              const finalSlate = finalSlateNailbiters.get(lg.id);
               return (
               <div
                 key={lg.id}
@@ -4572,11 +4618,17 @@ export default function App() {
                         : 'bg-slate-900 border-slate-700 hover:border-slate-600'
                 } ${nailbiter ? (isLight ? 'bg-white' : 'bg-slate-900') : ''}`}
               >
-                {nailbiter && (
+                {finalSlate ? (
+                  <div className={`inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-black uppercase tracking-wider ${
+                    isLight ? 'bg-amber-100 text-amber-800' : 'bg-amber-500/20 text-amber-200'
+                  }`}>
+                    NAILBITER
+                  </div>
+                ) : nailbiter ? (
                   <div className={`text-[10px] font-black uppercase tracking-wider ${isLight ? 'text-amber-700' : 'text-amber-300'}`}>
                     Nailbiter
                   </div>
-                )}
+                ) : null}
                 <LeagueScoreboard
                   league={lg}
                   isLight={isLight}
@@ -5114,6 +5166,11 @@ export default function App() {
                   key: 'fourthQuarterSweat',
                   label: '4th Quarter Sweat Alert (±10 Projected Pts)',
                   detail: 'Late-game nudge when a matchup is still within 10 projected points.'
+                },
+                {
+                  key: 'finalSlateNailbiter',
+                  label: 'Final-Slate Nailbiter Alerts',
+                  detail: 'One pre-kickoff ping 10 minutes before the last Sunday/Monday slate when a matchup can still flip.'
                 },
                 {
                   key: 'spoilerFreeDelay',
