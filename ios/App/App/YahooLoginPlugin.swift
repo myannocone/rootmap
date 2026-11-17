@@ -14,12 +14,19 @@ public class YahooLoginPlugin: CAPPlugin, CAPBridgedPlugin {
     private var activeRefresh: YahooSilentRefresh?
 
     @objc func login(_ call: CAPPluginCall) {
+        let matchupRaw = (call.getString("matchupUrl") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let week = YahooLinks.weekArgument(call)
         DispatchQueue.main.async {
             guard let presenter = self.bridge?.viewController else {
                 call.reject("Yahoo sign-in could not open.")
                 return
             }
             let sheet = YahooLoginSheet()
+            if let start = URL(string: matchupRaw), (start.host ?? "").lowercased().contains("yahoo") {
+                sheet.startURL = week.isEmpty ? start : YahooLinks.applying(week: week, to: start)
+            } else if !week.isEmpty {
+                sheet.preferredWeek = week
+            }
             sheet.onFinish = { result in
                 call.resolve(result)
             }
@@ -548,7 +555,7 @@ enum YahooLinks {
         return components.url ?? url
     }
 
-    static func matchupURL(leagueId: String, week: String, fallback: URL?) -> URL? {
+    static func matchupURL(leagueId: String, teamId: String = "", week: String, fallback: URL?) -> URL? {
         if leagueId.isEmpty { return fallback }
         if fallback?.path.contains("/matchup") == true, let fallback {
             return week.isEmpty ? fallback : applying(week: week, to: fallback)
@@ -556,11 +563,17 @@ enum YahooLinks {
         var components = URLComponents()
         components.scheme = "https"
         components.host = "football.fantasysports.yahoo.com"
-        components.path = "/f1/\(leagueId)/matchup"
+        components.path = teamId.isEmpty
+            ? "/f1/\(leagueId)/matchup"
+            : "/f1/\(leagueId)/\(teamId)/matchup"
         if !week.isEmpty {
             components.queryItems = [URLQueryItem(name: "week", value: week)]
         }
         return components.url ?? fallback
+    }
+
+    static func isMatchup(_ url: URL?) -> Bool {
+        url?.path.lowercased().contains("/matchup") == true
     }
 
     static func payload(_ value: Any?, url: URL?) -> [String: Any] {
@@ -569,7 +582,9 @@ enum YahooLinks {
         let href = url ?? URL(string: hrefText)
         let league = first(string(body["leagueId"]), leagueId(from: href))
         let team = first(string(body["teamId"]), teamId(from: href))
-        let matchup = matchupURL(leagueId: league, week: week(from: href), fallback: href)?.absoluteString ?? (href?.absoluteString ?? "")
+        let weekValue = first(week(from: href), week(from: URL(string: hrefText)))
+        let matchup = matchupURL(leagueId: league, teamId: team, week: weekValue, fallback: href)?.absoluteString
+            ?? (href?.absoluteString ?? "")
         return [
             "leagueId": league,
             "teamId": team,
@@ -621,6 +636,8 @@ enum YahooLinks {
 final class YahooLoginSheet: UIViewController, WKNavigationDelegate, WKUIDelegate, UIAdaptivePresentationControllerDelegate {
     var onFinish: (([String: Any]) -> Void)?
     var onCancel: (() -> Void)?
+    var startURL: URL?
+    var preferredWeek = ""
 
     private var webView: WKWebView!
     private var useButton: UIBarButtonItem!
@@ -635,6 +652,8 @@ final class YahooLoginSheet: UIViewController, WKNavigationDelegate, WKUIDelegat
     private var listScanAt: Date?
     private var pendingLeagueId = ""
     private var pendingTeamId = ""
+    private var matchupPushAttempts = 0
+    private var lastCookieKickAt: Date?
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -651,7 +670,7 @@ final class YahooLoginSheet: UIViewController, WKNavigationDelegate, WKUIDelegat
         banner.backgroundColor = UIColor(red: 88.0 / 255.0, green: 28.0 / 255.0, blue: 135.0 / 255.0, alpha: 1)
         let instructions = UILabel()
         instructions.translatesAutoresizingMaskIntoConstraints = false
-        instructions.text = "1. Sign in to Yahoo  2. Tap your team/matchup — RootMap will auto-import it (or tap Use Session)."
+        instructions.text = "1. Sign in to Yahoo  2. RootMap opens your Matchup tab automatically (or tap your team if you have several)."
         instructions.numberOfLines = 0
         instructions.font = .systemFont(ofSize: 13, weight: .semibold)
         instructions.textColor = .white
@@ -679,7 +698,16 @@ final class YahooLoginSheet: UIViewController, WKNavigationDelegate, WKUIDelegat
             webView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             webView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
-        webView.load(URLRequest(url: YahooLinks.home))
+        let initial = startURL ?? YahooLinks.home
+        if let startURL, YahooLinks.isMatchup(startURL) {
+            pendingLeagueId = YahooLinks.leagueId(from: startURL)
+            pendingTeamId = YahooLinks.teamId(from: startURL)
+            pushedMatchup = true
+            awaitingMatchup = true
+            matchupPushAttempts = 1
+            navigationItem.title = "Opening Yahoo Matchup"
+        }
+        webView.load(URLRequest(url: initial))
     }
 
     override func viewDidAppear(_ animated: Bool) {
@@ -710,10 +738,17 @@ final class YahooLoginSheet: UIViewController, WKNavigationDelegate, WKUIDelegat
             awaitingMatchup = false
             if YahooLinks.isLogin(webView.url) {
                 pushedMatchup = false
+                matchupPushAttempts = 0
                 refreshReadyState()
                 return
             }
-            scheduleCapture()
+            // Yahoo often lands on league home instead of /matchup — force the matchup tab.
+            if YahooLinks.isMatchup(webView.url) {
+                scheduleCapture()
+            } else {
+                pushedMatchup = false
+                continueMatchup()
+            }
             return
         }
         refreshReadyState()
@@ -755,13 +790,27 @@ final class YahooLoginSheet: UIViewController, WKNavigationDelegate, WKUIDelegat
                     self.navigationItem.title = "Tap your team"
                 } else if onLogin {
                     self.navigationItem.title = "Sign in to Yahoo"
+                } else if YahooLinks.isMatchup(self.webView.url) {
+                    self.navigationItem.title = "Reading Yahoo Matchup"
                 } else if leagueId.isEmpty {
                     self.navigationItem.title = loggedIn ? "Choose your league" : "Sign in to Yahoo"
                 } else {
                     self.navigationItem.title = "Yahoo connected"
                 }
+                // As soon as Yahoo login cookies appear, drive straight to /matchup.
+                if loggedIn {
+                    self.kickMatchupAfterCookies()
+                }
             }
         }
+    }
+
+    private func kickMatchupAfterCookies() {
+        guard !finished, !capturing, !captureQueued, !awaitingMatchup, !awaitingChoice else { return }
+        if YahooLinks.isLogin(webView.url) { return }
+        if let lastCookieKickAt, Date().timeIntervalSince(lastCookieKickAt) < 1.0 { return }
+        lastCookieKickAt = Date()
+        continueMatchup()
     }
 
     @objc private func cancelTapped() {
@@ -832,29 +881,45 @@ final class YahooLoginSheet: UIViewController, WKNavigationDelegate, WKUIDelegat
         guard !finished, !leagueId.isEmpty else { return }
         pendingLeagueId = leagueId
         pendingTeamId = teamId
+        matchupPushAttempts += 1
         pushedMatchup = true
         awaitingMatchup = true
-        let fallback = URL(string: "https://football.fantasysports.yahoo.com/f1/\(leagueId)/\(teamId)")
-        if let matchup = YahooLinks.matchupURL(leagueId: leagueId, week: YahooLinks.week(from: webView.url), fallback: fallback) {
+        captureQueued = false
+        navigationItem.title = "Opening Yahoo Matchup"
+        let week = firstNonEmpty(YahooLinks.week(from: webView.url), preferredWeek)
+        let fallbackPath = teamId.isEmpty
+            ? "https://football.fantasysports.yahoo.com/f1/\(leagueId)"
+            : "https://football.fantasysports.yahoo.com/f1/\(leagueId)/\(teamId)"
+        let fallback = URL(string: fallbackPath)
+        if let matchup = YahooLinks.matchupURL(leagueId: leagueId, teamId: teamId, week: week, fallback: fallback) {
             webView.load(URLRequest(url: matchup))
         }
     }
 
+    private func firstNonEmpty(_ primary: String, _ fallback: String) -> String {
+        primary.isEmpty ? fallback : primary
+    }
+
     private func continueMatchup() {
-        guard !finished, !capturing else { return }
+        guard !finished, !capturing, !captureQueued else { return }
         if YahooLinks.isLogin(webView.url) {
             navigationItem.title = "Finish Yahoo sign-in"
             return
         }
-        let leagueId = YahooLinks.leagueId(from: webView.url)
+        let pageLeagueId = YahooLinks.leagueId(from: webView.url)
+        if pendingLeagueId.isEmpty { pendingLeagueId = pageLeagueId }
+        if pendingTeamId.isEmpty { pendingTeamId = YahooLinks.teamId(from: webView.url) }
+        let leagueId = firstNonEmpty(pendingLeagueId, pageLeagueId)
         if leagueId.isEmpty {
             maybeScanList()
             return
         }
-        if pendingLeagueId.isEmpty { pendingLeagueId = leagueId }
-        if pendingTeamId.isEmpty { pendingTeamId = YahooLinks.teamId(from: webView.url) }
-        let onMatchup = webView.url?.path.contains("/matchup") == true
-        if !onMatchup && !pushedMatchup {
+        if YahooLinks.isMatchup(webView.url) {
+            scheduleCapture()
+            return
+        }
+        // Always prefer /matchup over league home / team pages — Yahoo often redirects there.
+        if matchupPushAttempts < 4 {
             openTeam(leagueId, pendingTeamId)
             return
         }
@@ -863,7 +928,13 @@ final class YahooLoginSheet: UIViewController, WKNavigationDelegate, WKUIDelegat
 
     private func scheduleCapture() {
         guard !finished, !capturing, !captureQueued else { return }
+        // Prefer waiting until we are actually on the Matchup tab.
+        if !YahooLinks.isMatchup(webView.url), matchupPushAttempts < 4 {
+            continueMatchup()
+            return
+        }
         captureQueued = true
+        navigationItem.title = "Reading Yahoo Matchup"
         YahooLinks.captureWhenReady(webView: webView, attempt: 0, stillActive: { [weak self] in
             self?.finished == false
         }) { [weak self] value in
@@ -899,10 +970,13 @@ final class YahooSilentRefresh: NSObject, WKNavigationDelegate {
     private var webView: WKWebView?
     private var timeout: Timer?
     private var done = false
+    private var redirectedToMatchup = false
+    private var targetURL: URL?
     private var completion: ((Result<[String: Any], Error>) -> Void)?
 
     func start(in host: UIView, url: URL, completion: @escaping (Result<[String: Any], Error>) -> Void) {
         self.completion = completion
+        self.targetURL = url
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .default()
         let webView = WKWebView(frame: CGRect(x: -4000, y: -4000, width: 390, height: 844), configuration: config)
@@ -932,12 +1006,41 @@ final class YahooSilentRefresh: NSObject, WKNavigationDelegate {
             fail("SESSION_EXPIRED")
             return
         }
+        // If Yahoo bounced to league home, force one navigation to the Matchup tab.
+        if !YahooLinks.isMatchup(webView.url), !redirectedToMatchup {
+            redirectedToMatchup = true
+            let league = firstNonEmpty(
+                YahooLinks.leagueId(from: targetURL),
+                YahooLinks.leagueId(from: webView.url)
+            )
+            let team = firstNonEmpty(
+                YahooLinks.teamId(from: targetURL),
+                YahooLinks.teamId(from: webView.url)
+            )
+            let week = firstNonEmpty(
+                YahooLinks.week(from: targetURL),
+                YahooLinks.week(from: webView.url)
+            )
+            if let matchup = YahooLinks.matchupURL(
+                leagueId: league,
+                teamId: team,
+                week: week,
+                fallback: targetURL
+            ), matchup.absoluteString != webView.url?.absoluteString {
+                webView.load(URLRequest(url: matchup))
+                return
+            }
+        }
         YahooLinks.captureWhenReady(webView: webView, attempt: 0, stillActive: { [weak self] in
             self?.done == false
         }) { [weak self] value in
             guard let self, !self.done else { return }
             self.succeed(YahooLinks.payload(value, url: webView.url))
         }
+    }
+
+    private func firstNonEmpty(_ primary: String, _ fallback: String) -> String {
+        primary.isEmpty ? fallback : primary
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
