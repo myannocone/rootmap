@@ -14,6 +14,11 @@ import {
   preferTeamCode
 } from './utils/playerIdentity';
 import {
+  pairStartersBySlot,
+  starterProjectedPoints,
+  starterScoredPoints
+} from './utils/matchupLineup';
+import {
   backfillPlayerTeam,
   canonTeamCode,
   needsTeamBackfill,
@@ -188,20 +193,12 @@ function getUserTeamName(lg) {
 }
 
 function sumActiveStarterPoints(starters) {
-  return listedStarters(starters).reduce((sum, player) => {
-    const actual = finiteNumber(player?.actualPoints);
-    if (actual != null && actual !== 0) return sum + actual;
-    return sum + (finiteNumber(player?.points) || 0);
-  }, 0);
+  // Only count real scored points — never projection placeholders sitting in `points`.
+  return listedStarters(starters).reduce((sum, player) => sum + starterScoredPoints(player), 0);
 }
 
 function sumActiveStarterProjections(starters) {
-  return listedStarters(starters).reduce((sum, player) => {
-    const proj = finiteNumber(player?.projPoints)
-      ?? finiteNumber(player?.projected)
-      ?? finiteNumber(player?.projectedPoints);
-    return sum + (proj != null ? proj : 0);
-  }, 0);
+  return listedStarters(starters).reduce((sum, player) => sum + starterProjectedPoints(player), 0);
 }
 
 function leagueSideScore(league, side = 'my') {
@@ -255,9 +252,13 @@ function starterActualLabel(player) {
   // Yahoo often stores actualPoints: 0 pre-kickoff; only show a real line once live/final or non-zero.
   if (actual != null && (liveOrFinal || actual !== 0)) return scoreText(actual);
   const points = finiteNumber(player?.points);
-  const proj = finiteNumber(player?.projPoints);
-  // points often mirrors projection before kickoff — keep the dash in that case.
-  if (points == null || points === 0 || (proj != null && points === proj)) return '—';
+  const proj = finiteNumber(player?.projPoints)
+    ?? finiteNumber(player?.projected)
+    ?? finiteNumber(player?.projectedPoints);
+  // points often mirrors projection before kickoff — show proj so rows aren't empty dashes.
+  if (points == null || points === 0 || (proj != null && points === proj)) {
+    return proj != null ? scoreText(proj) : '—';
+  }
   return scoreText(points);
 }
 
@@ -347,31 +348,8 @@ function matchupOutlook(league) {
   };
 }
 
-function slotLabel(slot, position) {
-  const raw = normalizeSlot(slot) || normalizePosition(position);
-  if (!raw) return '—';
-  if (raw === 'DEF') return 'D/ST';
-  if (raw === 'IDP' || raw === 'D') return 'DP';
-  return raw;
-}
-
-function lineupMatchupRows(mine, opp) {
-  const left = listedStarters(mine);
-  const right = listedStarters(opp);
-  const max = Math.max(left.length, right.length);
-  return Array.from({ length: max }, (_, index) => {
-    const minePlayer = left[index] || null;
-    const oppPlayer = right[index] || null;
-    return {
-      key: `${minePlayer?.name || 'empty'}-${oppPlayer?.name || 'empty'}-${index}`,
-      slot: slotLabel(
-        minePlayer?.slot || oppPlayer?.slot,
-        minePlayer?.position || oppPlayer?.position
-      ),
-      mine: minePlayer,
-      opp: oppPlayer
-    };
-  });
+function lineupMatchupRows(mine, opp, rosterPositions = null) {
+  return pairStartersBySlot(listedStarters(mine), listedStarters(opp), rosterPositions);
 }
 
 function getLeagueBench(league) {
@@ -438,7 +416,7 @@ function MatchupLineups({ league, week, isLight }) {
   const [benchOpen, setBenchOpen] = useState(false);
   const mine = getLeaguePortfolio(league);
   const opp = getLeagueThreats(league);
-  const rows = lineupMatchupRows(mine, opp);
+  const rows = lineupMatchupRows(mine, opp, league?.rosterPositions);
   const bench = getLeagueBench(league);
   const projected = Boolean(league?.lineupProjected || mine.some((player) => player.projectedStart) || opp.some((player) => player.projectedStart));
   const deepLink = leagueDeepLink(league);
@@ -641,7 +619,11 @@ function normalizeLeague(lg, index = 0) {
   if (!lg || typeof lg !== 'object') return null;
   const portfolio = getLeaguePortfolio(lg).map(normalizeListedPlayer);
   const threats = getLeagueThreats(lg).map(normalizeListedPlayer);
-  const myTeamName = preferYahooLeagueName(lg.myTeamName, lg.userTeam?.name) || 'My Team';
+  const bench = getLeagueBench(lg).map(normalizeListedPlayer);
+  const platform = lg.platform || 'Yahoo';
+  const myTeamName = platformOf({ platform }).includes('yahoo')
+    ? (preferYahooLeagueName(lg.myTeamName, lg.userTeam?.name) || 'My Team')
+    : (lg.myTeamName || lg.userTeam?.name || 'My Team');
   const name = getLeagueDisplayName({ ...lg, myTeamName }) || `League ${index + 1}`;
   const oppTeamName = getLeagueOppName(lg);
   return {
@@ -653,7 +635,7 @@ function normalizeLeague(lg, index = 0) {
     teamName: preferYahooLeagueName(lg.teamName, myTeamName),
     oppTeamName,
     opponent: lg.opponent || oppTeamName,
-    platform: lg.platform || 'Yahoo',
+    platform,
     season: lg.season || '2026',
     myScore: lg.myScore || 0,
     oppScore: lg.oppScore || 0,
@@ -663,10 +645,15 @@ function normalizeLeague(lg, index = 0) {
     oppWinOdds: lg.oppWinOdds ?? lg.oppTeam?.winOdds ?? null,
     myLogo: lg.myLogo || lg.userTeam?.logo || '',
     oppLogo: lg.oppLogo || lg.oppTeam?.logo || '',
+    rosterPositions: lg.rosterPositions || [],
     portfolio,
     threats,
+    bench,
     starters: portfolio,
-    opponentStarters: threats
+    opponentStarters: threats,
+    userTeam: lg.userTeam
+      ? { ...lg.userTeam, name: myTeamName, starters: portfolio, bench }
+      : { name: myTeamName, starters: portfolio, bench }
   };
 }
 
@@ -679,6 +666,50 @@ function yahooLeagueNameCandidate(league, teamName) {
     return name;
   }
   return '';
+}
+
+function platformOf(league) {
+  return String(league?.platform || '').toLowerCase();
+}
+
+function mergeSyncedLeague(existing, incoming) {
+  if (!incoming) return existing;
+  if (!existing) return normalizeLeague(incoming);
+  const platform = platformOf(incoming) || platformOf(existing);
+  if (platform.includes('yahoo')) {
+    return mergeYahooSyncedLeague(existing, incoming);
+  }
+  // Sleeper / ESPN: trust the fresh weekly map — do not run Yahoo name heuristics.
+  return normalizeLeague({
+    ...existing,
+    ...incoming,
+    id: existing.id,
+    platform: incoming.platform || existing.platform,
+    name: incoming.name || existing.name,
+    leagueName: incoming.leagueName || incoming.name || existing.leagueName || existing.name,
+    myTeamName: incoming.myTeamName || existing.myTeamName,
+    oppTeamName: incoming.oppTeamName || incoming.opponent || existing.oppTeamName,
+    opponent: incoming.oppTeamName || incoming.opponent || existing.opponent,
+    portfolio: incoming.portfolio || incoming.starters || existing.portfolio,
+    threats: incoming.threats || incoming.opponentStarters || existing.threats,
+    starters: incoming.starters || incoming.portfolio || existing.starters,
+    opponentStarters: incoming.opponentStarters || incoming.threats || existing.opponentStarters,
+    bench: incoming.bench || incoming.userTeam?.bench || existing.bench,
+    rosterPositions: incoming.rosterPositions?.length ? incoming.rosterPositions : existing.rosterPositions,
+    scoringSettings: incoming.scoringSettings || existing.scoringSettings,
+    userTeam: incoming.userTeam || existing.userTeam,
+    oppTeam: incoming.oppTeam || existing.oppTeam,
+    myScore: incoming.myScore ?? existing.myScore,
+    oppScore: incoming.oppScore ?? existing.oppScore,
+    myProj: incoming.myProj ?? existing.myProj,
+    oppProj: incoming.oppProj ?? existing.oppProj,
+    myRecord: incoming.myRecord || existing.myRecord || null,
+    oppRecord: incoming.oppRecord || existing.oppRecord || null,
+    myRank: incoming.myRank ?? existing.myRank ?? null,
+    oppRank: incoming.oppRank ?? existing.oppRank ?? null,
+    lineupWeek: incoming.lineupWeek ?? existing.lineupWeek,
+    lineupProjected: incoming.lineupProjected ?? existing.lineupProjected
+  });
 }
 
 function mergeYahooSyncedLeague(existing, incoming) {
@@ -1283,6 +1314,7 @@ function hydrateLeagueForMatchups(league, games, liveScores, sleeperPlayers = nu
 
   const portfolio = getLeaguePortfolio(league).map(hydrateOne);
   const threats = getLeagueThreats(league).map(hydrateOne);
+  const bench = getLeagueBench(league).map(hydrateOne);
   const myStarterScore = sumActiveStarterPoints(portfolio);
   const oppStarterScore = sumActiveStarterPoints(threats);
   const myStarterProj = sumActiveStarterProjections(portfolio);
@@ -1301,11 +1333,12 @@ function hydrateLeagueForMatchups(league, games, liveScores, sleeperPlayers = nu
     myTeamName: getUserTeamName(league),
     portfolio,
     threats,
+    bench,
     starters: portfolio,
     opponentStarters: threats,
     userTeam: league.userTeam
-      ? { ...league.userTeam, name: getUserTeamName(league), starters: portfolio }
-      : { name: getUserTeamName(league), starters: portfolio },
+      ? { ...league.userTeam, name: getUserTeamName(league), starters: portfolio, bench }
+      : { name: getUserTeamName(league), starters: portfolio, bench },
     oppTeam: league.oppTeam
       ? { ...league.oppTeam, starters: threats }
       : league.oppTeam,
@@ -2880,15 +2913,18 @@ export default function App() {
   useEffect(() => {
     const week = Number(selectedWeek);
     if (!week || lineupRefreshRef.current === week) return undefined;
-    lineupRefreshRef.current = week;
     let cancelled = false;
     const refreshStoredLineups = async () => {
       const current = leaguesRef.current || [];
       const updates = new Map();
+      let sleeperOk = false;
+      let espnOk = false;
       try {
         const username = localStorage.getItem('rootmap_sleeper_username') || '';
         const sleeperLeagues = current.filter((lg) => lg?.sleeperLeagueId || String(lg?.id || '').startsWith('sleeper-'));
-        if (username && sleeperLeagues.length) {
+        if (!sleeperLeagues.length) {
+          sleeperOk = true;
+        } else if (username) {
           const user = await lookupSleeperUser(username);
           const imported = await syncSleeperLeagues({
             userId: user.user_id,
@@ -2901,13 +2937,17 @@ export default function App() {
             }))
           });
           imported.forEach((lg) => updates.set(lg.id, lg));
+          sleeperOk = true;
         }
       } catch (err) {
         console.warn('Sleeper lineup refresh failed', err);
       }
       const espnSession = readEspnSession();
-      for (const lg of current) {
-        if (cancelled || !lg?.espnLeagueId || !lg?.espnTeamId) continue;
+      const espnLeagues = current.filter((lg) => lg?.espnLeagueId && lg?.espnTeamId);
+      if (!espnLeagues.length) espnOk = true;
+      let espnFailures = 0;
+      for (const lg of espnLeagues) {
+        if (cancelled) break;
         try {
           const raw = await fetchEspnLeague({
             leagueId: lg.espnLeagueId,
@@ -2925,9 +2965,11 @@ export default function App() {
           });
           updates.set(mapped.id, mapped);
         } catch (err) {
+          espnFailures += 1;
           console.warn('ESPN lineup refresh failed', err);
         }
       }
+      if (espnLeagues.length && espnFailures < espnLeagues.length) espnOk = true;
       if (Capacitor.isNativePlatform()) {
         try {
           const sessions = readYahooSessions().filter((saved) => saved?.matchupUrl);
@@ -2990,7 +3032,13 @@ export default function App() {
         console.warn('Yahoo API sync failed', err);
       }
 
-      if (cancelled || !updates.size) return;
+      if (cancelled) return;
+      // Only lock the week after at least one platform refresh succeeded so a
+      // cold-start miss (no Sleeper username yet) can retry.
+      if (sleeperOk || espnOk || updates.size) {
+        lineupRefreshRef.current = week;
+      }
+      if (!updates.size) return;
       setLeagues((prev) => {
         const used = new Set();
         const next = prev.map((lg) => {
@@ -3024,7 +3072,7 @@ export default function App() {
             return lg;
           }
           used.add(updated.id);
-          return mergeYahooSyncedLeague(lg, updated);
+          return mergeSyncedLeague(lg, updated);
         });
         updates.forEach((updated, id) => {
           if (used.has(id) || !String(id).startsWith('yahoo-')) return;

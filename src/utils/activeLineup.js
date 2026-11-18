@@ -6,6 +6,7 @@ const PROJECTED_NEEDS = [
   { slot: 'WR', positions: ['WR'], count: 2 },
   { slot: 'TE', positions: ['TE'], count: 1 },
   { slot: 'W/R/T', positions: ['RB', 'WR', 'TE'], count: 1 },
+  { slot: 'DP', positions: ['LB', 'DL', 'DB', 'DE', 'DT', 'CB', 'S', 'DP', 'IDP'], count: 2 },
   { slot: 'K', positions: ['K', 'PK'], count: 1 },
   { slot: 'DEF', positions: ['DEF', 'D/ST', 'DST'], count: 1 }
 ];

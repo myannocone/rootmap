@@ -129,7 +129,10 @@ export default async function handler(req, res) {
     return;
   }
 
-  const target = `https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/${encodeURIComponent(season)}/segments/0/leagues/${leagueId}?view=mMatchup&view=mRoster&view=mTeam&view=mSettings&scoringPeriodId=${encodeURIComponent(week)}&matchupPeriodId=${encodeURIComponent(week)}`;
+  const views = ['mBoxscore', 'mMatchup', 'mRoster', 'mScoreboard', 'mTeam', 'mSettings']
+    .map((view) => `view=${encodeURIComponent(view)}`)
+    .join('&');
+  const target = `https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/${encodeURIComponent(season)}/segments/0/leagues/${leagueId}?${views}&scoringPeriodId=${encodeURIComponent(week)}&matchupPeriodId=${encodeURIComponent(week)}`;
   const headers = {
     Accept: 'application/json',
     'User-Agent': BROWSER_USER_AGENT
