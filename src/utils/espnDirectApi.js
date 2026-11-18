@@ -1,9 +1,11 @@
 import { Capacitor } from '@capacitor/core';
-import { activeOrProjected, isActiveEspnSlot } from './activeLineup';
-import { canonTeamCode, displayPlayerPosition } from './playerIdentity';
-import { SITE_ORIGIN } from './siteOrigin';
+import { activeOrProjected, isActiveEspnSlot } from './activeLineup.js';
+import { sortStartersBySlot } from './matchupLineup.js';
+import { canonTeamCode, displayPlayerPosition } from './playerIdentity.js';
+import { SITE_ORIGIN } from './siteOrigin.js';
 
 const ESPN_ORIGIN = 'https://lm-api-reads.fantasy.espn.com';
+const ESPN_VIEWS = ['mBoxscore', 'mMatchup', 'mRoster', 'mScoreboard', 'mTeam', 'mSettings'];
 
 const POSITION_BY_ID = {
   1: 'QB',
@@ -81,8 +83,9 @@ const PRIVATE_LEAGUE_ERROR = "This ESPN league is private. Ask your commissioner
 
 function espnViewQuery(week) {
   const params = new URLSearchParams();
-  // mScoreboard carries richer weekly player stats/projections than mRoster alone.
-  ['mMatchup', 'mRoster', 'mScoreboard', 'mTeam', 'mSettings'].forEach((view) => {
+  // mBoxscore populates schedule[].home/away.rosterForCurrentScoringPeriod — the weekly lineup.
+  // mScoreboard/mRoster supply team records + fallback roster entries.
+  ESPN_VIEWS.forEach((view) => {
     params.append('view', view);
   });
   params.set('scoringPeriodId', String(week));
@@ -269,24 +272,58 @@ function sideWeeklyPoints(side) {
   return finiteNumber(side.rosterForCurrentScoringPeriod?.appliedStatTotal);
 }
 
-function sumStarterPoints(starters) {
-  return (starters || []).reduce((sum, player) => sum + (Number(player?.points) || 0), 0);
+function sideWeeklyProjection(side) {
+  if (!side || typeof side !== 'object' || Array.isArray(side)) return null;
+  return finiteNumber(side.totalProjectedPointsLive)
+    ?? finiteNumber(side.totalProjectedPoints)
+    ?? null;
+}
+
+function sumStarterActuals(starters) {
+  return (starters || []).reduce((sum, player) => {
+    const actual = finiteNumber(player?.actualPoints);
+    if (actual != null) return sum + actual;
+    if (player?.isLive) {
+      const points = finiteNumber(player?.points);
+      return sum + (points != null ? points : 0);
+    }
+    return sum;
+  }, 0);
+}
+
+function sumStarterProjections(starters) {
+  return (starters || []).reduce((sum, player) => {
+    const proj = finiteNumber(player?.projPoints);
+    if (proj != null) return sum + proj;
+    return sum;
+  }, 0);
 }
 
 function weeklyMatchupScore(game, teamId, starters) {
-  const fallback = sumStarterPoints(starters);
-  if (teamId == null || teamId === '') return fallback;
+  const starterActuals = sumStarterActuals(starters);
+  if (teamId == null || teamId === '') return starterActuals;
   const mine = String(teamId);
   const side = game && sideTeamId(game.home) === mine
     ? game.home
     : (game && sideTeamId(game.away) === mine ? game.away : null);
-  // Prefer ESPN's live/applied total, but fall back when it is missing or stuck at 0
-  // while individual starters already carry valid points.
   const live = sideWeeklyPoints(side);
-  if (live == null || live === 0) {
-    return fallback > 0 ? fallback : (live ?? fallback);
-  }
-  return live;
+  // Prefer ESPN board totals when present; otherwise sum starter actuals only
+  // (never season appliedStatTotal / projection placeholders).
+  if (live != null && live !== 0) return live;
+  if (starterActuals > 0) return starterActuals;
+  return live ?? 0;
+}
+
+function weeklyMatchupProjection(game, teamId, starters) {
+  const starterProj = sumStarterProjections(starters);
+  if (teamId == null || teamId === '') return starterProj || null;
+  const mine = String(teamId);
+  const side = game && sideTeamId(game.home) === mine
+    ? game.home
+    : (game && sideTeamId(game.away) === mine ? game.away : null);
+  const board = sideWeeklyProjection(side);
+  if (board != null && board > 0) return board;
+  return starterProj > 0 ? starterProj : (board ?? null);
 }
 
 function playerName(player, defense, nflTeam) {
@@ -355,19 +392,16 @@ function espnNflTeam(player, pool) {
 function espnScore(player, pool, weekNumber) {
   const actualStat = findWeekStat(player?.stats, weekNumber, 0);
   const actual = bestWeekStatTotal(player?.stats, weekNumber, 0);
-  let projected = bestWeekStatTotal(player?.stats, weekNumber, 1);
-  const poolTotal = Number(pool?.appliedStatTotal);
-  const poolPoints = Number.isFinite(poolTotal) ? poolTotal : null;
-  // appliedStatTotal on the pool is often live actual; only use as proj fallback when no actual yet.
-  if ((projected == null || projected === 0) && poolPoints != null && poolPoints > 0 && actual == null) {
-    projected = poolPoints;
-  }
+  const projected = bestWeekStatTotal(player?.stats, weekNumber, 1);
+  // pool.appliedStatTotal is often season-to-date on mRoster — never treat it as weekly proj/actual.
+  const weeklyPool = finiteNumber(pool?.appliedStatTotal);
   const started = statLineStarted(actualStat);
-  const actualPoints = started ? (actual ?? 0) : null;
-  const points = actualPoints != null ? actualPoints : (projected ?? poolPoints ?? 0);
+  const actualPoints = started ? (actual ?? (weeklyPool != null && weeklyPool > 0 ? weeklyPool : 0)) : null;
+  const projPoints = projected;
+  const points = actualPoints != null ? actualPoints : (projPoints ?? 0);
   return {
     points,
-    projPoints: projected ?? (actualPoints == null ? points : null),
+    projPoints,
     actualPoints,
     isLive: Boolean(started && (actualPoints > 0 || statLineStarted(actualStat)))
   };
@@ -392,8 +426,10 @@ function starterFromEntry(entry, weekNumber) {
   const name = playerName(player, defense, nflTeam);
   if (!name) return null;
   const score = espnScore(player, pool, weekNumber);
+  const espnPlayerId = player.id ?? entry.playerId ?? pool?.id;
   return {
     name,
+    espnPlayerId: espnPlayerId != null ? String(espnPlayerId) : undefined,
     slot,
     position,
     nflTeam,
@@ -405,13 +441,25 @@ function starterFromEntry(entry, weekNumber) {
     inRedZone: false,
     gameClock: `Week ${weekNumber}`,
     bigPlay: null,
-    isStarter
+    isStarter,
+    lineupSlotId: Number.isFinite(slotId) ? slotId : null
   };
 }
 
-function startersFor(team, weekNumber, side) {
-  const entries = Array.isArray(team?.roster?.entries) ? team.roster.entries : [];
-  return entries
+function rosterEntriesForTeam(league, team, weekNumber) {
+  const game = matchupGame(league, team, weekNumber);
+  const mine = String(team?.id ?? '');
+  const side = game && sideTeamId(game.home) === mine
+    ? game.home
+    : (game && sideTeamId(game.away) === mine ? game.away : null);
+  const weekly = side?.rosterForCurrentScoringPeriod?.entries;
+  if (Array.isArray(weekly) && weekly.length) return weekly;
+  if (Array.isArray(team?.roster?.entries)) return team.roster.entries;
+  return [];
+}
+
+function playersFromEntries(entries, weekNumber, side) {
+  return (entries || [])
     .map((entry) => starterFromEntry(entry, weekNumber))
     .filter(Boolean)
     .map((player) => ({
@@ -419,6 +467,41 @@ function startersFor(team, weekNumber, side) {
       ownership: side === 'mine' ? 1 : 0,
       isThreat: side !== 'mine'
     }));
+}
+
+function startersAndBench(league, team, weekNumber, side) {
+  const entries = rosterEntriesForTeam(league, team, weekNumber);
+  const all = playersFromEntries(entries, weekNumber, side);
+  const realStarters = sortStartersBySlot(all.filter((player) => player.isStarter));
+  const bench = all.filter((player) => !player.isStarter);
+  if (realStarters.length) {
+    return { starters: realStarters, bench, projected: false };
+  }
+  // Only invent a projected lineup when ESPN gave us roster rows with no active slots.
+  const projected = sortStartersBySlot(activeOrProjected(all));
+  return { starters: projected, bench, projected: projected.length > 0 };
+}
+
+function espnRosterPositions(league) {
+  const slots = league?.settings?.rosterSettings?.lineupSlotCounts;
+  if (!slots || typeof slots !== 'object') return [];
+  return Object.entries(slots)
+    .flatMap(([id, count]) => {
+      const slotId = Number(id);
+      const n = Number(count) || 0;
+      if (!isActiveEspnSlot(slotId) || n <= 0) return [];
+      const label = SLOT_BY_ID[slotId];
+      if (!label) return [];
+      return Array.from({ length: n }, () => label);
+    })
+    .sort((a, b) => {
+      const rank = (slot) => {
+        const order = ['QB', 'RB', 'RB/WR', 'WR', 'WR/TE', 'TE', 'FLEX', 'OP', 'DP', 'DT', 'DE', 'LB', 'DL', 'CB', 'S', 'DB', 'D/ST', 'K'];
+        const index = order.indexOf(slot);
+        return index >= 0 ? index : 99;
+      };
+      return rank(a) - rank(b);
+    });
 }
 
 export function mapEspnLeague({ league, leagueId, teamId, week, season = 2026 }) {
@@ -446,22 +529,31 @@ export function mapEspnLeague({ league, leagueId, teamId, week, season = 2026 })
   };
   const mineStanding = espnSide(team);
   const oppStanding = espnSide(opponent);
-  const mineAll = startersFor(team, weekNumber, 'mine');
-  const oppAll = opponent ? startersFor(opponent, weekNumber, 'opp') : [];
-  const mine = activeOrProjected(mineAll);
-  const opp = activeOrProjected(oppAll);
+  const mineLineup = startersAndBench(league, team, weekNumber, 'mine');
+  const oppLineup = opponent
+    ? startersAndBench(league, opponent, weekNumber, 'opp')
+    : { starters: [], bench: [], projected: false };
+  const mine = mineLineup.starters;
+  const opp = oppLineup.starters;
   const id = String(leagueId || league?.id || '').trim();
+  const myProj = weeklyMatchupProjection(game, team.id, mine);
+  const oppProj = weeklyMatchupProjection(game, opponent?.id, opp);
   return {
     id: `espn-${id}`,
     espnLeagueId: id,
     espnTeamId: String(teamId),
     lineupWeek: weekNumber,
-    lineupProjected: mine.some((player) => player.projectedStart) || opp.some((player) => player.projectedStart),
+    lineupProjected: Boolean(mineLineup.projected || oppLineup.projected),
+    rosterPositions: espnRosterPositions(league),
     name: String(league?.settings?.name || '').trim() || `ESPN ${id}`,
     platform: 'ESPN',
     season: String(season),
     myScore: weeklyMatchupScore(game, team.id, mine),
     oppScore: weeklyMatchupScore(game, opponent?.id, opp),
+    myProj,
+    oppProj,
+    myProjected: myProj,
+    oppProjected: oppProj,
     myTeamName: userTeamName,
     oppTeamName,
     opponent: oppTeamName,
@@ -469,8 +561,9 @@ export function mapEspnLeague({ league, leagueId, teamId, week, season = 2026 })
     oppRecord: oppStanding.record,
     myRank: mineStanding.rank,
     oppRank: oppStanding.rank,
-    userTeam: { name: userTeamName, starters: mine },
-    oppTeam: { name: oppTeamName, starters: opp },
+    bench: mineLineup.bench,
+    userTeam: { name: userTeamName, starters: mine, bench: mineLineup.bench },
+    oppTeam: { name: oppTeamName, starters: opp, bench: oppLineup.bench },
     portfolio: mine,
     threats: opp
   };
