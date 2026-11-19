@@ -60,6 +60,13 @@ import {
   syncYahooLeaguesFromApi,
   yahooLeagueIdOf
 } from './utils/yahooSync';
+import {
+  FREE_ACTIVE_LEAGUE_LIMIT,
+  activeLeagueCount,
+  freeActiveBadge,
+  loadIsPro,
+  saveIsPro
+} from './utils/proEntitlement';
 import { SITE_ORIGIN } from './utils/siteOrigin';
 import { Capacitor } from '@capacitor/core';
 import {
@@ -270,17 +277,38 @@ function platformMark(platform) {
   return '';
 }
 
+function platformLabel(platform) {
+  const value = String(platform || '').toLowerCase();
+  if (value.includes('espn')) return 'ESPN';
+  if (value.includes('sleeper')) return 'Sleeper';
+  if (value.includes('yahoo')) return 'Yahoo';
+  const raw = String(platform || '').trim();
+  return raw || 'League';
+}
+
 function PlatformBadge({ platform, isLight }) {
   const mark = platformMark(platform);
   if (!mark) return null;
   return (
     <span
-      title={String(platform || '').trim() || 'League'}
+      title={platformLabel(platform)}
       className={`inline-flex w-4 h-4 items-center justify-center rounded text-[8px] font-black shrink-0 ${
         isLight ? 'bg-slate-100 text-slate-600 border border-slate-200' : 'bg-slate-800 text-slate-300 border border-slate-600'
       }`}
     >
       {mark}
+    </span>
+  );
+}
+
+function PlatformPill({ platform, isLight }) {
+  return (
+    <span
+      className={`shrink-0 rounded-md px-1.5 py-0.5 text-[9px] font-black uppercase tracking-wide border ${
+        isLight ? 'bg-slate-100 text-slate-600 border-slate-200' : 'bg-slate-800 text-slate-300 border-slate-600'
+      }`}
+    >
+      {platformLabel(platform)}
     </span>
   );
 }
@@ -2464,7 +2492,12 @@ export default function App() {
   });
   const [view, setView] = useState('matchups');
   const [leagueSort, setLeagueSort] = useState('closest');
-  const [leagueMenuOpen, setLeagueMenuOpen] = useState(false);
+  const [showManageLeagues, setShowManageLeagues] = useState(false);
+  const [showProUpgrade, setShowProUpgrade] = useState(false);
+  const [showActivePick, setShowActivePick] = useState(false);
+  const [activePickCandidates, setActivePickCandidates] = useState([]);
+  const [activePickSelected, setActivePickSelected] = useState(() => new Set());
+  const [isPro, setIsPro] = useState(loadIsPro);
   const [sortMode, setSortMode] = useState('slate');
   const [boardFilters, setBoardFilters] = useState({
     liveOnly: false,
@@ -2769,11 +2802,16 @@ export default function App() {
 
   const applyImportedYahooLeagues = (importedList, week) => {
     if (!importedList?.length) return false;
+    const importKeys = new Set();
+    const importIds = new Set();
+    let pickedForModal = [];
     setLeagues((prev) => {
       const next = [...prev];
       importedList.forEach((league) => {
         const normalized = normalizeLeague(league, next.length);
         const incomingKey = canonicalLeagueIdentity(normalized);
+        if (incomingKey) importKeys.add(incomingKey);
+        if (normalized?.id) importIds.add(String(normalized.id));
         const idx = next.findIndex((item) => (
           item.id === normalized.id
           || (incomingKey && canonicalLeagueIdentity(item) === incomingKey)
@@ -2781,17 +2819,32 @@ export default function App() {
             !normalized.yahooTeamId || !item.yahooTeamId || item.yahooTeamId === normalized.yahooTeamId
           ))
         ));
-        if (idx >= 0) next[idx] = mergeYahooSyncedLeague(next[idx], normalized);
-        else next.push(normalized);
+        if (idx >= 0) {
+          const merged = mergeYahooSyncedLeague(next[idx], normalized);
+          next[idx] = merged;
+          if (merged?.id) importIds.add(String(merged.id));
+        } else {
+          next.push(normalized);
+        }
       });
-      return dedupeImportedLeagues(next);
+      const deduped = dedupeImportedLeagues(next);
+      pickedForModal = deduped.filter((league) => (
+        importIds.has(String(league.id))
+        || (canonicalLeagueIdentity(league) && importKeys.has(canonicalLeagueIdentity(league)))
+      ));
+      return deduped;
     });
-    setView('matchups');
     setIsSyncing(false);
     closeConnect();
-    setSyncStatus(importedList.length === 1
-      ? `Synced ${importedList[0].name} from Yahoo for Week ${week}.`
-      : `Synced ${importedList.length} Yahoo leagues for Week ${week}.`);
+    if (!isPro && pickedForModal.length >= 3) {
+      openActiveLeaguePicker(pickedForModal);
+      setSyncStatus(`Synced ${pickedForModal.length} Yahoo leagues for Week ${week}. Pick ${FREE_ACTIVE_LEAGUE_LIMIT} to keep on the board.`);
+      return true;
+    }
+    setView('matchups');
+    setSyncStatus(pickedForModal.length === 1
+      ? `Synced ${getLeagueDisplayName(pickedForModal[0])} from Yahoo for Week ${week}.`
+      : `Synced ${pickedForModal.length || importedList.length} Yahoo leagues for Week ${week}.`);
     return true;
   };
 
@@ -3253,9 +3306,26 @@ export default function App() {
   }, [hiddenLeagueIds]);
 
   useEffect(() => {
-    if (!showLegend && !showLeagueFilter && !leaguePendingDelete && !showSetupImport && !showConnect && !showSleeper && !showEspn && !showYahooIngest && !showSortSheet && !showAlertSheet && !showWeekPicker && !showMobileSync && !jumpMenuOpen) return undefined;
+    saveIsPro(isPro);
+  }, [isPro]);
+
+  useEffect(() => {
+    if (!showLegend && !showLeagueFilter && !leaguePendingDelete && !showSetupImport && !showConnect && !showSleeper && !showEspn && !showYahooIngest && !showSortSheet && !showAlertSheet && !showWeekPicker && !showMobileSync && !jumpMenuOpen && !showManageLeagues && !showProUpgrade && !showActivePick) return undefined;
     const onKey = (event) => {
       if (event.key !== 'Escape') return;
+      if (showProUpgrade) {
+        setShowProUpgrade(false);
+        return;
+      }
+      if (showActivePick) {
+        return;
+      }
+      if (showManageLeagues) {
+        setShowManageLeagues(false);
+        setRenamingLeagueId(null);
+        setRenameDraft('');
+        return;
+      }
       if (showEspn || showSleeper || showYahooIngest || showConnect) {
         setShowConnect(false);
         setShowEspn(false);
@@ -3297,7 +3367,7 @@ export default function App() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [showLegend, showLeagueFilter, leaguePendingDelete, showSetupImport, showConnect, showSleeper, showEspn, showYahooIngest, showSortSheet, showAlertSheet, showWeekPicker, showMobileSync, jumpMenuOpen]);
+  }, [showLegend, showLeagueFilter, leaguePendingDelete, showSetupImport, showConnect, showSleeper, showEspn, showYahooIngest, showSortSheet, showAlertSheet, showWeekPicker, showMobileSync, jumpMenuOpen, showManageLeagues, showProUpgrade, showActivePick]);
 
   const confirmRemoveLeague = () => {
     if (!leaguePendingDelete) return;
@@ -3349,12 +3419,100 @@ export default function App() {
     setShowLeagueFilter(true);
   };
 
+  const openProUpgrade = () => {
+    setShowProUpgrade(true);
+    tapHaptic();
+  };
+
+  const unlockRootMapPro = () => {
+    setIsPro(true);
+    setShowProUpgrade(false);
+    if (activePickCandidates.length) {
+      setHiddenLeagueIds((prev) => {
+        const next = new Set([...prev].map(String));
+        activePickCandidates.forEach((league) => next.delete(String(league.id)));
+        return next;
+      });
+      setShowActivePick(false);
+      setActivePickCandidates([]);
+      setActivePickSelected(new Set());
+      setView('matchups');
+    }
+    setSyncStatus('RootMap Pro unlocked. You can keep every league active.');
+    tapHaptic();
+  };
+
+  const openActiveLeaguePicker = (candidateLeagues) => {
+    const candidates = (candidateLeagues || []).filter(Boolean);
+    if (!candidates.length) return;
+    const preselected = candidates.slice(0, FREE_ACTIVE_LEAGUE_LIMIT).map((league) => String(league.id));
+    const selected = new Set(preselected);
+    setActivePickCandidates(candidates);
+    setActivePickSelected(selected);
+    setShowActivePick(true);
+    setHiddenLeagueIds((prev) => {
+      const next = new Set([...prev].map(String));
+      candidates.forEach((league) => {
+        const id = String(league.id);
+        if (selected.has(id)) next.delete(id);
+        else next.add(id);
+      });
+      return next;
+    });
+  };
+
+  const toggleActivePickSelection = (leagueId) => {
+    const id = String(leagueId);
+    setActivePickSelected((prev) => {
+      const next = new Set([...prev].map(String));
+      if (next.has(id)) {
+        next.delete(id);
+        return next;
+      }
+      if (next.size >= FREE_ACTIVE_LEAGUE_LIMIT) {
+        openProUpgrade();
+        return prev;
+      }
+      next.add(id);
+      return next;
+    });
+  };
+
+  const confirmActiveLeaguePick = () => {
+    const selected = new Set([...activePickSelected].map(String));
+    if (!selected.size) {
+      setSyncStatus(`Pick up to ${FREE_ACTIVE_LEAGUE_LIMIT} leagues to keep on the board.`);
+      return;
+    }
+    setHiddenLeagueIds(new Set(
+      leagues.map((league) => String(league.id)).filter((id) => !selected.has(id))
+    ));
+    setShowActivePick(false);
+    setActivePickCandidates([]);
+    setActivePickSelected(new Set());
+    setView('matchups');
+    setSyncStatus(selected.size === 1
+      ? 'Tracking 1 selected league. Others stay saved in Manage Leagues.'
+      : `Tracking ${selected.size} selected leagues. Others stay saved in Manage Leagues.`);
+    tapHaptic();
+  };
+
   const toggleLeagueVisibility = (leagueId) => {
     const id = String(leagueId);
     setHiddenLeagueIds((prev) => {
       const next = new Set([...prev].map(String));
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
+      if (next.has(id)) {
+        if (!isPro) {
+          const currentlyActive = activeLeagueCount(leagues, next);
+          if (currentlyActive >= FREE_ACTIVE_LEAGUE_LIMIT) {
+            openProUpgrade();
+            return prev;
+          }
+        }
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
       return next;
     });
   };
@@ -3655,10 +3813,16 @@ export default function App() {
         setSleeperError('Could not save these leagues on this device.');
         return;
       }
-      setLeagues(dedupeImportedLeagues(next));
-      setView('matchups');
+      const deduped = dedupeImportedLeagues(next);
+      setLeagues(deduped);
       closeConnect();
-      setSyncStatus(`Synced ${normalized.length} Sleeper league${normalized.length === 1 ? '' : 's'} for Week ${sleeperWeek}.`);
+      if (!isPro && normalized.length >= 3) {
+        openActiveLeaguePicker(normalized);
+        setSyncStatus(`Synced ${normalized.length} Sleeper leagues for Week ${sleeperWeek}. Pick ${FREE_ACTIVE_LEAGUE_LIMIT} to keep on the board.`);
+      } else {
+        setView('matchups');
+        setSyncStatus(`Synced ${normalized.length} Sleeper league${normalized.length === 1 ? '' : 's'} for Week ${sleeperWeek}.`);
+      }
     } catch (error) {
       setSleeperError(error?.message || 'Could not sync those Sleeper leagues.');
     } finally {
@@ -3887,6 +4051,7 @@ export default function App() {
   );
 
   const hiddenCount = leagues.length - visibleLeagues.length;
+  const freeActiveLabel = freeActiveBadge(visibleLeagues.length);
 
   const activeSlateWeek = getActiveSlate()?.week || FALLBACK_NFL_WEEK;
   const alertsAreCurrent = Number(selectedWeek) === Number(activeSlateWeek);
@@ -5043,104 +5208,22 @@ export default function App() {
                 </select>
               </label>
               {leagues.length > 0 && (
-                <div className="relative shrink-0">
-                  <button
-                    type="button"
-                    aria-expanded={leagueMenuOpen}
-                    aria-haspopup="listbox"
-                    onClick={() => {
-                      setLeagueMenuOpen((open) => !open);
-                      tapHaptic();
-                    }}
-                    className={`min-h-8 px-2 rounded-xl text-[10px] font-black border inline-flex items-center gap-1 ${
-                      isLight
-                        ? 'bg-white text-slate-700 border-slate-200'
-                        : 'bg-slate-950 text-slate-200 border-slate-700'
-                    }`}
-                  >
-                    Manage Leagues
-                    <span aria-hidden="true">{leagueMenuOpen ? '▴' : '▾'}</span>
-                  </button>
-                  {leagueMenuOpen && (
-                    <div
-                      role="listbox"
-                      aria-label="Manage leagues"
-                      className={`absolute right-0 top-full z-20 mt-1 w-64 max-h-80 overflow-y-auto rounded-xl border shadow-xl p-1 ${
-                        isLight ? 'bg-white border-slate-200' : 'bg-slate-950 border-slate-700'
-                      }`}
-                    >
-                      {leagues.map((lg) => {
-                        const leagueName = leagueFilterLabel(lg, leagues);
-                        const onBoard = !hiddenLeagueIds.has(String(lg.id));
-                        return (
-                          <div key={lg.id} className="rounded-lg">
-                            <div className="flex items-center gap-1">
-                              <label className="flex items-center gap-2 min-w-0 flex-1 px-2 py-1.5 cursor-pointer">
-                                <input
-                                  type="checkbox"
-                                  checked={onBoard}
-                                  onChange={() => toggleLeagueVisibility(lg.id)}
-                                  aria-label={`${onBoard ? 'Hide' : 'Show'} ${leagueName} on the board`}
-                                  className="accent-emerald-500 w-3.5 h-3.5 shrink-0"
-                                />
-                                <PlatformBadge platform={lg.platform} isLight={isLight} />
-                                <span className={`min-w-0 truncate text-xs font-bold ${isLight ? 'text-slate-800' : 'text-slate-100'}`}>
-                                  {leagueName}
-                                </span>
-                              </label>
-                              <button
-                                type="button"
-                                aria-label={`Rename ${leagueName}`}
-                                title={`Rename ${leagueName}`}
-                                onClick={() => {
-                                  setRenamingLeagueId(lg.id);
-                                  setRenameDraft(lg.customLeagueName || lg.displayName || platformLeagueTitle(lg) || getUserTeamName(lg));
-                                }}
-                                className={`w-7 h-7 rounded-lg text-[11px] font-black shrink-0 ${
-                                  isLight ? 'text-slate-500 hover:bg-slate-100' : 'text-slate-300 hover:bg-slate-800'
-                                }`}
-                              >
-                                Aa
-                              </button>
-                              <button
-                                type="button"
-                                aria-label={`Remove ${leagueName}`}
-                                title={`Remove ${leagueName}`}
-                                onClick={() => setLeaguePendingDelete(lg)}
-                                className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${
-                                  isLight ? 'text-rose-600 hover:bg-rose-50' : 'text-rose-400 hover:bg-rose-950/70'
-                                }`}
-                              >
-                                <TrashIcon />
-                              </button>
-                            </div>
-                            {renamingLeagueId === lg.id && (
-                              <form
-                                className="px-2 pb-2 flex gap-1"
-                                onSubmit={(event) => {
-                                  event.preventDefault();
-                                  commitLeagueRename(lg.id);
-                                }}
-                              >
-                                <input
-                                  value={renameDraft}
-                                  onChange={(event) => setRenameDraft(event.target.value)}
-                                  aria-label={`Custom name for ${leagueName}`}
-                                  className={`min-w-0 flex-1 rounded-lg border px-2 py-1 text-[11px] font-bold ${
-                                    isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-slate-950 border-slate-700 text-slate-100'
-                                  }`}
-                                />
-                                <button type="submit" className="rounded-lg bg-emerald-600 px-2 text-[10px] font-black text-white">
-                                  Save
-                                </button>
-                              </form>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
+                <button
+                  type="button"
+                  aria-haspopup="dialog"
+                  aria-expanded={showManageLeagues}
+                  onClick={() => {
+                    setShowManageLeagues(true);
+                    tapHaptic();
+                  }}
+                  className={`shrink-0 min-h-8 px-2 rounded-xl text-[10px] font-black border inline-flex items-center gap-1 ${
+                    isLight
+                      ? 'bg-white text-slate-700 border-slate-200'
+                      : 'bg-slate-950 text-slate-200 border-slate-700'
+                  }`}
+                >
+                  Manage Leagues
+                </button>
               )}
             </div>
 
@@ -5650,6 +5733,318 @@ export default function App() {
             </div>
           </div>
         </div>
+      )}
+
+      {showManageLeagues && createPortal(
+        <div
+          onClick={() => {
+            setShowManageLeagues(false);
+            setRenamingLeagueId(null);
+            setRenameDraft('');
+          }}
+          className="fixed inset-0 z-[85] bg-black/60 backdrop-blur-sm flex items-end justify-center"
+          role="presentation"
+        >
+          <div
+            onClick={(event) => event.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="manage-leagues-title"
+            className={`w-full max-w-lg border-t rounded-t-3xl shadow-2xl flex flex-col max-h-[min(92vh,40rem)] pb-[calc(0.75rem+env(safe-area-inset-bottom))] ${
+              isLight ? 'bg-white border-slate-200' : 'bg-slate-900 border-slate-800'
+            }`}
+          >
+            <div className={`w-12 h-1.5 rounded-full mx-auto mt-3 shrink-0 ${isLight ? 'bg-slate-300' : 'bg-slate-700'}`} />
+            <div className="flex items-start justify-between gap-3 px-4 pt-3 pb-2">
+              <div className="min-w-0">
+                <h3 id="manage-leagues-title" className={`text-base font-black ${isLight ? 'text-slate-900' : 'text-white'}`}>
+                  Manage Leagues
+                </h3>
+                {!isPro && (
+                  <div className={`mt-1 inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-black uppercase tracking-wide border ${
+                    isLight ? 'bg-amber-50 text-amber-800 border-amber-200' : 'bg-amber-950/50 text-amber-200 border-amber-800'
+                  }`}>
+                    {freeActiveLabel}
+                  </div>
+                )}
+              </div>
+              <button
+                type="button"
+                aria-label="Close manage leagues"
+                onClick={() => {
+                  setShowManageLeagues(false);
+                  setRenamingLeagueId(null);
+                  setRenameDraft('');
+                }}
+                className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm shrink-0 ${
+                  isLight ? 'bg-slate-100 text-slate-500 hover:bg-slate-200' : 'bg-slate-800 text-slate-300'
+                }`}
+              >
+                ✕
+              </button>
+            </div>
+            <div className="px-3 pb-2 overflow-y-auto flex-1 min-h-0 space-y-1.5">
+              {leagues.length === 0 ? (
+                <p className={`px-2 py-6 text-center text-xs font-semibold ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+                  No leagues imported yet.
+                </p>
+              ) : (
+                leagues.map((lg) => {
+                  const leagueName = getLeagueDisplayName(lg);
+                  const onBoard = !hiddenLeagueIds.has(String(lg.id));
+                  const detail = teamSeasonDetail(
+                    leagueSideRecord(lg, 'my').record,
+                    leagueSideRecord(lg, 'my').rank
+                  );
+                  return (
+                    <div
+                      key={lg.id}
+                      className={`rounded-2xl border px-2.5 ${
+                        isLight ? 'border-slate-200 bg-slate-50' : 'border-slate-800 bg-slate-950/70'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2.5 min-h-[52px]">
+                        <label className="flex items-center gap-2.5 min-w-0 flex-1 cursor-pointer py-2">
+                          <input
+                            type="checkbox"
+                            checked={onBoard}
+                            onChange={() => toggleLeagueVisibility(lg.id)}
+                            aria-label={`${onBoard ? 'Hide' : 'Show'} ${leagueName} on the board`}
+                            className="accent-emerald-500 w-5 h-5 shrink-0"
+                          />
+                          <PlatformPill platform={lg.platform} isLight={isLight} />
+                          <span className="min-w-0 flex-1">
+                            <span className={`block text-sm font-black leading-snug break-words ${isLight ? 'text-slate-900' : 'text-white'}`}>
+                              {leagueName}
+                            </span>
+                            {detail ? (
+                              <span className={`block text-[11px] font-semibold mt-0.5 ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+                                {detail}
+                              </span>
+                            ) : null}
+                          </span>
+                        </label>
+                        <button
+                          type="button"
+                          aria-label={`Rename ${leagueName}`}
+                          title={`Rename ${leagueName}`}
+                          onClick={() => {
+                            setRenamingLeagueId(lg.id);
+                            setRenameDraft(lg.customLeagueName || lg.displayName || platformLeagueTitle(lg) || getUserTeamName(lg));
+                          }}
+                          className={`w-9 h-9 rounded-xl text-[12px] font-black shrink-0 ${
+                            isLight ? 'text-slate-500 hover:bg-white' : 'text-slate-300 hover:bg-slate-800'
+                          }`}
+                        >
+                          Aa
+                        </button>
+                        <button
+                          type="button"
+                          aria-label={`Remove ${leagueName}`}
+                          title={`Remove ${leagueName}`}
+                          onClick={() => setLeaguePendingDelete(lg)}
+                          className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
+                            isLight ? 'text-rose-600 hover:bg-rose-50' : 'text-rose-400 hover:bg-rose-950/70'
+                          }`}
+                        >
+                          <TrashIcon />
+                        </button>
+                      </div>
+                      {renamingLeagueId === lg.id && (
+                        <form
+                          className="pb-2.5 flex gap-1.5"
+                          onSubmit={(event) => {
+                            event.preventDefault();
+                            commitLeagueRename(lg.id);
+                          }}
+                        >
+                          <input
+                            value={renameDraft}
+                            onChange={(event) => setRenameDraft(event.target.value)}
+                            aria-label={`Custom name for ${leagueName}`}
+                            className={`min-w-0 flex-1 rounded-xl border px-2.5 py-2 text-[12px] font-bold ${
+                              isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-slate-950 border-slate-700 text-slate-100'
+                            }`}
+                          />
+                          <button type="submit" className="rounded-xl bg-emerald-600 px-3 text-[11px] font-black text-white">
+                            Save
+                          </button>
+                        </form>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+            {!isPro && (
+              <div className="px-4 pt-2">
+                <button
+                  type="button"
+                  onClick={openProUpgrade}
+                  className="w-full min-h-11 rounded-xl bg-emerald-600 text-white text-xs font-black"
+                >
+                  RootMap Pro
+                </button>
+                <p className={`mt-1.5 text-center text-[10px] font-semibold ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+                  Free tracks {FREE_ACTIVE_LEAGUE_LIMIT} active leagues. Uncheck one to swap, or upgrade for unlimited.
+                </p>
+              </div>
+            )}
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {showActivePick && createPortal(
+        <div
+          className="fixed inset-0 z-[90] bg-black/65 backdrop-blur-sm flex items-end justify-center"
+          role="presentation"
+        >
+          <div
+            onClick={(event) => event.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="active-pick-title"
+            className={`w-full max-w-lg border-t rounded-t-3xl shadow-2xl flex flex-col max-h-[min(92vh,42rem)] pb-[calc(0.75rem+env(safe-area-inset-bottom))] ${
+              isLight ? 'bg-white border-slate-200' : 'bg-slate-900 border-slate-800'
+            }`}
+          >
+            <div className={`w-12 h-1.5 rounded-full mx-auto mt-3 shrink-0 ${isLight ? 'bg-slate-300' : 'bg-slate-700'}`} />
+            <div className="px-4 pt-3 pb-2">
+              <h3 id="active-pick-title" className={`text-base font-black ${isLight ? 'text-slate-900' : 'text-white'}`}>
+                Pick Your Active Leagues
+              </h3>
+              <p className={`mt-1 text-[12px] font-semibold leading-snug ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+                Free includes {FREE_ACTIVE_LEAGUE_LIMIT} active leagues. Everything stays saved — unchecked leagues hide from the board until you turn them on.
+              </p>
+              <div className={`mt-2 inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-black uppercase tracking-wide border ${
+                isLight ? 'bg-amber-50 text-amber-800 border-amber-200' : 'bg-amber-950/50 text-amber-200 border-amber-800'
+              }`}>
+                {activePickSelected.size} / {FREE_ACTIVE_LEAGUE_LIMIT} Selected
+              </div>
+            </div>
+            <div className="px-3 pb-2 overflow-y-auto flex-1 min-h-0 space-y-1.5">
+              {activePickCandidates.map((lg) => {
+                const leagueName = getLeagueDisplayName(lg);
+                const checked = activePickSelected.has(String(lg.id));
+                const mine = leagueSideRecord(lg, 'my');
+                const detail = [getUserTeamName(lg), teamSeasonDetail(mine.record, mine.rank)].filter(Boolean).join(' · ');
+                return (
+                  <label
+                    key={lg.id}
+                    className={`flex items-center gap-2.5 min-h-[52px] rounded-2xl border px-3 py-2 cursor-pointer ${
+                      checked
+                        ? isLight ? 'bg-emerald-50 border-emerald-300' : 'bg-emerald-950/40 border-emerald-700'
+                        : isLight ? 'bg-slate-50 border-slate-200' : 'bg-slate-950/70 border-slate-800'
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => toggleActivePickSelection(lg.id)}
+                      aria-label={`${checked ? 'Deselect' : 'Select'} ${leagueName}`}
+                      className="accent-emerald-500 w-5 h-5 shrink-0"
+                    />
+                    <PlatformPill platform={lg.platform} isLight={isLight} />
+                    <span className="min-w-0 flex-1">
+                      <span className={`block text-sm font-black leading-snug break-words ${isLight ? 'text-slate-900' : 'text-white'}`}>
+                        {leagueName}
+                      </span>
+                      {detail ? (
+                        <span className={`block text-[11px] font-semibold mt-0.5 ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+                          {detail}
+                        </span>
+                      ) : null}
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+            <div className="px-4 pt-2 space-y-2">
+              <button
+                type="button"
+                disabled={activePickSelected.size === 0}
+                onClick={confirmActiveLeaguePick}
+                className="w-full min-h-11 rounded-xl bg-emerald-600 text-white text-xs font-black disabled:opacity-40"
+              >
+                {activePickSelected.size === FREE_ACTIVE_LEAGUE_LIMIT
+                  ? `Track ${FREE_ACTIVE_LEAGUE_LIMIT} Selected Leagues`
+                  : `Track ${activePickSelected.size || FREE_ACTIVE_LEAGUE_LIMIT} Selected League${activePickSelected.size === 1 ? '' : 's'}`}
+              </button>
+              <button
+                type="button"
+                onClick={openProUpgrade}
+                className={`w-full min-h-11 rounded-xl border text-xs font-black ${
+                  isLight ? 'border-slate-200 text-slate-800 bg-slate-50' : 'border-slate-700 text-slate-100 bg-slate-950'
+                }`}
+              >
+                Track All Leagues with RootMap Pro
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {showProUpgrade && createPortal(
+        <div
+          onClick={() => setShowProUpgrade(false)}
+          className="fixed inset-0 z-[95] bg-black/70 backdrop-blur-sm flex items-end sm:items-center justify-center p-3"
+          role="presentation"
+        >
+          <div
+            onClick={(event) => event.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="pro-upgrade-title"
+            className={`w-full max-w-md rounded-3xl border shadow-2xl p-5 space-y-3 ${
+              isLight ? 'bg-white border-slate-200' : 'bg-slate-900 border-slate-700'
+            }`}
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h3 id="pro-upgrade-title" className={`text-lg font-black ${isLight ? 'text-slate-900' : 'text-white'}`}>
+                  RootMap Pro
+                </h3>
+                <p className={`mt-1 text-[12px] font-semibold leading-snug ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+                  Keep every Yahoo, Sleeper, and ESPN league active at once — no swapping, no 2-league cap.
+                </p>
+              </div>
+              <button
+                type="button"
+                aria-label="Close RootMap Pro"
+                onClick={() => setShowProUpgrade(false)}
+                className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm shrink-0 ${
+                  isLight ? 'bg-slate-100 text-slate-500' : 'bg-slate-800 text-slate-300'
+                }`}
+              >
+                ✕
+              </button>
+            </div>
+            <ul className={`space-y-1.5 text-[12px] font-semibold ${isLight ? 'text-slate-700' : 'text-slate-300'}`}>
+              <li>• Unlimited active leagues on Matchups and Game Slate</li>
+              <li>• Keep family and personal boards on at the same time</li>
+              <li>• All imported leagues stay synced without re-scraping</li>
+            </ul>
+            <button
+              type="button"
+              onClick={unlockRootMapPro}
+              className="w-full min-h-11 rounded-xl bg-emerald-600 text-white text-xs font-black"
+            >
+              Unlock RootMap Pro
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowProUpgrade(false)}
+              className={`w-full min-h-10 rounded-xl text-[11px] font-black ${
+                isLight ? 'text-slate-500' : 'text-slate-400'
+              }`}
+            >
+              Not now
+            </button>
+          </div>
+        </div>,
+        document.body
       )}
 
       {showAlertSheet && (
