@@ -386,9 +386,79 @@ enum YahooLinks {
       function readableName(value) {
         var text = clean(value).replace(/\\d+\\s*-\\s*\\d+\\s*-\\s*\\d+.*/, '').trim();
         if (!text || text.length > 40 || isGenericName(text) || slotToken(text) || isHeaderLabel(text)) return '';
+        if (/^league\\s*\\d+$/i.test(text)) return '';
         return text;
       }
+      function leagueTitleFromJson() {
+        var found = '';
+        function consider(name, key) {
+          if (found) return;
+          var text = readableName(name);
+          if (!text) return;
+          var keyText = String(key || '');
+          if (leagueId && keyText) {
+            var matchesId = keyText === String(leagueId)
+              || keyText.indexOf('.l.' + leagueId) !== -1
+              || keyText.indexOf('/f1/' + leagueId) !== -1;
+            if (!matchesId) return;
+          }
+          found = text;
+        }
+        function walk(value, depth) {
+          if (found || !value || typeof value !== 'object' || depth > 8) return;
+          if (Array.isArray(value)) {
+            for (var i = 0; i < value.length; i++) walk(value[i], depth + 1);
+            return;
+          }
+          var key = value.league_key || value.leagueKey || value.league_id || value.leagueId || '';
+          var named = value.league_name || value.leagueName || '';
+          if (!named && typeof value.name === 'string' && !value.team_key && !value.teamKey && (value.num_teams != null || value.scoring_type || value.league_type || value.current_week != null)) {
+            named = value.name;
+          }
+          if (named && key) consider(named, key);
+          var keys = Object.keys(value);
+          for (var k = 0; k < keys.length; k++) {
+            var childKey = keys[k];
+            if (childKey === 'parent' || childKey === 'parentNode' || childKey === 'ownerDocument') continue;
+            try { walk(value[childKey], depth + 1); } catch (err) {}
+          }
+        }
+        try { if (window.ydb) walk(window.ydb, 0); } catch (err) {}
+        try { if (window.App && App.main) walk(App.main, 0); } catch (err) {}
+        try { if (window.__NEXT_DATA__) walk(window.__NEXT_DATA__, 0); } catch (err) {}
+        try {
+          var scripts = document.querySelectorAll('script[type="application/json"], script:not([src])');
+          for (var s = 0; s < scripts.length && !found; s++) {
+            var raw = scripts[s].textContent || '';
+            if (raw.indexOf('league_key') === -1 && raw.indexOf('.l.') === -1) continue;
+            var re = /"league_key"\\s*:\\s*"(\\d+\\.l\\.\\d+)"/g;
+            var match;
+            while ((match = re.exec(raw)) && !found) {
+              var slice = raw.slice(Math.max(0, match.index - 500), match.index + 800);
+              var nameMatch = slice.match(/"name"\\s*:\\s*"([^"\\\\]{2,60})"/);
+              if (nameMatch) consider(nameMatch[1], match[1]);
+            }
+          }
+        } catch (err2) {}
+        return found;
+      }
+      function leagueTitleFromDom() {
+        var links = document.querySelectorAll('a[href*="/f1/"], [class*="breadcrumb"] a, [class*="Breadcrumb"] a, nav a, a.Navmain-title, #league-name');
+        for (var i = 0; i < links.length; i++) {
+          var href = links[i].href || links[i].getAttribute('href') || '';
+          var home = String(href).match(/\\/f1\\/(\\d+)\\/?(?:$|[?#])/);
+          if (!home) continue;
+          if (leagueId && home[1] !== String(leagueId)) continue;
+          var text = readableName(links[i].innerText || links[i].textContent || links[i].getAttribute('aria-label') || links[i].getAttribute('title') || '');
+          if (text) return text;
+        }
+        return '';
+      }
       function realLeagueName() {
+        var fromJson = leagueTitleFromJson();
+        if (fromJson) return fromJson;
+        var fromHome = leagueTitleFromDom();
+        if (fromHome) return fromHome;
         var nodes = document.querySelectorAll(
           'h1, h2, h3, [class*="league-name"], [class*="LeagueName"], .Navmain-title, #league-name, [data-tst="league-name"], a[href*="/f1/"][class*="league"]'
         );
@@ -559,6 +629,7 @@ enum YahooLinks {
             for (var i = 0; i < value.length; i++) walk(value[i], depth + 1);
             return;
           }
+          noteLeagueTitle(value);
           var teamKey = value.team_key || value.teamKey || '';
           var teamName = value.name || value.team_name || value.teamName || '';
           if (teamKey && /\\.t\\.\\d+/.test(String(teamKey)) && teamName && typeof teamName === 'string') {
@@ -627,17 +698,31 @@ enum YahooLinks {
             try { walk(value[key], depth + 1); } catch (err2) {}
           }
         }
+        var leagueTitle = '';
+        function noteLeagueTitle(value) {
+          if (leagueTitle || !value) return;
+          var key = value.league_key || value.leagueKey || value.league_id || value.leagueId || '';
+          var named = value.league_name || value.leagueName || '';
+          if (!named && typeof value.name === 'string' && !value.team_key && !value.teamKey && (value.num_teams != null || value.scoring_type || value.league_type || value.current_week != null)) {
+            named = value.name;
+          }
+          var text = readableName(named);
+          if (!text || !key) return;
+          if (leagueId && String(key).indexOf(String(leagueId)) === -1 && String(key) !== String(leagueId)) return;
+          leagueTitle = text;
+        }
         for (var s = 0; s < sources.length; s++) walk(sources[s], 0);
-        return { teams: teams, players: players };
+        return { teams: teams, players: players, leagueName: leagueTitle };
       }
-      var leagueName = realLeagueName();
+      var ydbEarly = digYahooJson();
+      var leagueName = realLeagueName() || ydbEarly.leagueName || '';
       var board = scoreboardSides();
       var mineSide = board.mine;
       var oppSide = board.opp;
       if (!teamId && mineSide.teamId) teamId = mineSide.teamId;
       if (!leagueId && mineSide.leagueId) leagueId = mineSide.leagueId;
       // Fill gaps / correct clones from embedded Yahoo JSON (ydb).
-      var ydb = digYahooJson();
+      var ydb = ydbEarly;
       if (ydb.teams && ydb.teams.length) {
         var mineJson = null;
         var oppJson = null;
@@ -788,7 +873,7 @@ enum YahooLinks {
       function usableLeagueName(value) {
         var text = clean(value);
         if (!text || text.length > 60) return '';
-        if (/^(my teams?|leagues?|fantasy football|yahoo|home|matchup|standings|players|mail|inbox|account|my account|sign in|sign out|settings|news|profile|notifications?)$/i.test(text)) return '';
+        if (/^(my teams?|leagues?(?:\\s*\\d+)?|fantasy football|yahoo|home|matchup|standings|players|mail|inbox|account|my account|sign in|sign out|settings|news|profile|notifications?)$/i.test(text)) return '';
         return text;
       }
       function leagueNameNear(node) {
@@ -851,6 +936,11 @@ enum YahooLinks {
           return;
         }
         var leagueRaw = value.league_id || value.leagueId || value.league_key || value.leagueKey || '';
+        var leagueMetaName = value.league_name || value.leagueName || '';
+        if (!leagueMetaName && typeof value.name === 'string' && !value.team_key && !value.teamKey && (value.num_teams != null || value.scoring_type || value.league_type || value.current_week != null)) {
+          leagueMetaName = value.name;
+        }
+        if (leagueRaw && leagueMetaName) rememberLeague(leagueRaw, leagueMetaName);
         var teamRaw = value.team_id || value.teamId || value.team_key || value.teamKey || '';
         var leagueNum = String(leagueRaw).match(/(?:\\.l\\.|\\/f1\\/)?(\\d+)/);
         var teamNum = String(teamRaw).match(/(?:\\.t\\.|\\/)(\\d+)$/) || String(teamRaw).match(/^(\\d+)$/);
@@ -874,6 +964,13 @@ enum YahooLinks {
       }
       var seen = {};
       var teams = [];
+      var leagueTitles = {};
+      function rememberLeague(leagueRaw, name) {
+        var num = String(leagueRaw || '').match(/(?:\\.l\\.|\\/f1\\/)?(\\d+)/);
+        var title = usableLeagueName(name);
+        if (!num || !title) return;
+        if (!leagueTitles[num[1]]) leagueTitles[num[1]] = title;
+      }
       // Prefer embedded JSON nicknames/league titles before sparse lobby link text.
       try { if (window.ydb) dig(window.ydb, teams, seen, 0); } catch (err) {}
       try { if (window.App && App.main) dig(App.main, teams, seen, 0); } catch (err) {}
@@ -899,8 +996,28 @@ enum YahooLinks {
           while ((found = re.exec(text))) {
             pushTeam(teams, seen, found[1], found[2], '', '', '');
           }
+          var keyRe = /"league_key"\\s*:\\s*"(\\d+\\.l\\.\\d+)"/g;
+          var keyHit;
+          while ((keyHit = keyRe.exec(text))) {
+            var slice = text.slice(Math.max(0, keyHit.index - 400), keyHit.index + 700);
+            var nameHit = slice.match(/"name"\\s*:\\s*"([^"\\\\]{2,60})"/);
+            if (nameHit) rememberLeague(keyHit[1], nameHit[1]);
+          }
         }
       } catch (err) {}
+      var homeLinks = document.querySelectorAll('a[href*="/f1/"]');
+      for (var h = 0; h < homeLinks.length; h++) {
+        var homeHref = homeLinks[h].href || '';
+        var home = homeHref.match(/\\/f1\\/(\\d+)\\/?(?:$|[?#])/);
+        if (!home) continue;
+        var homeName = usableLeagueName(homeLinks[h].innerText || homeLinks[h].textContent || homeLinks[h].getAttribute('title') || '');
+        if (homeName) rememberLeague(home[1], homeName);
+      }
+      for (var t = 0; t < teams.length; t++) {
+        if (!teams[t].leagueName && leagueTitles[teams[t].leagueId]) {
+          teams[t].leagueName = leagueTitles[teams[t].leagueId];
+        }
+      }
       return JSON.stringify(teams);
     })();
     """

@@ -63,6 +63,7 @@ import {
 import {
   FREE_ACTIVE_LEAGUE_LIMIT,
   activeLeagueCount,
+  clampFreeActiveHidden,
   freeActiveBadge,
   loadIsPro,
   saveIsPro
@@ -221,6 +222,26 @@ function capInflatedWeeklyTotal(board, starterSum, starterCount) {
   const seasonSized = board > 400 && board > starterSum * 1.5;
   if (fullLineup || seasonSized) return starterSum;
   return null;
+}
+
+let launchLeagueSnapshot = null;
+
+function launchLeagueGate() {
+  if (launchLeagueSnapshot) return launchLeagueSnapshot;
+  const storedLeagues = loadStoredLeagues();
+  const storedHidden = loadHiddenLeagueIds();
+  const overCap = !loadIsPro() && activeLeagueCount(storedLeagues, storedHidden) > FREE_ACTIVE_LEAGUE_LIMIT;
+  const hidden = overCap ? clampFreeActiveHidden(storedLeagues, storedHidden) : storedHidden;
+  const selectedIds = overCap
+    ? storedLeagues
+      .filter((league) => league && !hidden.has(String(league.id)))
+      .map((league) => String(league.id))
+    : [];
+  launchLeagueSnapshot = { storedLeagues, hidden, overCap, selectedIds };
+  queueMicrotask(() => {
+    launchLeagueSnapshot = null;
+  });
+  return launchLeagueSnapshot;
 }
 
 function loadHiddenLeagueIds() {
@@ -720,7 +741,13 @@ function normalizeLeague(lg, index = 0) {
   const myTeamName = platformOf({ platform }).includes('yahoo')
     ? (preferYahooLeagueName(lg.myTeamName, lg.userTeam?.name) || 'My Team')
     : (lg.myTeamName || lg.userTeam?.name || 'My Team');
-  const name = platformLeagueTitle({ ...lg, myTeamName }) || `League ${index + 1}`;
+  const platformTitle = platformLeagueTitle({ ...lg, myTeamName });
+  const yahoo = platformOf({ platform }).includes('yahoo');
+  const teamLabel = myTeamName && myTeamName !== 'My Team' && !isGenericYahooLeagueName(myTeamName)
+    ? myTeamName
+    : '';
+  // Yahoo never keeps "League 3" — the fantasy team nickname is the last label.
+  const name = platformTitle || (yahoo ? teamLabel : '') || (yahoo ? 'League' : `League ${index + 1}`);
   const oppTeamName = getLeagueOppName(lg);
   const customLeagueName = String(lg.customLeagueName || '').trim();
   const displayName = customLeagueName || String(lg.displayName || '').trim();
@@ -895,6 +922,7 @@ function loadStoredLeagues() {
   try {
     const raw = localStorage.getItem(LEAGUES_STORAGE_KEY);
     if (!raw) return [];
+    // Every launch rewrites cached Yahoo dupes (same league id, or team + opponent + record).
     return dedupeImportedLeagues(leaguesFromJson(raw) || []);
   } catch {
     return [];
@@ -2494,9 +2522,11 @@ export default function App() {
   const [leagueSort, setLeagueSort] = useState('closest');
   const [showManageLeagues, setShowManageLeagues] = useState(false);
   const [showProUpgrade, setShowProUpgrade] = useState(false);
-  const [showActivePick, setShowActivePick] = useState(false);
-  const [activePickCandidates, setActivePickCandidates] = useState([]);
-  const [activePickSelected, setActivePickSelected] = useState(() => new Set());
+  const [showActivePick, setShowActivePick] = useState(() => launchLeagueGate().overCap);
+  const [activePickCandidates, setActivePickCandidates] = useState(() => (
+    launchLeagueGate().overCap ? launchLeagueGate().storedLeagues : []
+  ));
+  const [activePickSelected, setActivePickSelected] = useState(() => new Set(launchLeagueGate().selectedIds));
   const [isPro, setIsPro] = useState(loadIsPro);
   const [sortMode, setSortMode] = useState('slate');
   const [boardFilters, setBoardFilters] = useState({
@@ -2526,7 +2556,7 @@ export default function App() {
       return true;
     }
   });
-  const [leagues, setLeagues] = useState(loadStoredLeagues);
+  const [leagues, setLeagues] = useState(() => launchLeagueGate().storedLeagues);
   const [selectedWeek, setSelectedWeek] = useState(() => getActiveSlate()?.week || FALLBACK_NFL_WEEK);
   const [showWeekPicker, setShowWeekPicker] = useState(false);
   const [games, setGames] = useState(() => (getActiveSlate() || getSlateByWeek(FALLBACK_NFL_WEEK))?.games || []);
@@ -2589,7 +2619,7 @@ export default function App() {
   const [headshotTick, setHeadshotTick] = useState(0);
   const [showLegend, setShowLegend] = useState(false);
   const [showLeagueFilter, setShowLeagueFilter] = useState(false);
-  const [hiddenLeagueIds, setHiddenLeagueIds] = useState(loadHiddenLeagueIds);
+  const [hiddenLeagueIds, setHiddenLeagueIds] = useState(() => launchLeagueGate().hidden);
   const [seenTips, setSeenTips] = useState(loadSeenTips);
   const [renamingLeagueId, setRenamingLeagueId] = useState(null);
   const [renameDraft, setRenameDraft] = useState('');
@@ -3746,7 +3776,7 @@ export default function App() {
 
   const openYahooIngest = () => {
     setYahooIngestError('');
-    setYahooLeagueName(`League ${leagues.length + 1}`);
+    setYahooLeagueName('');
     selectConnectTab('yahoo');
   };
 
@@ -3990,15 +4020,16 @@ export default function App() {
     }
 
     const typedName = yahooLeagueName.trim();
-    const autoName = `League ${leagues.length + 1}`;
     const espnTeamName = parsed.userTeam?.name && parsed.userTeam.name !== 'My Team' ? parsed.userTeam.name : '';
     const detectedLeague = parsed.leagueName || '';
+    const yahooTeamName = parsed.myTeamName && !isGenericYahooLeagueName(parsed.myTeamName) ? parsed.myTeamName : '';
+    const typedIsPlaceholder = !typedName || isGenericYahooLeagueName(typedName);
     const fallbackName = espnPaste
       ? (detectedLeague || espnTeamName || 'ESPN League')
-      : (detectedLeague && !isGenericYahooLeagueName(detectedLeague)
+      : ((detectedLeague && !isGenericYahooLeagueName(detectedLeague))
         ? detectedLeague
-        : autoName);
-    const leagueName = typedName && typedName !== autoName ? typedName : fallbackName;
+        : (yahooTeamName || 'League'));
+    const leagueName = typedIsPlaceholder ? fallbackName : typedName;
     const oppTeamName = parsed.oppTeam?.name || parsed.oppTeamName || MISSING_OPPONENT_NAME;
     const myTeamName = espnPaste ? (espnTeamName || leagueName) : (parsed.myTeamName || leagueName);
     const myHasPasteStats = myStarters.some((player) => (
@@ -7099,7 +7130,7 @@ export default function App() {
                 type="text"
                 value={yahooLeagueName}
                 onChange={(e) => setYahooLeagueName(e.target.value)}
-                placeholder={`League ${leagues.length + 1}`}
+                placeholder="League name"
                 className={`w-full px-3 py-2 rounded-xl text-xs font-bold select-text focus:outline-none ${
                   isLight
                     ? 'bg-slate-50 border border-slate-200 text-slate-800 placeholder-slate-400 focus:border-red-400'

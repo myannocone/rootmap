@@ -2,7 +2,7 @@ import { registerPlugin } from '@capacitor/core';
 import { resolveNflTeam } from './leagueParser';
 import { canonTeamCode, displayPlayerPosition } from './playerIdentity';
 import { cleanYahooPlayerName, parseYahooMatchupText } from './yahooPaste';
-import { isGenericYahooLeagueName } from './yahooSync';
+import { extractYahooLeagueTitle, isGenericYahooLeagueName, resolvedYahooLeagueName } from './yahooSync';
 
 export const YahooLogin = registerPlugin('YahooLogin');
 
@@ -338,11 +338,12 @@ export function leagueFromYahooCapture(result, week) {
     parsed.oppTeamName && parsed.oppTeamName !== myTeamName ? parsed.oppTeamName : '',
     'Opponent'
   );
-  // Prefer a real league title over the fantasy team nickname / generic fallback.
-  const leagueName = usableName(parsed.leagueName, '')
-    || usableName(identity.leagueName, '')
-    || usableName(result?.leagueName, '')
-    || 'Yahoo League';
+  const leagueName = resolvedYahooLeagueName([
+    usableName(parsed.leagueName, ''),
+    usableName(identity.leagueName, ''),
+    usableName(result?.leagueName, ''),
+    extractYahooLeagueTitle(result)
+  ], myTeamName);
   const teamKey = identity.teamId ? `${identity.leagueId}-${identity.teamId}` : identity.leagueId;
   const myScore = numberOrNull(parsed.myScore)
     ?? myStarters.reduce((sum, player) => sum + (numberOrNull(player.actualPoints) ?? 0), 0);
@@ -426,7 +427,7 @@ export async function fetchYahooMatchupCapture(session, week) {
     leagueId: identity.leagueId || captured?.leagueId || '',
     teamId: identity.teamId || captured?.teamId || '',
     matchupUrl: identity.matchupUrl || captured?.matchupUrl || '',
-    leagueName: identity.leagueName || captured?.leagueName || '',
+    leagueName: usableName(identity.leagueName, '') || usableName(captured?.leagueName, '') || extractYahooLeagueTitle(captured),
     teamName: identity.teamName || captured?.teamName || ''
   };
 }
@@ -457,7 +458,7 @@ export async function captureAllYahooLeagueMatchups(leagues, week, { onProgress 
       writeYahooSession(refreshed);
       const parsed = leagueFromYahooCapture({
         ...refreshed,
-        leagueName: league.leagueName || refreshed.leagueName,
+        leagueName: usableName(league.leagueName, '') || usableName(refreshed.leagueName, '') || extractYahooLeagueTitle(refreshed),
         teamName: league.teamName || refreshed.teamName
       }, week);
       if (parsed) imported.push(parsed);

@@ -200,6 +200,9 @@ assert(!isGenericYahooSectionName('BCliff Football'), 'real name not generic');
 assert(isGenericYahooSectionName('My Teams & Leagues'), 'section is generic');
 assert(isGenericYahooSectionName('Mail'), 'Mail nav label is not a league');
 assert(isGenericYahooSectionName('Account'), 'Account label is not a league');
+assert(isGenericYahooSectionName('League 3'), 'League 3 is not a league title');
+assert(isGenericYahooSectionName('League 5'), 'League 5 is not a league title');
+assert(!isGenericYahooSectionName('Finance'), 'Finance is a real league title');
 
 // Deep numeric-key nesting (the shape that breaks hardcoded player[0][13] paths).
 const deepPlayer = {

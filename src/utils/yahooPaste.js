@@ -2,7 +2,7 @@ import { canonTeamCode, displayPlayerPosition } from './playerIdentity';
 
 const SLOT_TOKEN_RE = /^(QB|RB|WR|TE|W\/R\/T|FLEX|K|DEF|D\/ST|DST|IDP|D|DB|DL|LB)$/i;
 const HEADER_CELL_RE = /^(stats|player|proj|pts|projected|points|pos)$/i;
-const GENERIC_YAHOO_RE = /^(my team|league|matchup|players|standings|mail|inbox|account|my account|sign in|sign out|settings|home|news|profile|notifications?)$/i;
+const GENERIC_YAHOO_RE = /^(my team|league(?:\s*\d+)?|matchup|players|standings|mail|inbox|account|my account|sign in|sign out|settings|home|news|profile|notifications?)$/i;
 const STAT_BLURB_RE = /\d.*\b(rush|rec|pass|yds|yards|td|int|sack)\b/i;
 const STOP_SLOT_RE = /^(BN|IR|BENCH|IL|NA)$/i;
 const TEAM_POS_RE = /^([A-Za-z]{2,3})\s*[-–]\s*([A-Za-z/]+)$/;
@@ -187,7 +187,8 @@ function projectionAfter(header, index) {
 
 function parseYahooHeader(lines) {
   const leagueLine = lines.find((line) => isLeagueLine(line));
-  const leagueName = leagueLine ? (leagueLine.match(LEAGUE_LINE_RE)?.[1] || '').trim() : '';
+  const leagueRaw = leagueLine ? (leagueLine.match(LEAGUE_LINE_RE)?.[1] || '').trim() : '';
+  const leagueName = leagueRaw && !GENERIC_YAHOO_RE.test(leagueRaw) ? leagueRaw : '';
   const startersAt = lines.findIndex((line) => /^starters$/i.test(line));
   const firstSlot = lines.findIndex((line) => SLOT_TOKEN_RE.test(line));
   const end = startersAt >= 0 ? startersAt : (firstSlot >= 0 ? firstSlot : lines.length);
