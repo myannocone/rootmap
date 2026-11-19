@@ -157,17 +157,48 @@ export function lineupSlotTemplate(rosterPositions, mine = [], opp = []) {
   return slots;
 }
 
-function takeMatchingPlayer(pool, slot) {
+const SPECIFIC_IDP_SLOTS = new Set(['DT', 'DE', 'DL', 'LB', 'CB', 'S', 'DB']);
+
+function takeForTemplateRow(pool, slot, index) {
+  const pinned = pool.findIndex((player) => Number.isInteger(player?.lineupIndex) && player.lineupIndex === index);
+  if (pinned >= 0) {
+    const [player] = pool.splice(pinned, 1);
+    return player;
+  }
+  const wantSlot = normalizeLineupSlot(slot);
+  const exact = pool.findIndex((player) => (
+    !Number.isInteger(player?.lineupIndex)
+    && normalizeLineupSlot(player?.slot, player?.position) === wantSlot
+  ));
+  if (exact >= 0) {
+    const [player] = pool.splice(exact, 1);
+    return player;
+  }
+  // DT/DE/LB stay on their own labels. Generic FLEX / DP / D/ST can still share a family.
+  if (SPECIFIC_IDP_SLOTS.has(wantSlot)) return null;
   const want = slotFamily(slot);
-  const index = pool.findIndex((player) => slotFamily(player.slot, player.position) === want);
-  if (index < 0) return null;
-  const [player] = pool.splice(index, 1);
+  const familyIndex = pool.findIndex((player) => (
+    !Number.isInteger(player?.lineupIndex)
+    && slotFamily(player?.slot, player?.position) === want
+  ));
+  if (familyIndex < 0) return null;
+  const [player] = pool.splice(familyIndex, 1);
   return player;
 }
 
+function pushLineupRow(rows, slot, minePlayer, oppPlayer) {
+  rows.push({
+    key: `${slot}-${rows.length}-${minePlayer?.name || 'empty'}-${oppPlayer?.name || 'empty'}`,
+    slot: displaySlotLabel(slot, minePlayer?.position || oppPlayer?.position),
+    mine: minePlayer,
+    opp: oppPlayer
+  });
+}
+
 /**
- * Pair starters for matchup UI: same slot family on each row.
- * Leftovers append at the end so nobody is dropped.
+ * Pair starters for matchup UI: same slot label on each row.
+ * Players pinned with lineupIndex stay on that roster slot (empty holes stay empty).
+ * Leftovers each get their own row so a DT never slides onto an LB.
  */
 export function pairStartersBySlot(mine, opp, rosterPositions = null) {
   const leftPool = sortStartersBySlot(mine).slice();
@@ -176,28 +207,18 @@ export function pairStartersBySlot(mine, opp, rosterPositions = null) {
   const rows = [];
 
   template.forEach((slot, index) => {
-    const minePlayer = takeMatchingPlayer(leftPool, slot);
-    const oppPlayer = takeMatchingPlayer(rightPool, slot);
+    const minePlayer = takeForTemplateRow(leftPool, slot, index);
+    const oppPlayer = takeForTemplateRow(rightPool, slot, index);
     if (!minePlayer && !oppPlayer) return;
-    rows.push({
-      key: `${slot}-${index}-${minePlayer?.name || 'empty'}-${oppPlayer?.name || 'empty'}`,
-      slot: displaySlotLabel(slot, minePlayer?.position || oppPlayer?.position),
-      mine: minePlayer,
-      opp: oppPlayer
-    });
+    pushLineupRow(rows, slot, minePlayer, oppPlayer);
   });
 
-  while (leftPool.length || rightPool.length) {
-    const minePlayer = leftPool.shift() || null;
-    const oppPlayer = rightPool.shift() || null;
-    const slot = minePlayer?.slot || oppPlayer?.slot || '';
-    rows.push({
-      key: `extra-${rows.length}-${minePlayer?.name || 'empty'}-${oppPlayer?.name || 'empty'}`,
-      slot: displaySlotLabel(slot, minePlayer?.position || oppPlayer?.position),
-      mine: minePlayer,
-      opp: oppPlayer
-    });
-  }
+  leftPool.forEach((minePlayer) => {
+    pushLineupRow(rows, minePlayer?.slot || '', minePlayer, null);
+  });
+  rightPool.forEach((oppPlayer) => {
+    pushLineupRow(rows, oppPlayer?.slot || '', null, oppPlayer);
+  });
 
   return rows;
 }

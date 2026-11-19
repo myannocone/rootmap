@@ -1,5 +1,5 @@
 import { Capacitor } from '@capacitor/core';
-import { publishInAppBanner } from './inAppBanner.js';
+import { isCurrentWeekAlert, publishInAppBanner } from './inAppBanner.js';
 import {
   formatRootMapNotification,
   NOTIFICATION_CATEGORIES
@@ -70,8 +70,9 @@ function notificationId(text) {
   return (hash % 2147483646) + 1;
 }
 
-async function scheduleFormatted(formatted, id) {
-  publishInAppBanner(formatted);
+async function scheduleFormatted(formatted, id, meta = {}) {
+  if (!isCurrentWeekAlert(meta.week, meta.phase)) return;
+  publishInAppBanner({ ...formatted, week: meta.week, phase: meta.phase });
   if (Capacitor.isNativePlatform()) {
     await prepareCrossFireAlerts();
     if (!notificationsReady) return;
@@ -113,7 +114,8 @@ export async function prepareZeroProjectionAlerts({ request = false } = {}) {
   }
 }
 
-export async function notifyZeroProjectionAlerts(alerts) {
+export async function notifyZeroProjectionAlerts(alerts, meta = {}) {
+  if (!isCurrentWeekAlert(meta.week, meta.phase || 'upcoming')) return;
   loadZeroProjNotified();
   const fresh = (alerts || []).filter((alert) => alert?.id && alert?.name && !notifiedZeroProj.has(alert.id));
   if (!fresh.length) return;
@@ -124,15 +126,17 @@ export async function notifyZeroProjectionAlerts(alerts) {
       leagueName: alert.leagueName,
       playerName: alert.name
     });
+    const banner = { week: meta.week, phase: meta.phase || 'upcoming' };
     if (!granted) {
-      publishInAppBanner(formatted);
+      publishInAppBanner({ ...formatted, ...banner });
       continue;
     }
-    await scheduleFormatted(formatted, notificationId(alert.id));
+    await scheduleFormatted(formatted, notificationId(alert.id), banner);
   }
 }
 
-export async function notifyCrossFire({ name, delta, mine, opp }) {
+export async function notifyCrossFire({ name, delta, mine, opp, week, phase = 'live' }) {
+  if (!isCurrentWeekAlert(week, phase)) return;
   const formatted = formatRootMapNotification(NOTIFICATION_CATEGORIES.CROSS_FIRE, {
     context: name || 'Player',
     playerName: name,
@@ -140,14 +144,16 @@ export async function notifyCrossFire({ name, delta, mine, opp }) {
     mine,
     opp
   });
+  const meta = { week, phase };
   if (!Capacitor.isNativePlatform()) {
-    publishInAppBanner(formatted);
+    publishInAppBanner({ ...formatted, ...meta });
     return;
   }
-  await scheduleFormatted(formatted, Math.floor(Date.now() % 2147483647));
+  await scheduleFormatted(formatted, Math.floor(Date.now() % 2147483647), meta);
 }
 
-export async function notifyRedZoneAlert({ id, playerName, leagueName }) {
+export async function notifyRedZoneAlert({ id, playerName, leagueName, week, phase = 'live' }) {
+  if (!isCurrentWeekAlert(week, phase)) return;
   const flag = { value: redZoneLoaded };
   loadSessionIds(RED_ZONE_KEY, notifiedRedZone, flag);
   redZoneLoaded = flag.value;
@@ -158,15 +164,17 @@ export async function notifyRedZoneAlert({ id, playerName, leagueName }) {
     leagueName,
     playerName
   });
+  const meta = { week, phase };
   const granted = await prepareZeroProjectionAlerts();
   if (!granted) {
-    publishInAppBanner(formatted);
+    publishInAppBanner({ ...formatted, ...meta });
     return;
   }
-  await scheduleFormatted(formatted, notificationId(`redzone|${key}`));
+  await scheduleFormatted(formatted, notificationId(`redzone|${key}`), meta);
 }
 
-export async function notifyOutperformerAlert({ id, playerName, leagueName, delta }) {
+export async function notifyOutperformerAlert({ id, playerName, leagueName, delta, week, phase = 'live' }) {
+  if (!isCurrentWeekAlert(week, phase)) return;
   const flag = { value: outperformLoaded };
   loadSessionIds(OUTPERFORM_KEY, notifiedOutperform, flag);
   outperformLoaded = flag.value;
@@ -178,32 +186,35 @@ export async function notifyOutperformerAlert({ id, playerName, leagueName, delt
     playerName,
     delta
   });
+  const meta = { week, phase };
   const granted = await prepareZeroProjectionAlerts();
   if (!granted) {
-    publishInAppBanner(formatted);
+    publishInAppBanner({ ...formatted, ...meta });
     return;
   }
-  await scheduleFormatted(formatted, notificationId(`outperform|${key}`));
+  await scheduleFormatted(formatted, notificationId(`outperform|${key}`), meta);
 }
 
-export async function notifyLineupLock({ windowLabel, id, fireAt } = {}) {
+export async function notifyLineupLock({ windowLabel, id, fireAt, week, phase = 'upcoming' } = {}) {
+  if (!isCurrentWeekAlert(week, phase)) return;
   const formatted = formatRootMapNotification(NOTIFICATION_CATEGORIES.LINEUP_LOCK, {
     windowLabel
   });
+  const meta = { week, phase };
   if (!Capacitor.isNativePlatform()) {
-    publishInAppBanner(formatted);
+    publishInAppBanner({ ...formatted, ...meta });
     return;
   }
   await prepareCrossFireAlerts();
   if (!notificationsReady) {
-    publishInAppBanner(formatted);
+    publishInAppBanner({ ...formatted, ...meta });
     return;
   }
   const { LocalNotifications } = await import('@capacitor/local-notifications');
   const notifId = notificationId(id || `lineup-lock|${windowLabel}`);
   const when = fireAt instanceof Date ? fireAt : (fireAt ? new Date(fireAt) : new Date(Date.now() + 800));
   if (!(when.getTime() > Date.now())) {
-    publishInAppBanner(formatted);
+    publishInAppBanner({ ...formatted, ...meta });
     return;
   }
   await LocalNotifications.schedule({

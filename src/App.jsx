@@ -52,6 +52,8 @@ import {
   YahooLogin
 } from './utils/yahooNative';
 import {
+  canonicalLeagueIdentity,
+  dedupeImportedLeagues,
   isGenericYahooLeagueName,
   preferYahooLeagueName,
   preferYahooLeagueOverTeam,
@@ -81,7 +83,16 @@ import { readBannerHistory, subscribeInAppBanners } from './utils/inAppBanner';
 import { decodeSetupJson, encodeSetupPayload, linkIsLocalOnly, phoneSyncOrigin, setupLinkFor } from './utils/setupSync';
 
 const LEAGUES_STORAGE_KEY = 'rootmap_leagues';
+const HIDDEN_LEAGUES_KEY = 'rootmap_hidden_leagues';
+const FEED_SCOPE_KEY = 'rootmap_feed_scope';
+const TAB_TIP_KEY = 'rootmap_tab_tips_seen';
 const THEME_STORAGE_KEY = 'rootmap_theme';
+const TAB_TIPS = {
+  matchups: 'RootMap shows who to root for and against across the leagues on your board.',
+  'game-slate': 'Game Slate lines up this week’s NFL games with the players those leagues have in.',
+  'all-leagues': 'Matchups is this week’s scoreboard for the leagues you left checked.'
+};
+const FAMILY_LEAGUE_RE = /\b(jr\.?|junior|kids?|kid['’]s|family|youth)\b/i;
 const ALERT_PREFS_KEY = 'rootmap_gameday_alerts';
 const DEFAULT_ALERT_PREFS = {
   lineupRescue: true,
@@ -170,7 +181,7 @@ function looksLikeYahooTeamName(name, lg) {
   });
 }
 
-function getLeagueDisplayName(lg) {
+function platformLeagueTitle(lg) {
   const candidates = [lg?.leagueName, lg?.name];
   for (const candidate of candidates) {
     const name = String(candidate || '').trim();
@@ -179,11 +190,61 @@ function getLeagueDisplayName(lg) {
     if (looksLikeYahooTeamName(name, lg)) continue;
     return name;
   }
-  for (const candidate of candidates) {
-    const name = String(candidate || '').trim();
-    if (name && !isGenericYahooLeagueName(name) && !looksLikeYahooTeamName(name, lg)) return name;
-  }
   return 'Yahoo League';
+}
+
+function getLeagueDisplayName(lg) {
+  const custom = String(lg?.customLeagueName || lg?.displayName || '').trim();
+  if (custom) return custom;
+  return platformLeagueTitle(lg);
+}
+
+function isFamilyOrKidsLeague(league) {
+  if (!league) return false;
+  if (league.leagueGroup === 'personal') return false;
+  if (league.leagueGroup === 'family') return true;
+  const blob = [
+    league.leagueName,
+    league.name,
+    league.myTeamName,
+    league.teamName,
+    league.userTeam?.name
+  ].filter(Boolean).join(' ');
+  return FAMILY_LEAGUE_RE.test(blob);
+}
+
+function capInflatedWeeklyTotal(board, starterSum, starterCount) {
+  if (!(starterSum > 0) || board == null) return null;
+  const fullLineup = starterCount >= 6 && board > starterSum * 1.15 + 1;
+  const seasonSized = board > 400 && board > starterSum * 1.5;
+  if (fullLineup || seasonSized) return starterSum;
+  return null;
+}
+
+function loadHiddenLeagueIds() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(HIDDEN_LEAGUES_KEY) || '[]');
+    return new Set(Array.isArray(raw) ? raw.map(String) : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function loadFeedScope() {
+  try {
+    return localStorage.getItem(FEED_SCOPE_KEY) === 'family' ? 'family' : 'personal';
+  } catch {
+    return 'personal';
+  }
+}
+
+function loadSeenTips() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(TAB_TIP_KEY) || '{}');
+    return raw && typeof raw === 'object' ? raw : {};
+  } catch {
+    return {};
+  }
 }
 
 function getUserTeamName(lg) {
@@ -624,13 +685,17 @@ function normalizeLeague(lg, index = 0) {
   const myTeamName = platformOf({ platform }).includes('yahoo')
     ? (preferYahooLeagueName(lg.myTeamName, lg.userTeam?.name) || 'My Team')
     : (lg.myTeamName || lg.userTeam?.name || 'My Team');
-  const name = getLeagueDisplayName({ ...lg, myTeamName }) || `League ${index + 1}`;
+  const name = platformLeagueTitle({ ...lg, myTeamName }) || `League ${index + 1}`;
   const oppTeamName = getLeagueOppName(lg);
+  const customLeagueName = String(lg.customLeagueName || '').trim();
+  const displayName = customLeagueName || String(lg.displayName || '').trim();
   return {
     ...lg,
     id: lg.id || `lg_${Date.now()}_${index}`,
     name,
-    leagueName: preferYahooLeagueName(lg.leagueName, name),
+    leagueName: preferYahooLeagueName(lg.leagueName, name) || name,
+    customLeagueName,
+    displayName,
     myTeamName: isGenericYahooLeagueName(myTeamName) ? 'My Team' : myTeamName,
     teamName: preferYahooLeagueName(lg.teamName, myTeamName),
     oppTeamName,
@@ -708,7 +773,10 @@ function mergeSyncedLeague(existing, incoming) {
     myRank: incoming.myRank ?? existing.myRank ?? null,
     oppRank: incoming.oppRank ?? existing.oppRank ?? null,
     lineupWeek: incoming.lineupWeek ?? existing.lineupWeek,
-    lineupProjected: incoming.lineupProjected ?? existing.lineupProjected
+    lineupProjected: incoming.lineupProjected ?? existing.lineupProjected,
+    customLeagueName: existing.customLeagueName || incoming.customLeagueName || '',
+    displayName: existing.displayName || incoming.displayName || existing.customLeagueName || incoming.customLeagueName || '',
+    leagueGroup: existing.leagueGroup || incoming.leagueGroup || ''
   });
 }
 
@@ -759,7 +827,10 @@ function mergeYahooSyncedLeague(existing, incoming) {
         name: oppTeamName || incoming.oppTeam.name,
         logo: incoming.oppLogo || incoming.oppTeam.logo || existing.oppLogo || ''
       }
-      : existing.oppTeam
+      : existing.oppTeam,
+    customLeagueName: existing.customLeagueName || incoming.customLeagueName || '',
+    displayName: existing.displayName || incoming.displayName || existing.customLeagueName || incoming.customLeagueName || '',
+    leagueGroup: existing.leagueGroup || incoming.leagueGroup || ''
   });
 }
 
@@ -791,7 +862,7 @@ function loadStoredLeagues() {
   try {
     const raw = localStorage.getItem(LEAGUES_STORAGE_KEY);
     if (!raw) return [];
-    return leaguesFromJson(raw) || [];
+    return dedupeImportedLeagues(leaguesFromJson(raw) || []);
   } catch {
     return [];
   }
@@ -1323,6 +1394,10 @@ function hydrateLeagueForMatchups(league, games, liveScores, sleeperPlayers = nu
   const oppScoreRaw = finiteNumber(league.oppScore);
   const myProjRaw = finiteNumber(league.myProj ?? league.myProjected);
   const oppProjRaw = finiteNumber(league.oppProj ?? league.oppProjected);
+  const cappedMyScore = capInflatedWeeklyTotal(myScoreRaw, myStarterScore, portfolio.length);
+  const cappedOppScore = capInflatedWeeklyTotal(oppScoreRaw, oppStarterScore, threats.length);
+  const cappedMyProj = capInflatedWeeklyTotal(myProjRaw, myStarterProj, portfolio.length);
+  const cappedOppProj = capInflatedWeeklyTotal(oppProjRaw, oppStarterProj, threats.length);
   // Yahoo scoreboard totals win; do not re-sum from Sleeper-hydrated starter lines.
   const preferBoard = yahooLeague && !allowSleeperPoints;
 
@@ -1342,24 +1417,36 @@ function hydrateLeagueForMatchups(league, games, liveScores, sleeperPlayers = nu
     oppTeam: league.oppTeam
       ? { ...league.oppTeam, starters: threats }
       : league.oppTeam,
-    myScore: preferBoard
-      ? (myScoreRaw != null ? myScoreRaw : myStarterScore)
-      : ((myScoreRaw != null && myScoreRaw !== 0) ? myScoreRaw : myStarterScore),
-    oppScore: preferBoard
-      ? (oppScoreRaw != null ? oppScoreRaw : oppStarterScore)
-      : ((oppScoreRaw != null && oppScoreRaw !== 0) ? oppScoreRaw : oppStarterScore),
-    myProj: preferBoard
-      ? (myProjRaw != null ? myProjRaw : (myStarterProj || myProjRaw))
-      : ((myProjRaw != null && myProjRaw !== 0) ? myProjRaw : (myStarterProj || myProjRaw)),
-    oppProj: preferBoard
-      ? (oppProjRaw != null ? oppProjRaw : (oppStarterProj || oppProjRaw))
-      : ((oppProjRaw != null && oppProjRaw !== 0) ? oppProjRaw : (oppStarterProj || oppProjRaw)),
-    myProjected: preferBoard
-      ? (myProjRaw != null ? myProjRaw : (myStarterProj || myProjRaw))
-      : ((myProjRaw != null && myProjRaw !== 0) ? myProjRaw : (myStarterProj || myProjRaw)),
-    oppProjected: preferBoard
-      ? (oppProjRaw != null ? oppProjRaw : (oppStarterProj || oppProjRaw))
-      : ((oppProjRaw != null && oppProjRaw !== 0) ? oppProjRaw : (oppStarterProj || oppProjRaw)),
+    myScore: cappedMyScore != null
+      ? cappedMyScore
+      : (preferBoard
+        ? (myScoreRaw != null ? myScoreRaw : myStarterScore)
+        : ((myScoreRaw != null && myScoreRaw !== 0) ? myScoreRaw : myStarterScore)),
+    oppScore: cappedOppScore != null
+      ? cappedOppScore
+      : (preferBoard
+        ? (oppScoreRaw != null ? oppScoreRaw : oppStarterScore)
+        : ((oppScoreRaw != null && oppScoreRaw !== 0) ? oppScoreRaw : oppStarterScore)),
+    myProj: cappedMyProj != null
+      ? cappedMyProj
+      : (preferBoard
+        ? (myProjRaw != null ? myProjRaw : (myStarterProj || myProjRaw))
+        : ((myProjRaw != null && myProjRaw !== 0) ? myProjRaw : (myStarterProj || myProjRaw))),
+    oppProj: cappedOppProj != null
+      ? cappedOppProj
+      : (preferBoard
+        ? (oppProjRaw != null ? oppProjRaw : (oppStarterProj || oppProjRaw))
+        : ((oppProjRaw != null && oppProjRaw !== 0) ? oppProjRaw : (oppStarterProj || oppProjRaw))),
+    myProjected: cappedMyProj != null
+      ? cappedMyProj
+      : (preferBoard
+        ? (myProjRaw != null ? myProjRaw : (myStarterProj || myProjRaw))
+        : ((myProjRaw != null && myProjRaw !== 0) ? myProjRaw : (myStarterProj || myProjRaw))),
+    oppProjected: cappedOppProj != null
+      ? cappedOppProj
+      : (preferBoard
+        ? (oppProjRaw != null ? oppProjRaw : (oppStarterProj || oppProjRaw))
+        : ((oppProjRaw != null && oppProjRaw !== 0) ? oppProjRaw : (oppStarterProj || oppProjRaw))),
     myWinOdds: league.myWinOdds ?? league.userTeam?.winOdds ?? null,
     oppWinOdds: league.oppWinOdds ?? league.oppTeam?.winOdds ?? null,
     myLogo: league.myLogo || league.userTeam?.logo || '',
@@ -1399,14 +1486,15 @@ function liveScoreView(player) {
   };
 }
 
-/** Live / final only — never pre-game scheduled rows or zero-point stubs. */
+/** Live games only — never final, historical, or pre-game stubs. */
 function playerEligibleForLiveAlert(player) {
   if (!player) return false;
   const status = String(player.gameStatus || '').toUpperCase();
-  if (status === 'SCHEDULED' || status === 'UPCOMING' || status === 'PREGAME' || status === 'BYE') return false;
+  if (status === 'FINAL' || player.isFinal || status === 'BYE' || status === 'SCHEDULED' || status === 'UPCOMING' || status === 'PREGAME') {
+    return false;
+  }
   const live = Boolean(player.isLive || status === 'IN_PROGRESS' || clockIsLive(player.gameClock));
-  const finalGame = status === 'FINAL' || Boolean(player.isFinal);
-  if (!live && !finalGame) return false;
+  if (!live) return false;
   const actual = finiteNumber(player.actualPoints) ?? finiteNumber(player.points);
   return actual != null && actual > 0;
 }
@@ -2333,6 +2421,30 @@ function PlayerHeadshot({ name, team, size = 40, defense = false }) {
   );
 }
 
+function ImportEmptyState({ isLight, onImport }) {
+  return (
+    <div className={`rounded-2xl p-5 border text-center space-y-3 shadow-sm ${
+      isLight ? 'bg-white border-slate-200' : 'bg-slate-900 border-slate-800'
+    }`}>
+      <div className={`text-sm font-black ${isLight ? 'text-slate-900' : 'text-white'}`}>
+        Connect Yahoo, ESPN, or Sleeper
+      </div>
+      <p className={`text-xs leading-relaxed ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+        No leagues are on this phone yet. Import one to fill Matchups, Game Slate, and RootMap.
+      </p>
+      <button
+        type="button"
+        onClick={onImport}
+        className={`w-full min-h-11 rounded-xl border text-xs font-black ${
+          isLight ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-950 border-white'
+        }`}
+      >
+        + Import
+      </button>
+    </div>
+  );
+}
+
 export default function App() {
   const [theme, setTheme] = useState(() => {
     try {
@@ -2437,7 +2549,11 @@ export default function App() {
   const [headshotTick, setHeadshotTick] = useState(0);
   const [showLegend, setShowLegend] = useState(false);
   const [showLeagueFilter, setShowLeagueFilter] = useState(false);
-  const [hiddenLeagueIds, setHiddenLeagueIds] = useState(() => new Set());
+  const [hiddenLeagueIds, setHiddenLeagueIds] = useState(loadHiddenLeagueIds);
+  const [feedScope, setFeedScope] = useState(loadFeedScope);
+  const [seenTips, setSeenTips] = useState(loadSeenTips);
+  const [renamingLeagueId, setRenamingLeagueId] = useState(null);
+  const [renameDraft, setRenameDraft] = useState('');
   const [filterPos, setFilterPos] = useState({ top: 96, left: 12 });
   const [showSetupImport, setShowSetupImport] = useState(false);
   const [leagueBackupPaste, setLeagueBackupPaste] = useState('');
@@ -2649,8 +2765,10 @@ export default function App() {
       const next = [...prev];
       importedList.forEach((league) => {
         const normalized = normalizeLeague(league, next.length);
+        const incomingKey = canonicalLeagueIdentity(normalized);
         const idx = next.findIndex((item) => (
           item.id === normalized.id
+          || (incomingKey && canonicalLeagueIdentity(item) === incomingKey)
           || (normalized.yahooLeagueId && item.yahooLeagueId === normalized.yahooLeagueId && (
             !normalized.yahooTeamId || !item.yahooTeamId || item.yahooTeamId === normalized.yahooTeamId
           ))
@@ -2658,7 +2776,7 @@ export default function App() {
         if (idx >= 0) next[idx] = mergeYahooSyncedLeague(next[idx], normalized);
         else next.push(normalized);
       });
-      return next;
+      return dedupeImportedLeagues(next);
     });
     setView('matchups');
     setIsSyncing(false);
@@ -3119,6 +3237,22 @@ export default function App() {
   }, [leagues]);
 
   useEffect(() => {
+    try {
+      localStorage.setItem(HIDDEN_LEAGUES_KEY, JSON.stringify([...hiddenLeagueIds].map(String)));
+    } catch {
+      // preference storage is optional
+    }
+  }, [hiddenLeagueIds]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(FEED_SCOPE_KEY, feedScope === 'family' ? 'family' : 'personal');
+    } catch {
+      // preference storage is optional
+    }
+  }, [feedScope]);
+
+  useEffect(() => {
     if (!showLegend && !showLeagueFilter && !leaguePendingDelete && !showSetupImport && !showConnect && !showSleeper && !showEspn && !showYahooIngest && !showSortSheet && !showAlertSheet && !showWeekPicker && !showMobileSync && !jumpMenuOpen) return undefined;
     const onKey = (event) => {
       if (event.key !== 'Escape') return;
@@ -3176,7 +3310,7 @@ export default function App() {
     setLeagues((prev) => prev.filter((lg) => !drop.has(lg.id)));
     setHiddenLeagueIds((prev) => {
       const next = new Set(prev);
-      drop.forEach((id) => next.delete(id));
+      drop.forEach((id) => next.delete(String(id)));
       return next;
     });
     if (activeLeagueDrawer && drop.has(activeLeagueDrawer.id)) setActiveLeagueDrawer(null);
@@ -3216,12 +3350,29 @@ export default function App() {
   };
 
   const toggleLeagueVisibility = (leagueId) => {
+    const id = String(leagueId);
     setHiddenLeagueIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(leagueId)) next.delete(leagueId);
-      else next.add(leagueId);
+      const next = new Set([...prev].map(String));
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
       return next;
     });
+  };
+
+  const commitLeagueRename = (leagueId) => {
+    const custom = renameDraft.trim();
+    setLeagues((prev) => prev.map((league) => {
+      if (league.id !== leagueId) return league;
+      return { ...league, customLeagueName: custom, displayName: custom };
+    }));
+    setRenamingLeagueId(null);
+    setRenameDraft('');
+  };
+
+  const setLeagueGroup = (leagueId, group) => {
+    setLeagues((prev) => prev.map((league) => (
+      league.id === leagueId ? { ...league, leagueGroup: group } : league
+    )));
   };
 
   const chooseWeek = (week) => {
@@ -3510,8 +3661,7 @@ export default function App() {
         setSleeperError('Could not save these leagues on this device.');
         return;
       }
-      setLeagues(next);
-      setHiddenLeagueIds(new Set());
+      setLeagues(dedupeImportedLeagues(next));
       setView('matchups');
       closeConnect();
       setSyncStatus(`Synced ${normalized.length} Sleeper league${normalized.length === 1 ? '' : 's'} for Week ${sleeperWeek}.`);
@@ -3660,8 +3810,7 @@ export default function App() {
         leagueId: espnLeagueId.trim(),
         teamId: String(espnTeamId || '')
       });
-      setLeagues(next);
-      setHiddenLeagueIds(new Set());
+      setLeagues(dedupeImportedLeagues(next));
       setView('matchups');
       closeEspnConnect();
       setSyncStatus(`Synced ${imported.name} from ESPN for Week ${espnWeek}.`);
@@ -3739,15 +3888,38 @@ export default function App() {
   };
 
   const visibleLeagues = useMemo(
-    () => leagues.filter((lg) => !hiddenLeagueIds.has(lg.id)),
+    () => leagues.filter((lg) => !hiddenLeagueIds.has(String(lg.id))),
     [leagues, hiddenLeagueIds]
   );
 
+  const hasFamilyLeagues = useMemo(
+    () => leagues.some((lg) => isFamilyOrKidsLeague(lg)),
+    [leagues]
+  );
+
+  const feedLeagues = useMemo(() => {
+    const family = visibleLeagues.filter((lg) => isFamilyOrKidsLeague(lg));
+    const personal = visibleLeagues.filter((lg) => !isFamilyOrKidsLeague(lg));
+    return feedScope === 'family' ? family : personal;
+  }, [visibleLeagues, feedScope]);
+
   const hiddenCount = leagues.length - visibleLeagues.length;
 
+  const activeSlateWeek = getActiveSlate()?.week || FALLBACK_NFL_WEEK;
+  const alertsAreCurrent = Number(selectedWeek) === Number(activeSlateWeek);
+
+  const alertLeagues = useMemo(() => {
+    if (!alertsAreCurrent) return [];
+    return feedLeagues.filter((league) => {
+      const lineupWeek = Number(league?.lineupWeek);
+      if (!Number.isFinite(lineupWeek) || lineupWeek <= 0) return true;
+      return lineupWeek === Number(selectedWeek);
+    });
+  }, [alertsAreCurrent, feedLeagues, selectedWeek]);
+
   const playerMasterIndex = useMemo(
-    () => buildPlayerMasterIndex(visibleLeagues, games, null, liveScores, sleeperPlayers),
-    [visibleLeagues, games, liveScores, sleeperPlayers]
+    () => buildPlayerMasterIndex(feedLeagues, games, null, liveScores, sleeperPlayers),
+    [feedLeagues, games, liveScores, sleeperPlayers]
   );
 
   const crossFirePointsRef = useRef(null);
@@ -3774,21 +3946,26 @@ export default function App() {
 
   useEffect(() => {
     if (!zeroProjAlerts || !liveScores) return undefined;
-    const found = checkZeroProjectionStarters(leagues, { games, liveScores });
+    if (!alertsAreCurrent) return undefined;
+    const found = checkZeroProjectionStarters(alertLeagues, { games, liveScores });
     const delayMs = alertPrefs.spoilerFreeDelay ? 45000 : 0;
     const timer = window.setTimeout(() => {
-      notifyZeroProjectionAlerts(found);
+      notifyZeroProjectionAlerts(found, { week: selectedWeek, phase: 'upcoming' });
     }, delayMs);
     return () => window.clearTimeout(timer);
-  }, [zeroProjAlerts, alertPrefs.spoilerFreeDelay, leagues, games, liveScores]);
+  }, [zeroProjAlerts, alertPrefs.spoilerFreeDelay, alertLeagues, alertsAreCurrent, selectedWeek, games, liveScores]);
 
   const [finalSlateNailbiters, setFinalSlateNailbiters] = useState(() => new Map());
 
   useEffect(() => {
     let cancelled = false;
+    if (!alertsAreCurrent) {
+      setFinalSlateNailbiters(new Map());
+      return undefined;
+    }
     const now = new Date();
     const byId = new Map();
-    visibleLeagues.forEach((league) => {
+    alertLeagues.forEach((league) => {
       const matchup = hydrateMatchupKickoffs({
         id: league.id,
         name: getLeagueDisplayName(league),
@@ -3814,7 +3991,7 @@ export default function App() {
         console.warn('Final-slate nailbiter schedule failed', err);
       });
       syncLineupLockNotifications({
-        leagues: visibleLeagues,
+        leagues: alertLeagues,
         games,
         week: selectedWeek,
         enabled: Boolean(alertPrefs.lineupLock)
@@ -3826,7 +4003,7 @@ export default function App() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [visibleLeagues, games, liveScores, alertPrefs.finalSlateNailbiter, alertPrefs.lineupLock, alertPrefs.spoilerFreeDelay, selectedWeek]);
+  }, [alertLeagues, alertsAreCurrent, games, liveScores, alertPrefs.finalSlateNailbiter, alertPrefs.lineupLock, alertPrefs.spoilerFreeDelay, selectedWeek]);
 
   useEffect(() => subscribeInAppBanners((entry) => {
     // Single compact floating toast — never a multi-card stack above the board.
@@ -3840,21 +4017,24 @@ export default function App() {
   }), []);
 
   useEffect(() => {
+    if (!alertsAreCurrent) return undefined;
     const delayMs = alertPrefs.spoilerFreeDelay ? 45000 : 0;
     const timer = window.setTimeout(() => {
       playerMasterIndex.forEach((player) => {
         if (!player || !(player.myShares > 0)) return;
-        // Only live/final current-slate games with real points — never pre-game stubs.
+        // Live active-week games only — never final or historical-week rows.
         if (!playerEligibleForLiveAlert(player)) return;
         const leagueName = player.myLeagues?.[0]?.league || 'your league';
         const alertLeague = (!isGenericYahooLeagueName(leagueName) && !/^your league$/i.test(leagueName))
           ? leagueName
-          : (visibleLeagues.map(getLeagueDisplayName).find((name) => name && !isGenericYahooLeagueName(name)) || leagueName);
+          : (feedLeagues.map(getLeagueDisplayName).find((name) => name && !isGenericYahooLeagueName(name)) || leagueName);
         if (alertPrefs.redZoneTv && player.inRedZone) {
           notifyRedZoneAlert({
             id: `rz|${player.cardKey || player.name}|${alertLeague}|${selectedWeek}`,
             playerName: player.name,
-            leagueName: alertLeague
+            leagueName: alertLeague,
+            week: selectedWeek,
+            phase: 'live'
           });
         }
         const delta = boomDelta(player);
@@ -3863,13 +4043,15 @@ export default function App() {
             id: `out|${player.cardKey || player.name}|${alertLeague}|${selectedWeek}`,
             playerName: player.name,
             leagueName: alertLeague,
-            delta
+            delta,
+            week: selectedWeek,
+            phase: 'live'
           });
         }
       });
     }, delayMs);
     return () => window.clearTimeout(timer);
-  }, [playerMasterIndex, alertPrefs.redZoneTv, alertPrefs.spoilerFreeDelay, selectedWeek, visibleLeagues]);
+  }, [playerMasterIndex, alertPrefs.redZoneTv, alertPrefs.spoilerFreeDelay, selectedWeek, alertsAreCurrent, feedLeagues]);
 
   useEffect(() => {
     const next = new Map();
@@ -3881,7 +4063,7 @@ export default function App() {
     });
     const previous = crossFirePointsRef.current;
     crossFirePointsRef.current = next;
-    if (!previous || !Capacitor.isNativePlatform()) return;
+    if (!previous || !alertsAreCurrent) return;
     let best = null;
     next.forEach((entry, key) => {
       const before = previous.get(key);
@@ -3892,13 +4074,17 @@ export default function App() {
     if (!best) return;
     const mine = best.player.myLeagues?.[0]?.league || 'your league';
     const opp = best.player.oppLeagues?.[0]?.league || 'the other league';
+    if (best.player.gameStatus === 'FINAL' || best.player.isFinal) return;
+    if (!(best.player.isLive || best.player.gameStatus === 'IN_PROGRESS')) return;
     notifyCrossFire({
       name: best.player.name,
       delta: best.delta.toFixed(1),
       mine,
-      opp
+      opp,
+      week: selectedWeek,
+      phase: 'live'
     });
-  }, [playerMasterIndex]);
+  }, [playerMasterIndex, alertsAreCurrent, selectedWeek]);
 
   const drawerPlayer = selectedPlayer
     ? (findMasterCard(playerMasterIndex, selectedPlayer) || selectedPlayer)
@@ -3939,7 +4125,7 @@ export default function App() {
   }, [games]);
 
   const sortedLeagues = useMemo(() => {
-    const hydrated = leagues.map((league) => (
+    const hydrated = feedLeagues.map((league) => (
       hydrateLeagueForMatchups(league, games, liveScores, sleeperPlayers, playerMasterIndex)
     ));
     hydrated.sort((a, b) => {
@@ -3958,7 +4144,7 @@ export default function App() {
       return getUserTeamName(a).localeCompare(getUserTeamName(b));
     });
     return hydrated;
-  }, [leagues, leagueSort, games, liveScores, sleeperPlayers, playerMasterIndex]);
+  }, [feedLeagues, leagueSort, games, liveScores, sleeperPlayers, playerMasterIndex]);
 
   const getGamePlayers = (game) => {
     if (!game) return [];
@@ -4514,6 +4700,36 @@ export default function App() {
         className={`max-w-md mx-auto p-3 space-y-3 rootmap-view-track ${viewSlideClass} ${swipeDragging ? 'is-dragging' : ''}`}
         style={swipeDragX ? { transform: `translate3d(${swipeDragX}px, 0, 0)` } : undefined}
       >
+        {TAB_TIPS[view] && !seenTips[view] && (
+          <div
+            role="note"
+            className={`flex items-center gap-2 rounded-xl border px-3 py-2 ${
+              isLight ? 'bg-amber-50 border-amber-200 text-amber-950' : 'bg-amber-950/40 border-amber-700 text-amber-50'
+            }`}
+          >
+            <p className="min-w-0 flex-1 text-[11px] font-semibold leading-snug">{TAB_TIPS[view]}</p>
+            <button
+              type="button"
+              onClick={() => {
+                setSeenTips((prev) => {
+                  const next = { ...prev, [view]: true };
+                  try {
+                    localStorage.setItem(TAB_TIP_KEY, JSON.stringify(next));
+                  } catch {
+                    // preference storage is optional
+                  }
+                  return next;
+                });
+              }}
+              className={`shrink-0 text-[10px] font-black uppercase tracking-wide ${
+                isLight ? 'text-amber-800' : 'text-amber-200'
+              }`}
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
+
         {syncStatus && (
           isYahooMatchupHint(syncStatus) ? (
             <button
@@ -4540,23 +4756,7 @@ export default function App() {
 
         {/* VIEW 1: MATCHUPS */}
         {view === 'matchups' && leagues.length === 0 && (
-          <div className={`rounded-2xl p-5 border text-center space-y-3 shadow-sm ${
-            isLight ? 'bg-white border-slate-200' : 'bg-slate-900 border-slate-800'
-          }`}>
-            <div className={`text-sm font-black ${isLight ? 'text-slate-900' : 'text-white'}`}>
-              Connect a league on this phone
-            </div>
-            <p className={`text-xs leading-relaxed ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
-              Yahoo sign-in brings every NFL team on that account onto this phone. Each phone keeps its own leagues.
-            </p>
-            <button
-              type="button"
-              onClick={() => selectConnectTab('yahoo')}
-              className="px-3.5 py-2 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-xs font-black shadow-lg transition"
-            >
-              + Connect / Import League
-            </button>
-          </div>
+          <ImportEmptyState isLight={isLight} onImport={() => selectConnectTab('yahoo')} />
         )}
         {view === 'matchups' && leagues.length > 0 && (
           <div className="space-y-3">
@@ -4566,8 +4766,10 @@ export default function App() {
               <div className={`rounded-2xl px-3 py-4 text-center text-xs font-semibold border ${
                 isLight ? 'bg-white border-slate-200 text-slate-500' : 'bg-slate-900 border-slate-800 text-slate-400'
               }`}>
-                {visibleLeagues.length === 0
-                  ? 'Every league is filtered out. Turn one back on in Filter Leagues. Saved rosters stay on this device.'
+                {feedLeagues.length === 0
+                  ? (hasFamilyLeagues && feedScope === 'personal'
+                    ? 'Personal leagues are hidden. Open Family on Matchups, or turn a league back on in Manage Leagues.'
+                    : 'Every league on this board is unchecked. Turn one back on in Manage Leagues.')
                   : (boardFilters.liveOnly || boardFilters.redZoneOnly || boardFilters.hideFinal || boardFilters.outperformers || boardFilters.conflicted || boardFilters.doubleDown)
                     ? 'No starters match this filter.'
                     : 'No starters in this view.'}
@@ -4606,7 +4808,10 @@ export default function App() {
         )}
 
         {/* VIEW 2: GAME SLATE */}
-        {view === 'game-slate' && (
+        {view === 'game-slate' && leagues.length === 0 && (
+          <ImportEmptyState isLight={isLight} onImport={() => selectConnectTab('yahoo')} />
+        )}
+        {view === 'game-slate' && leagues.length > 0 && (
           <div className="space-y-3">
             <div className={`h-11 rounded-xl border px-2.5 flex items-center justify-between gap-2 shadow-sm ${
               isLight ? 'bg-white border-slate-200' : 'bg-slate-900 border-slate-800'
@@ -4802,7 +5007,7 @@ export default function App() {
         {/* VIEW 3: MATCHUPS */}
         {view === 'all-leagues' && (
           <div className="space-y-3">
-            {leagues.length > 0 && (
+            {sortedLeagues.length > 0 && (
               <div className="-mx-1 overflow-x-auto">
                 <div className="flex items-center gap-1.5 min-w-max px-1 pb-0.5">
                   {sortedLeagues.map((lg) => {
@@ -4830,10 +5035,35 @@ export default function App() {
               </div>
             )}
 
-            <div className="flex items-center gap-1.5 min-w-0">
+            <div className="flex flex-wrap items-center gap-1.5 min-w-0">
               <div className={`shrink-0 text-[11px] font-black uppercase tracking-wider ${isLight ? 'text-slate-700' : 'text-slate-300'}`}>
-                Matchups ({leagues.length})
+                Matchups ({sortedLeagues.length})
               </div>
+              {hasFamilyLeagues && (
+                <div className={`flex shrink-0 rounded-full border p-0.5 ${isLight ? 'border-slate-200 bg-white' : 'border-slate-700 bg-slate-950'}`} role="group" aria-label="League feed">
+                  {[
+                    ['personal', 'Personal'],
+                    ['family', 'Family']
+                  ].map(([id, label]) => (
+                    <button
+                      key={id}
+                      type="button"
+                      aria-pressed={feedScope === id}
+                      onClick={() => {
+                        setFeedScope(id);
+                        tapHaptic();
+                      }}
+                      className={`h-6 px-2 rounded-full text-[9px] font-black uppercase tracking-wide ${
+                        feedScope === id
+                          ? isLight ? 'bg-slate-900 text-white' : 'bg-white text-slate-950'
+                          : isLight ? 'text-slate-500' : 'text-slate-400'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              )}
               <label className="min-w-0 flex-1 flex items-center justify-end gap-1">
                 <span className={`shrink-0 text-[9px] font-black uppercase tracking-wider ${isLight ? 'text-slate-400' : 'text-slate-500'}`}>
                   Sort by
@@ -4877,38 +5107,92 @@ export default function App() {
                     <div
                       role="listbox"
                       aria-label="Manage leagues"
-                      className={`absolute right-0 top-full z-20 mt-1 w-56 max-h-64 overflow-y-auto rounded-xl border shadow-xl p-1 ${
+                      className={`absolute right-0 top-full z-20 mt-1 w-72 max-h-80 overflow-y-auto rounded-xl border shadow-xl p-1 ${
                         isLight ? 'bg-white border-slate-200' : 'bg-slate-950 border-slate-700'
                       }`}
                     >
                       {leagues.map((lg) => {
                         const leagueName = leagueFilterLabel(lg, leagues);
-                        const onBoard = !hiddenLeagueIds.has(lg.id);
+                        const onBoard = !hiddenLeagueIds.has(String(lg.id));
+                        const family = isFamilyOrKidsLeague(lg);
                         return (
-                          <div key={lg.id} className="flex items-center gap-1 rounded-lg">
-                            <label className="flex items-center gap-2 min-w-0 flex-1 px-2 py-1.5 cursor-pointer">
-                              <input
-                                type="checkbox"
-                                checked={onBoard}
-                                onChange={() => toggleLeagueVisibility(lg.id)}
-                                aria-label={`${onBoard ? 'Hide' : 'Show'} ${leagueName} on the board`}
-                                className="accent-emerald-500 w-3.5 h-3.5 shrink-0"
-                              />
-                              <span className={`truncate text-xs font-bold ${isLight ? 'text-slate-800' : 'text-slate-100'}`}>
-                                {leagueName}
-                              </span>
-                            </label>
-                            <button
-                              type="button"
-                              aria-label={`Remove ${leagueName}`}
-                              title={`Remove ${leagueName}`}
-                              onClick={() => setLeaguePendingDelete(lg)}
-                              className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${
-                                isLight ? 'text-rose-600 hover:bg-rose-50' : 'text-rose-400 hover:bg-rose-950/70'
-                              }`}
-                            >
-                              <TrashIcon />
-                            </button>
+                          <div key={lg.id} className="rounded-lg">
+                            <div className="flex items-center gap-1">
+                              <label className="flex items-center gap-2 min-w-0 flex-1 px-2 py-1.5 cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  checked={onBoard}
+                                  onChange={() => toggleLeagueVisibility(lg.id)}
+                                  aria-label={`${onBoard ? 'Hide' : 'Show'} ${leagueName} on the board`}
+                                  className="accent-emerald-500 w-3.5 h-3.5 shrink-0"
+                                />
+                                <span className="min-w-0">
+                                  <span className={`block truncate text-xs font-bold ${isLight ? 'text-slate-800' : 'text-slate-100'}`}>
+                                    {leagueName}
+                                  </span>
+                                  {family && (
+                                    <span className={`block text-[9px] font-black uppercase tracking-wide ${isLight ? 'text-amber-700' : 'text-amber-300'}`}>
+                                      Family
+                                    </span>
+                                  )}
+                                </span>
+                              </label>
+                              <button
+                                type="button"
+                                aria-label={`Rename ${leagueName}`}
+                                title={`Rename ${leagueName}`}
+                                onClick={() => {
+                                  setRenamingLeagueId(lg.id);
+                                  setRenameDraft(lg.customLeagueName || lg.displayName || platformLeagueTitle(lg));
+                                }}
+                                className={`w-7 h-7 rounded-lg text-[11px] font-black shrink-0 ${
+                                  isLight ? 'text-slate-500 hover:bg-slate-100' : 'text-slate-300 hover:bg-slate-800'
+                                }`}
+                              >
+                                Aa
+                              </button>
+                              <button
+                                type="button"
+                                aria-label={`Remove ${leagueName}`}
+                                title={`Remove ${leagueName}`}
+                                onClick={() => setLeaguePendingDelete(lg)}
+                                className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${
+                                  isLight ? 'text-rose-600 hover:bg-rose-50' : 'text-rose-400 hover:bg-rose-950/70'
+                                }`}
+                              >
+                                <TrashIcon />
+                              </button>
+                            </div>
+                            <div className="px-2 pb-1 flex items-center gap-1">
+                              <button
+                                type="button"
+                                onClick={() => setLeagueGroup(lg.id, family ? 'personal' : 'family')}
+                                className={`text-[9px] font-black uppercase tracking-wide ${isLight ? 'text-slate-500' : 'text-slate-400'}`}
+                              >
+                                {family ? 'Move to personal' : 'Move to family'}
+                              </button>
+                            </div>
+                            {renamingLeagueId === lg.id && (
+                              <form
+                                className="px-2 pb-2 flex gap-1"
+                                onSubmit={(event) => {
+                                  event.preventDefault();
+                                  commitLeagueRename(lg.id);
+                                }}
+                              >
+                                <input
+                                  value={renameDraft}
+                                  onChange={(event) => setRenameDraft(event.target.value)}
+                                  aria-label={`Custom name for ${leagueName}`}
+                                  className={`min-w-0 flex-1 rounded-lg border px-2 py-1 text-[11px] font-bold ${
+                                    isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-slate-950 border-slate-700 text-slate-100'
+                                  }`}
+                                />
+                                <button type="submit" className="rounded-lg bg-emerald-600 px-2 text-[10px] font-black text-white">
+                                  Save
+                                </button>
+                              </form>
+                            )}
                           </div>
                         );
                       })}
@@ -4919,21 +5203,15 @@ export default function App() {
             </div>
 
             {leagues.length === 0 && (
-              <div className={`rounded-2xl p-5 border text-center space-y-3 shadow-sm ${
-                isLight ? 'bg-white border-slate-200' : 'bg-slate-900 border-slate-800'
+              <ImportEmptyState isLight={isLight} onImport={() => selectConnectTab('yahoo')} />
+            )}
+            {leagues.length > 0 && sortedLeagues.length === 0 && (
+              <div className={`rounded-2xl px-3 py-4 text-center text-xs font-semibold border ${
+                isLight ? 'bg-white border-slate-200 text-slate-500' : 'bg-slate-900 border-slate-800 text-slate-400'
               }`}>
-                <div className={`text-sm font-black ${isLight ? 'text-slate-900' : 'text-white'}`}>
-                  Connect a Yahoo, Sleeper, or ESPN league
-                </div>
-                <button
-                  type="button"
-                  onClick={() => selectConnectTab('yahoo')}
-                  className={`w-full min-h-11 rounded-xl border text-xs font-black ${
-                    isLight ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-950 border-white'
-                  }`}
-                >
-                  + Import League
-                </button>
+                {feedScope === 'personal' && hasFamilyLeagues
+                  ? 'No personal matchups. Switch to Family or check a league in Manage Leagues.'
+                  : 'No matchups on this board. Check a league in Manage Leagues.'}
               </div>
             )}
 
@@ -4951,8 +5229,6 @@ export default function App() {
                 onClick={() => setActiveLeagueDrawer(lg)}
                 className={`rounded-3xl p-4 space-y-3 cursor-pointer border shadow-sm transition ${
                   flashGameId === lg.id ? 'rootmap-game-flash' : ''
-                } ${
-                  hiddenLeagueIds.has(lg.id) ? 'opacity-60' : ''
                 } ${
                   nailbiter
                     ? 'rootmap-nailbiter border-amber-400'
@@ -4991,12 +5267,8 @@ export default function App() {
                   isLight ? 'border-slate-100 text-slate-500' : 'border-white/10 text-slate-400'
                 }`}>
                   <span>{getLeaguePortfolio(lg).length} starters</span>
-                  <span className={`font-bold ${
-                    hiddenLeagueIds.has(lg.id)
-                      ? isLight ? 'text-slate-400' : 'text-slate-500'
-                      : isLight ? 'text-emerald-700' : 'text-emerald-400'
-                  }`}>
-                    {hiddenLeagueIds.has(lg.id) ? 'Off the board' : ahead ? 'Winning' : behind ? 'Trailing' : 'Tied'}
+                  <span className={`font-bold ${isLight ? 'text-emerald-700' : 'text-emerald-400'}`}>
+                    {ahead ? 'Winning' : behind ? 'Trailing' : 'Tied'}
                   </span>
                 </div>
               </div>
@@ -5790,7 +6062,7 @@ export default function App() {
                 </p>
               )}
               {leagues.map((lg) => {
-                const checked = !hiddenLeagueIds.has(lg.id);
+                const checked = !hiddenLeagueIds.has(String(lg.id));
                 const leagueName = leagueFilterLabel(lg, leagues);
                 return (
                   <div

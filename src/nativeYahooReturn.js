@@ -1,6 +1,7 @@
 import { App } from '@capacitor/app';
 import { Browser } from '@capacitor/browser';
 import {
+  dedupeImportedLeagues,
   isGenericYahooLeagueName,
   preferYahooLeagueName,
   preferYahooLeagueOverTeam
@@ -26,7 +27,10 @@ function mergeOne(prev, next) {
     name,
     leagueName: name,
     teamName,
-    myTeamName: teamName || 'My Team'
+    myTeamName: teamName || 'My Team',
+    customLeagueName: prev.customLeagueName || next.customLeagueName || '',
+    displayName: prev.displayName || next.displayName || prev.customLeagueName || next.customLeagueName || '',
+    leagueGroup: prev.leagueGroup || next.leagueGroup || ''
   };
 }
 
@@ -59,7 +63,7 @@ function mergeLeagues(incoming) {
       }
     });
   });
-  localStorage.setItem(LEAGUES_KEY, JSON.stringify([...byId.values()]));
+  localStorage.setItem(LEAGUES_KEY, JSON.stringify(dedupeImportedLeagues([...byId.values()])));
 }
 
 App.addListener('appUrlOpen', async (event) => {

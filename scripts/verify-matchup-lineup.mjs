@@ -300,4 +300,142 @@ assert(mappedSleeper.oppRecord?.wins === 2, 'opponent record');
 assert(mappedSleeper.myScore === 0, 'pregame sleeper score');
 assert(mappedSleeper.myProj > 0, 'sleeper proj from starters');
 
+// Empty starter slots ("0") must not shift later players or bleed starters_points.
+const gapped = mapSleeperLeague({
+  league: {
+    id: '1000',
+    name: 'IDP FLEX',
+    rosterPositions: ['QB', 'RB', 'RB', 'WR', 'FLEX', 'FLEX', 'LB', 'DL', 'BN'],
+    scoringSettings: { rec: 0.5 }
+  },
+  userId: 'u1',
+  week: 11,
+  players: {
+    1: { full_name: 'QB One', position: 'QB', team: 'KC' },
+    2: { full_name: 'RB One', position: 'RB', team: 'SF' },
+    3: { full_name: 'RB Two', position: 'RB', team: 'PHI' },
+    4: { full_name: 'WR One', position: 'WR', team: 'CIN' },
+    5: { full_name: 'Flex One', position: 'WR', team: 'DAL' },
+    6: { full_name: 'Flex Two', position: 'RB', team: 'DET' },
+    7: { full_name: 'LB One', position: 'LB', team: 'NYJ' },
+    8: { full_name: 'DL One', position: 'DL', team: 'BAL' },
+    9: { full_name: 'Bench Back', position: 'RB', team: 'GB' }
+  },
+  weekStats: {},
+  weekProjections: {
+    1: { pts_half_ppr: 18 },
+    2: { pts_half_ppr: 12 },
+    3: { pts_half_ppr: 9 },
+    4: { pts_half_ppr: 11 },
+    5: { pts_half_ppr: 10 },
+    6: { pts_half_ppr: 8 },
+    7: { pts_half_ppr: 6 },
+    8: { pts_half_ppr: 5 },
+    9: { pts_half_ppr: 4 }
+  },
+  rosters: [{
+    roster_id: 1,
+    owner_id: 'u1',
+    starters: ['1', '0', '3', '4', '5', '6', '7', '8'],
+    players: ['1', '2', '3', '4', '5', '6', '7', '8', '9'],
+    settings: { wins: 1, losses: 0, ties: 0, fpts: 10 }
+  }],
+  users: [{ user_id: 'u1', display_name: 'me', metadata: { team_name: 'Mine' } }],
+  matchups: [{
+    roster_id: 1,
+    matchup_id: 1,
+    starters: ['1', '0', '3', '4', '5', '6', '7', '8'],
+    starters_points: [10, 99, 8, 4, 3, 7, 2, 1],
+    players_points: { 1: 10, 3: 8, 4: 4, 5: 3, 6: 7, 7: 2, 8: 1, 9: 55 },
+    points: 35
+  }]
+});
+
+const byName = Object.fromEntries(gapped.portfolio.map((player) => [player.name, player]));
+assert(byName['WR One']?.slot === 'WR', `WR slot shifted to ${byName['WR One']?.slot}`);
+assert(byName['WR One']?.lineupIndex === 3, 'WR kept its roster index');
+assert(byName['RB Two']?.lineupIndex === 2, 'RB stayed in the second RB slot');
+assert(byName['RB Two']?.actualPoints === 8, `RB points bled to ${byName['RB Two']?.actualPoints}`);
+assert(byName['LB One']?.slot === 'LB' && byName['DL One']?.slot === 'DL', 'IDP labels stayed put');
+assert(byName['Flex One']?.slot === 'FLEX' && byName['Flex Two']?.slot === 'FLEX', 'both FLEX slots kept');
+assert(!gapped.portfolio.some((player) => player.name === 'Bench Back' || player.name === 'RB One'), 'bench stayed off the starter list');
+assert(gapped.bench.some((player) => player.name === 'Bench Back'), 'bench player saved');
+assert(!gapped.portfolio.some((player) => player.actualPoints === 99 || player.actualPoints === 55), 'hole and bench points did not bleed');
+assert(gapped.myScore === 35, `week score ${gapped.myScore}`);
+assert(Math.abs(gapped.myProj - 67) < 0.01, `starter proj only ${gapped.myProj}`);
+const gappedRows = pairStartersBySlot(gapped.portfolio, [], gapped.rosterPositions);
+assert(gappedRows.find((row) => row.mine?.name === 'LB One')?.slot === 'LB', 'LB row did not slide');
+assert(gappedRows.filter((row) => row.slot === 'FLEX').length === 2, 'two FLEX rows');
+
+// ESPN must not adopt a season total or a bench line as the weekly score.
+const seasonStats = (id, name, actual, proj) => ({
+  lineupSlotId: id,
+  playerId: id,
+  playerPoolEntry: {
+    appliedStatTotal: 900,
+    player: {
+      id,
+      fullName: name,
+      defaultPositionId: 2,
+      proTeamId: 14,
+      stats: [
+        { statSourceId: 0, scoringPeriodId: 11, statSplitTypeId: 0, appliedStatTotal: 400 },
+        { statSourceId: 0, scoringPeriodId: 11, statSplitTypeId: 1, appliedStatTotal: actual },
+        { statSourceId: 1, scoringPeriodId: 11, statSplitTypeId: 1, appliedStatTotal: proj },
+        { statSourceId: 0, scoringPeriodId: 0, statSplitTypeId: 0, appliedStatTotal: 900 }
+      ]
+    }
+  }
+});
+const inflated = mapEspnLeague({
+  league: {
+    settings: {
+      name: 'Inflated',
+      rosterSettings: { lineupSlotCounts: { 0: 1, 2: 2, 4: 2, 6: 1, 23: 2, 16: 1, 17: 1, 20: 4 } }
+    },
+    teams: [
+      { id: 1, location: 'Mine', nickname: 'Team', points: 1400.5, record: { overall: { wins: 8, losses: 2, ties: 0 } }, roster: { entries: [] } },
+      { id: 2, location: 'Opp', nickname: 'Side', record: { overall: { wins: 4, losses: 6, ties: 0 } }, roster: { entries: [] } }
+    ],
+    schedule: [{
+      matchupPeriodId: 11,
+      home: {
+        teamId: 1,
+        totalPoints: 1400.5,
+        totalPointsLive: 1400.5,
+        totalProjectedPointsLive: 1600,
+        rosterForCurrentScoringPeriod: {
+          appliedStatTotal: 1500,
+          entries: [
+            seasonStats(1, 'Starter A', 10, 11),
+            seasonStats(2, 'Starter B', 10, 11),
+            seasonStats(3, 'Starter C', 10, 11),
+            seasonStats(4, 'Starter D', 10, 11),
+            seasonStats(5, 'Starter E', 10, 11),
+            seasonStats(6, 'Starter F', 10, 11),
+            seasonStats(7, 'Starter G', 10, 11),
+            seasonStats(8, 'Starter H', 10, 11),
+            { ...seasonStats(9, 'Bench I', 40, 40), lineupSlotId: 20 }
+          ]
+        }
+      },
+      away: {
+        teamId: 2,
+        totalPoints: 0,
+        totalPointsLive: 0,
+        totalProjectedPointsLive: 0,
+        rosterForCurrentScoringPeriod: { entries: [] }
+      }
+    }]
+  },
+  leagueId: '999',
+  teamId: 1,
+  week: 11,
+  season: 2026
+});
+assert(inflated.myScore === 80, `weekly actuals only, got ${inflated.myScore}`);
+assert(Math.abs(inflated.myProj - 88) < 0.01, `weekly starter proj only, got ${inflated.myProj}`);
+assert(inflated.bench.some((player) => player.name === 'Bench I'), 'bench kept off the score');
+assert(!inflated.portfolio.some((player) => player.name === 'Bench I'), 'bench is not a starter');
+
 console.log('verify-matchup-lineup: ok');

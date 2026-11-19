@@ -2,6 +2,7 @@ import { registerPlugin } from '@capacitor/core';
 import { resolveNflTeam } from './leagueParser';
 import { canonTeamCode, displayPlayerPosition } from './playerIdentity';
 import { cleanYahooPlayerName, parseYahooMatchupText } from './yahooPaste';
+import { isGenericYahooLeagueName } from './yahooSync';
 
 export const YahooLogin = registerPlugin('YahooLogin');
 
@@ -110,18 +111,51 @@ export function discoverYahooLeagues(result) {
   const fromArray = rows
     .map((row) => yahooIdentity(row))
     .filter((identity) => identity.leagueId && identity.matchupUrl);
-  if (fromArray.length) {
-    const seen = new Set();
-    return fromArray.filter((identity) => {
-      const key = `${identity.leagueId}:${identity.teamId || ''}`;
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
+  const source = fromArray.length
+    ? fromArray
+    : (() => {
+      const single = yahooIdentity(result);
+      return single.leagueId && single.matchupUrl ? [single] : [];
+    })();
+  const byKey = new Map();
+  source.forEach((identity) => {
+    const leagueName = isGenericYahooLeagueName(identity.leagueName) ? '' : identity.leagueName;
+    const cleaned = { ...identity, leagueName };
+    const key = discoverKey(cleaned);
+    if (!key) return;
+    const prev = byKey.get(key);
+    if (!prev) {
+      byKey.set(key, cleaned);
+      return;
+    }
+    byKey.set(key, {
+      ...prev,
+      teamId: prev.teamId || cleaned.teamId,
+      matchupUrl: prev.matchupUrl || cleaned.matchupUrl,
+      leagueName: prev.leagueName || cleaned.leagueName,
+      teamName: prev.teamName || cleaned.teamName
     });
-  }
-  const single = yahooIdentity(result);
-  if (single.leagueId && single.matchupUrl) return [single];
-  return [];
+  });
+  const merged = new Map();
+  byKey.forEach((identity) => {
+    const leagueId = (String(identity.leagueId || '').match(/(\d+)\s*$/) || [])[1] || '';
+    const teamId = (String(identity.teamId || '').match(/(\d+)\s*$/) || [])[1] || '';
+    const teamName = String(identity.teamName || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+    const strong = `${leagueId}:${teamId || teamName}`;
+    const prev = merged.get(strong);
+    if (!prev) {
+      merged.set(strong, identity);
+      return;
+    }
+    merged.set(strong, {
+      ...prev,
+      teamId: prev.teamId || identity.teamId,
+      leagueName: prev.leagueName || identity.leagueName,
+      teamName: prev.teamName || identity.teamName,
+      matchupUrl: prev.matchupUrl || identity.matchupUrl
+    });
+  });
+  return [...merged.values()];
 }
 
 function htmlToMatchupText(html) {
@@ -160,8 +194,18 @@ function rankFrom(value) {
 
 function usableName(value, fallback) {
   const text = cleanYahooPlayerName(value) || String(value || '').trim();
-  if (!text || /^(my team|opponent|league|matchup|players|standings|yahoo(?:\s+\d+)?)$/i.test(text)) return fallback;
+  if (!text || isGenericYahooLeagueName(text) || /^(my team|opponent|league|matchup|players|standings|yahoo(?:\s+\d+)?)$/i.test(text)) {
+    return fallback;
+  }
   return text;
+}
+
+function discoverKey(identity) {
+  const leagueId = (String(identity?.leagueId || '').match(/(\d+)\s*$/) || [])[1] || '';
+  const teamId = (String(identity?.teamId || '').match(/(\d+)\s*$/) || [])[1] || '';
+  const teamName = String(identity?.teamName || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+  if (!leagueId) return '';
+  return teamId ? `${leagueId}:${teamId}` : `${leagueId}:name:${teamName}`;
 }
 
 function isOpponentLabel(value) {
