@@ -267,9 +267,33 @@ function sideWeeklyPoints(side) {
   if (!side || typeof side !== 'object' || Array.isArray(side)) return null;
   const live = finiteNumber(side.totalPointsLive);
   if (live != null) return live;
-  const total = finiteNumber(side.totalPoints);
-  if (total != null) return total;
-  return finiteNumber(side.rosterForCurrentScoringPeriod?.appliedStatTotal);
+  // totalPoints is the matchup-period total when the request is scoped to scoringPeriodId.
+  // rosterForCurrentScoringPeriod.appliedStatTotal often includes bench and is not used.
+  return finiteNumber(side.totalPoints);
+}
+
+function pointsByPeriod(team, weekNumber, field) {
+  const map = team?.[field];
+  if (!map || typeof map !== 'object') return null;
+  return finiteNumber(map[weekNumber] ?? map[String(weekNumber)]);
+}
+
+function dedupeStarters(starters) {
+  const seen = new Set();
+  return (starters || []).filter((player) => {
+    if (!player || player.isStarter === false) return false;
+    const key = String(player.espnPlayerId || player.name || '');
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function boardIsInflated(board, starterSum, starters) {
+  if (board == null || !(starterSum > 0)) return false;
+  const count = (starters || []).length;
+  if (count >= 6 && board > starterSum * 1.15 + 1) return true;
+  return board > 400 && board > starterSum * 1.5;
 }
 
 function sideWeeklyProjection(side) {
@@ -299,31 +323,45 @@ function sumStarterProjections(starters) {
   }, 0);
 }
 
-function weeklyMatchupScore(game, teamId, starters) {
-  const starterActuals = sumStarterActuals(starters);
-  if (teamId == null || teamId === '') return starterActuals;
+function matchupSide(game, teamId) {
+  if (teamId == null || teamId === '') return null;
   const mine = String(teamId);
-  const side = game && sideTeamId(game.home) === mine
-    ? game.home
-    : (game && sideTeamId(game.away) === mine ? game.away : null);
-  const live = sideWeeklyPoints(side);
-  // Prefer ESPN board totals when present; otherwise sum starter actuals only
-  // (never season appliedStatTotal / projection placeholders).
-  if (live != null && live !== 0) return live;
-  if (starterActuals > 0) return starterActuals;
-  return live ?? 0;
+  if (game && sideTeamId(game.home) === mine) return game.home;
+  if (game && sideTeamId(game.away) === mine) return game.away;
+  return null;
 }
 
-function weeklyMatchupProjection(game, teamId, starters) {
-  const starterProj = sumStarterProjections(starters);
-  if (teamId == null || teamId === '') return starterProj || null;
-  const mine = String(teamId);
-  const side = game && sideTeamId(game.home) === mine
-    ? game.home
-    : (game && sideTeamId(game.away) === mine ? game.away : null);
-  const board = sideWeeklyProjection(side);
-  if (board != null && board > 0) return board;
-  return starterProj > 0 ? starterProj : (board ?? null);
+function weeklyMatchupScore(game, team, teamId, starters, weekNumber) {
+  const unique = dedupeStarters(starters);
+  const starterActuals = sumStarterActuals(unique);
+  const weekPoints = pointsByPeriod(team, weekNumber, 'pointsByScoringPeriod');
+  const side = matchupSide(game, teamId);
+  const live = sideWeeklyPoints(side);
+  const season = finiteNumber(team?.points);
+  const period = side && typeof side === 'object' ? finiteNumber(side.totalPoints) : null;
+  const periodIsSeason = period != null && season != null && season > 0 && Math.abs(period - season) < 0.05;
+  let board = weekPoints != null
+    ? weekPoints
+    : (live != null && !(periodIsSeason && live === period) ? live : (period != null && !periodIsSeason ? period : null));
+  if (board != null && board > 400 && !(starterActuals > 0)) board = null;
+  if (starterActuals > 0 && (board == null || board === 0 || boardIsInflated(board, starterActuals, unique))) {
+    return starterActuals;
+  }
+  if (board != null && board !== 0 && !boardIsInflated(board, Math.max(starterActuals, 0.01), unique)) return board;
+  if (starterActuals > 0) return starterActuals;
+  return board ?? 0;
+}
+
+function weeklyMatchupProjection(game, team, teamId, starters, weekNumber) {
+  const unique = dedupeStarters(starters);
+  const starterProj = sumStarterProjections(unique);
+  const weekProj = pointsByPeriod(team, weekNumber, 'projectedPointsByScoringPeriod');
+  const side = matchupSide(game, teamId);
+  let board = weekProj != null ? weekProj : sideWeeklyProjection(side);
+  if (board != null && board > 400 && !(starterProj > 0)) board = null;
+  if (board != null && board > 0 && !boardIsInflated(board, starterProj, unique)) return board;
+  if (starterProj > 0) return starterProj;
+  return board ?? null;
 }
 
 function playerName(player, defense, nflTeam) {
@@ -353,17 +391,20 @@ function findWeekStat(stats, weekNumber, sourceId) {
 }
 
 function bestWeekStatTotal(stats, weekNumber, sourceId) {
-  const preferred = statTotal(findWeekStat(stats, weekNumber, sourceId));
-  if (preferred != null && preferred > 0) return preferred;
-  let best = preferred;
-  (Array.isArray(stats) ? stats : []).forEach((stat) => {
-    if (!stat || Number(stat.statSourceId) !== sourceId) return;
-    if (Number(stat.scoringPeriodId) !== weekNumber) return;
-    const total = statTotal(stat);
-    if (total == null) return;
-    if (best == null || (total > 0 && !(best > 0)) || total > best) best = total;
-  });
-  return best;
+  const matches = (Array.isArray(stats) ? stats : []).filter((stat) => (
+    stat
+    && Number(stat.statSourceId) === sourceId
+    && Number(stat.scoringPeriodId) === weekNumber
+  ));
+  // statSplitTypeId 1 is the scoring-period line. Never take the max across splits —
+  // a second line is often a season or duplicated rollup.
+  const preferred = statTotal(matches.find((stat) => Number(stat.statSplitTypeId) === 1));
+  if (preferred != null) return preferred;
+  const totals = matches.map((stat) => statTotal(stat)).filter((value) => value != null);
+  if (!totals.length) return null;
+  const positive = totals.filter((value) => value > 0);
+  if (!positive.length) return 0;
+  return Math.min(...positive);
 }
 
 function statLineStarted(stat) {
@@ -389,21 +430,20 @@ function espnNflTeam(player, pool) {
   return abbr || '';
 }
 
-function espnScore(player, pool, weekNumber) {
+function espnScore(player, weekNumber) {
   const actualStat = findWeekStat(player?.stats, weekNumber, 0);
   const actual = bestWeekStatTotal(player?.stats, weekNumber, 0);
   const projected = bestWeekStatTotal(player?.stats, weekNumber, 1);
-  // pool.appliedStatTotal is often season-to-date on mRoster — never treat it as weekly proj/actual.
-  const weeklyPool = finiteNumber(pool?.appliedStatTotal);
-  const started = statLineStarted(actualStat);
-  const actualPoints = started ? (actual ?? (weeklyPool != null && weeklyPool > 0 ? weeklyPool : 0)) : null;
+  // pool.appliedStatTotal is season-to-date on mRoster — never treat it as this week's line.
+  const started = statLineStarted(actualStat) || (actual != null && actual > 0);
+  const actualPoints = started ? (actual ?? 0) : null;
   const projPoints = projected;
   const points = actualPoints != null ? actualPoints : (projPoints ?? 0);
   return {
     points,
     projPoints,
     actualPoints,
-    isLive: Boolean(started && (actualPoints > 0 || statLineStarted(actualStat)))
+    isLive: Boolean(started && actualPoints != null && actualPoints > 0)
   };
 }
 
@@ -425,7 +465,7 @@ function starterFromEntry(entry, weekNumber) {
   const nflTeam = espnNflTeam(player, pool);
   const name = playerName(player, defense, nflTeam);
   if (!name) return null;
-  const score = espnScore(player, pool, weekNumber);
+  const score = espnScore(player, weekNumber);
   const espnPlayerId = player.id ?? entry.playerId ?? pool?.id;
   return {
     name,
@@ -459,14 +499,26 @@ function rosterEntriesForTeam(league, team, weekNumber) {
 }
 
 function playersFromEntries(entries, weekNumber, side) {
-  return (entries || [])
-    .map((entry) => starterFromEntry(entry, weekNumber))
-    .filter(Boolean)
-    .map((player) => ({
+  const rows = [];
+  const seen = new Map();
+  (entries || []).forEach((entry) => {
+    const player = starterFromEntry(entry, weekNumber);
+    if (!player) return;
+    const tagged = {
       ...player,
       ownership: side === 'mine' ? 1 : 0,
       isThreat: side !== 'mine'
-    }));
+    };
+    const key = String(player.espnPlayerId || player.name || '');
+    if (!key || !seen.has(key)) {
+      seen.set(key, rows.length);
+      rows.push(tagged);
+      return;
+    }
+    const index = seen.get(key);
+    if (!rows[index].isStarter && tagged.isStarter) rows[index] = tagged;
+  });
+  return rows;
 }
 
 function startersAndBench(league, team, weekNumber, side) {
@@ -536,8 +588,8 @@ export function mapEspnLeague({ league, leagueId, teamId, week, season = 2026 })
   const mine = mineLineup.starters;
   const opp = oppLineup.starters;
   const id = String(leagueId || league?.id || '').trim();
-  const myProj = weeklyMatchupProjection(game, team.id, mine);
-  const oppProj = weeklyMatchupProjection(game, opponent?.id, opp);
+  const myProj = weeklyMatchupProjection(game, team, team.id, mine, weekNumber);
+  const oppProj = weeklyMatchupProjection(game, opponent, opponent?.id, opp, weekNumber);
   return {
     id: `espn-${id}`,
     espnLeagueId: id,
@@ -548,8 +600,8 @@ export function mapEspnLeague({ league, leagueId, teamId, week, season = 2026 })
     name: String(league?.settings?.name || '').trim() || `ESPN ${id}`,
     platform: 'ESPN',
     season: String(season),
-    myScore: weeklyMatchupScore(game, team.id, mine),
-    oppScore: weeklyMatchupScore(game, opponent?.id, opp),
+    myScore: weeklyMatchupScore(game, team, team.id, mine, weekNumber),
+    oppScore: weeklyMatchupScore(game, opponent, opponent?.id, opp, weekNumber),
     myProj,
     oppProj,
     myProjected: myProj,

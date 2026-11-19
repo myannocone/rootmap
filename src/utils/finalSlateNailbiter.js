@@ -308,8 +308,8 @@ export async function syncFinalSlateNailbiterNotifications({
       }
     });
     // Foreground toast when the fire window is imminent (< 90s) so testers/devs see the banner.
-    if (fireAt - instant < 90_000) {
-      publishInAppBanner(formatted);
+    if (fireAt - instant < 90_000 && group.finalKickoffTime > instant) {
+      publishInAppBanner({ ...formatted, week, phase: 'upcoming' });
     }
   });
 

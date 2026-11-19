@@ -268,13 +268,20 @@ function isDefense(playerId, meta, slot) {
   return /^[A-Za-z]{2,3}$/.test(String(playerId || '')) && !meta?.full_name;
 }
 
-function matchupPlayerPoints(matchup, playerId, index) {
+function matchupPlayerPoints(matchup, playerId, starterIndex, { allowStarterIndex = false } = {}) {
   const id = String(playerId);
   const fromPlayers = matchup?.players_points?.[id] ?? matchup?.players_points?.[playerId];
-  if (fromPlayers != null && fromPlayers !== '') return Number(fromPlayers);
-  const fromStarter = matchup?.starters_points?.[index];
-  if (fromStarter != null && fromStarter !== '') return Number(fromStarter);
-  return null;
+  if (fromPlayers != null && fromPlayers !== '') {
+    const number = Number(fromPlayers);
+    if (Number.isFinite(number)) return number;
+  }
+  if (!allowStarterIndex || !Number.isInteger(starterIndex) || starterIndex < 0) return null;
+  const starterAtIndex = matchup?.starters?.[starterIndex];
+  if (String(starterAtIndex) !== id) return null;
+  const fromStarter = matchup?.starters_points?.[starterIndex];
+  if (fromStarter == null || fromStarter === '') return null;
+  const number = Number(fromStarter);
+  return Number.isFinite(number) ? number : null;
 }
 
 function matchupHasLiveScore(matchup) {
@@ -282,24 +289,27 @@ function matchupHasLiveScore(matchup) {
   return matchup?.custom_points != null && matchup.custom_points !== '' && Number(matchup.custom_points) !== 0;
 }
 
-function scoreForStarter(playerId, index, matchup, stats, projections, scoringKey) {
+function scoreForStarter(playerId, starterIndex, matchup, stats, projections, scoringKey, { starter = false } = {}) {
   const id = String(playerId);
   const statLine = stats?.[id];
-  const actual = pickPoint(packPointLine(statLine), scoringKey);
+  const genericActual = pickPoint(packPointLine(statLine), scoringKey);
   const projected = pickPoint(packPointLine(projections?.[id]), scoringKey);
-  const matchupPoints = matchupPlayerPoints(matchup, playerId, index);
-  const started = sleeperLineStarted(statLine) || (matchupHasLiveScore(matchup) && Number.isFinite(matchupPoints) && matchupPoints > 0);
+  // players_points / starters_points are this matchup week in the league's scoring.
+  // Generic pts_* is only a fallback, and only at the starter's original slot index.
+  const matchupPoints = matchupPlayerPoints(matchup, playerId, starterIndex, { allowStarterIndex: starter });
+  const started = sleeperLineStarted(statLine)
+    || (matchupHasLiveScore(matchup) && Number.isFinite(matchupPoints) && matchupPoints > 0);
   const actualPoints = started
-    ? (sleeperLineStarted(statLine) && actual != null ? actual : (Number.isFinite(matchupPoints) ? matchupPoints : actual))
+    ? (Number.isFinite(matchupPoints) ? matchupPoints : genericActual)
     : null;
   const points = actualPoints != null
     ? actualPoints
-    : (projected ?? (Number.isFinite(matchupPoints) ? matchupPoints : 0));
+    : (Number.isFinite(projected) ? projected : 0);
   return {
     points: Number.isFinite(Number(points)) ? Number(points) : 0,
-    projPoints: projected,
-    actualPoints,
-    isLive: Boolean(started),
+    projPoints: Number.isFinite(projected) ? projected : null,
+    actualPoints: actualPoints != null && Number.isFinite(Number(actualPoints)) ? Number(actualPoints) : null,
+    isLive: Boolean(started && actualPoints != null),
     scoringKey
   };
 }
@@ -308,7 +318,9 @@ function starterFromId(playerId, slotHint, score, players) {
   if (playerId == null || playerId === '' || String(playerId) === '0') return null;
   const meta = players?.[playerId] || players?.[String(playerId)] || {};
   const defense = isDefense(playerId, meta, slotHint);
-  const slot = defense ? 'D/ST' : (slotHint || meta.position || 'FLEX');
+  const hinted = String(slotHint || '').trim();
+  // Keep the roster slot label (FLEX, FLEX, LB, DL). Only invent D/ST when the slot is unknown.
+  const slot = hinted || (defense ? 'D/ST' : (meta.position || 'FLEX'));
   const position = defense
     ? 'D/ST'
     : displayPlayerPosition({ position: meta.position || slot, slot });
@@ -341,16 +353,31 @@ function realPlayerIds(ids) {
   return (ids || []).map((id) => String(id)).filter((id) => id && id !== '0');
 }
 
-function lineupFrom(ids, slots, matchup, players, stats, projections, scoringKey, isStarter = true) {
-  return (ids || [])
-    .map((id, index) => starterFromId(
-      id,
-      slots[index],
-      scoreForStarter(id, index, matchup, stats, projections, scoringKey),
+function alignStarterSlots(ids, slots) {
+  // Sleeper's starters array is index-aligned with starting roster_positions.
+  // Empty slots are "0" and must stay in place so later players do not shift left.
+  return (Array.isArray(ids) ? ids : []).map((id, index) => ({
+    id: String(id ?? ''),
+    slot: slots[index] || '',
+    index
+  })).filter((row) => row.id && row.id !== '0');
+}
+
+function lineupFromAligned(rows, matchup, players, stats, projections, scoringKey, isStarter) {
+  return (rows || []).map((row) => {
+    const player = starterFromId(
+      row.id,
+      row.slot,
+      scoreForStarter(row.id, row.index, matchup, stats, projections, scoringKey, { starter: isStarter }),
       players
-    ))
-    .filter(Boolean)
-    .map((player) => ({ ...player, isStarter }));
+    );
+    if (!player) return null;
+    return {
+      ...player,
+      isStarter,
+      lineupIndex: isStarter ? row.index : undefined
+    };
+  }).filter(Boolean);
 }
 
 function weekLineup(matchup, roster, slots, players, stats, projections, scoringKey) {
@@ -358,18 +385,25 @@ function weekLineup(matchup, roster, slots, players, stats, projections, scoring
   // Fall back to roster.starters only when the week matchup has not been posted yet.
   // Never invent a "best available" lineup from the full roster — that is what caused
   // bench studs to appear as starters in Matchups.
-  const weekIds = realPlayerIds(matchup?.starters);
-  const rosterIds = realPlayerIds(roster?.starters);
-  const usingProjected = weekIds.length === 0 && rosterIds.length > 0;
-  const ids = weekIds.length ? weekIds : rosterIds;
+  const weekRows = alignStarterSlots(matchup?.starters, slots);
+  const rosterRows = alignStarterSlots(roster?.starters, slots);
+  const usingProjected = weekRows.length === 0 && rosterRows.length > 0;
+  const rows = weekRows.length ? weekRows : rosterRows;
   const starters = sortStartersBySlot(
-    lineupFrom(ids, slots, matchup, players, stats, projections, scoringKey, true)
+    lineupFromAligned(rows, matchup, players, stats, projections, scoringKey, true)
       .map((player) => ({ ...player, projectedStart: usingProjected, isStarter: true }))
   );
-  const chosen = new Set(ids);
+  const chosen = new Set(rows.map((row) => row.id));
   const benchIds = realPlayerIds(roster?.players).filter((id) => !chosen.has(id));
-  const bench = lineupFrom(benchIds, [], matchup, players, stats, projections, scoringKey, false)
-    .map((player) => ({ ...player, isStarter: false }));
+  const bench = lineupFromAligned(
+    benchIds.map((id) => ({ id, slot: '', index: -1 })),
+    matchup,
+    players,
+    stats,
+    projections,
+    scoringKey,
+    false
+  ).map((player) => ({ ...player, isStarter: false, lineupIndex: undefined }));
   return { players: starters, bench, projected: usingProjected };
 }
 
@@ -477,6 +511,16 @@ export function mapSleeperLeague({
     : null;
   const myProj = sumProj(mine);
   const oppProj = sumProj(oppStarters);
+  const weekScore = (matchup, starters) => {
+    const board = Number(matchup?.custom_points ?? matchup?.points);
+    const starterActuals = (starters || []).reduce((sum, player) => {
+      const actual = Number(player?.actualPoints);
+      return sum + (Number.isFinite(actual) ? actual : 0);
+    }, 0);
+    if (Number.isFinite(board) && board > 0) return board;
+    if (starterActuals > 0) return starterActuals;
+    return Number.isFinite(board) ? board : 0;
+  };
 
   return {
     id: `sleeper-${league.id}`,
@@ -489,8 +533,16 @@ export function mapSleeperLeague({
     name: league.name,
     platform: 'Sleeper',
     season: SLEEPER_SEASON,
-    myScore: Number(weekMatchup?.custom_points ?? weekMatchup?.points) || 0,
-    oppScore: opponents.reduce((sum, opponent) => sum + (Number(opponent.custom_points ?? opponent.points) || 0), 0),
+    myScore: weekScore(weekMatchup, mine),
+    oppScore: (() => {
+      if (!opponents.length) return 0;
+      if (opponents.length === 1) return weekScore(opponents[0], oppStarters);
+      const board = opponents.reduce((sum, opponent) => {
+        const value = Number(opponent?.custom_points ?? opponent?.points);
+        return sum + (Number.isFinite(value) ? value : 0);
+      }, 0);
+      return board > 0 ? board : weekScore(null, oppStarters);
+    })(),
     myProj,
     oppProj,
     myProjected: myProj,

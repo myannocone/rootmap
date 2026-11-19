@@ -93,7 +93,7 @@ enum YahooLinks {
         return '';
       }
       function isGenericName(value) {
-        return /^(my team|league|matchup|players|standings|home|fantasy|yahoo)$/i.test(clean(value));
+        return /^(my team|league|matchup|players|standings|home|fantasy|yahoo|mail|inbox|account|my account|sign in|sign out|settings|news|profile|notifications?)$/i.test(clean(value));
       }
       function isHeaderLabel(value) {
         return /^(stats|player|proj|pts|projected|points|pos)$/i.test(clean(value));
@@ -394,7 +394,7 @@ enum YahooLinks {
         );
         for (var i = 0; i < nodes.length; i++) {
           var text = readableName(nodes[i].innerText || nodes[i].textContent || '');
-          if (!text || /yahoo|fantasy football|week\\s+\\d+|matchup|standings|players/i.test(text)) continue;
+          if (!text || /yahoo|fantasy football|week\\s+\\d+|matchup|standings|players|mail|inbox|account|settings|news|profile/i.test(text)) continue;
           return text;
         }
         var meta = document.querySelector('meta[property="og:title"], meta[name="title"]');
@@ -788,7 +788,7 @@ enum YahooLinks {
       function usableLeagueName(value) {
         var text = clean(value);
         if (!text || text.length > 60) return '';
-        if (/^(my teams?|leagues?|fantasy football|yahoo|home|matchup|standings|players)$/i.test(text)) return '';
+        if (/^(my teams?|leagues?|fantasy football|yahoo|home|matchup|standings|players|mail|inbox|account|my account|sign in|sign out|settings|news|profile|notifications?)$/i.test(text)) return '';
         return text;
       }
       function leagueNameNear(node) {
