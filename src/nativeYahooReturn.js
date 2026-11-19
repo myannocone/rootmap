@@ -2,7 +2,6 @@ import { App } from '@capacitor/app';
 import { Browser } from '@capacitor/browser';
 import {
   dedupeImportedLeagues,
-  isGenericYahooLeagueName,
   preferYahooLeagueName,
   preferYahooLeagueOverTeam
 } from './utils/yahooSync';
@@ -29,8 +28,7 @@ function mergeOne(prev, next) {
     teamName,
     myTeamName: teamName || 'My Team',
     customLeagueName: prev.customLeagueName || next.customLeagueName || '',
-    displayName: prev.displayName || next.displayName || prev.customLeagueName || next.customLeagueName || '',
-    leagueGroup: prev.leagueGroup || next.leagueGroup || ''
+    displayName: prev.displayName || next.displayName || prev.customLeagueName || next.customLeagueName || ''
   };
 }
 
@@ -50,18 +48,6 @@ function mergeLeagues(incoming) {
   incoming.forEach((league) => {
     if (!league?.id) return;
     byId.set(String(league.id), mergeOne(byId.get(String(league.id)), league));
-  });
-  incoming.forEach((league) => {
-    if (!league) return;
-    const leagueKey = String(league.leagueKey || league.yahooLeagueId || '');
-    if (!leagueKey) return;
-    byId.forEach((saved, id) => {
-      const savedKey = String(saved.leagueKey || saved.yahooLeagueId || '');
-      if (savedKey !== leagueKey || id === String(league.id)) return;
-      if (isGenericYahooLeagueName(saved.name) || isGenericYahooLeagueName(saved.leagueName)) {
-        byId.set(id, mergeOne(saved, { ...league, id: saved.id }));
-      }
-    });
   });
   localStorage.setItem(LEAGUES_KEY, JSON.stringify(dedupeImportedLeagues([...byId.values()])));
 }

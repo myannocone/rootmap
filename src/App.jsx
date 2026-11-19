@@ -84,7 +84,6 @@ import { decodeSetupJson, encodeSetupPayload, linkIsLocalOnly, phoneSyncOrigin, 
 
 const LEAGUES_STORAGE_KEY = 'rootmap_leagues';
 const HIDDEN_LEAGUES_KEY = 'rootmap_hidden_leagues';
-const FEED_SCOPE_KEY = 'rootmap_feed_scope';
 const TAB_TIP_KEY = 'rootmap_tab_tips_seen';
 const THEME_STORAGE_KEY = 'rootmap_theme';
 const TAB_TIPS = {
@@ -92,7 +91,6 @@ const TAB_TIPS = {
   'game-slate': 'Game Slate lines up this week’s NFL games with the players those leagues have in.',
   'all-leagues': 'Matchups is this week’s scoreboard for the leagues you left checked.'
 };
-const FAMILY_LEAGUE_RE = /\b(jr\.?|junior|kids?|kid['’]s|family|youth)\b/i;
 const ALERT_PREFS_KEY = 'rootmap_gameday_alerts';
 const DEFAULT_ALERT_PREFS = {
   lineupRescue: true,
@@ -190,27 +188,24 @@ function platformLeagueTitle(lg) {
     if (looksLikeYahooTeamName(name, lg)) continue;
     return name;
   }
-  return 'Yahoo League';
+  return '';
+}
+
+function getUserTeamName(lg) {
+  const team = preferYahooLeagueName(lg?.myTeamName, lg?.userTeam?.name, lg?.teamName);
+  if (team && !isGenericYahooLeagueName(team)) return team;
+  return team || 'My Team';
 }
 
 function getLeagueDisplayName(lg) {
   const custom = String(lg?.customLeagueName || lg?.displayName || '').trim();
   if (custom) return custom;
-  return platformLeagueTitle(lg);
-}
-
-function isFamilyOrKidsLeague(league) {
-  if (!league) return false;
-  if (league.leagueGroup === 'personal') return false;
-  if (league.leagueGroup === 'family') return true;
-  const blob = [
-    league.leagueName,
-    league.name,
-    league.myTeamName,
-    league.teamName,
-    league.userTeam?.name
-  ].filter(Boolean).join(' ');
-  return FAMILY_LEAGUE_RE.test(blob);
+  const title = platformLeagueTitle(lg);
+  if (title) return title;
+  // Never surface "Yahoo League · …" boilerplate — prefer the fantasy team nickname.
+  const team = getUserTeamName(lg);
+  if (team && team !== 'My Team') return team;
+  return 'League';
 }
 
 function capInflatedWeeklyTotal(board, starterSum, starterCount) {
@@ -230,14 +225,6 @@ function loadHiddenLeagueIds() {
   }
 }
 
-function loadFeedScope() {
-  try {
-    return localStorage.getItem(FEED_SCOPE_KEY) === 'family' ? 'family' : 'personal';
-  } catch {
-    return 'personal';
-  }
-}
-
 function loadSeenTips() {
   try {
     const raw = JSON.parse(localStorage.getItem(TAB_TIP_KEY) || '{}');
@@ -245,12 +232,6 @@ function loadSeenTips() {
   } catch {
     return {};
   }
-}
-
-function getUserTeamName(lg) {
-  const team = preferYahooLeagueName(lg?.myTeamName, lg?.userTeam?.name, lg?.teamName);
-  if (team && !isGenericYahooLeagueName(team)) return team;
-  return team || 'My Team';
 }
 
 function sumActiveStarterPoints(starters) {
@@ -278,9 +259,30 @@ function leagueFilterLabel(lg, leagues = []) {
   if (duplicates.length <= 1) return name;
   const team = getUserTeamName(lg);
   if (team && team !== name) return `${name} · ${team}`;
-  const platform = String(lg?.platform || '').trim();
-  if (platform) return `${name} · ${platform}`;
   return name;
+}
+
+function platformMark(platform) {
+  const value = String(platform || '').toLowerCase();
+  if (value.includes('espn')) return 'E';
+  if (value.includes('sleeper')) return 'S';
+  if (value.includes('yahoo')) return 'Y';
+  return '';
+}
+
+function PlatformBadge({ platform, isLight }) {
+  const mark = platformMark(platform);
+  if (!mark) return null;
+  return (
+    <span
+      title={String(platform || '').trim() || 'League'}
+      className={`inline-flex w-4 h-4 items-center justify-center rounded text-[8px] font-black shrink-0 ${
+        isLight ? 'bg-slate-100 text-slate-600 border border-slate-200' : 'bg-slate-800 text-slate-300 border border-slate-600'
+      }`}
+    >
+      {mark}
+    </span>
+  );
 }
 
 function ordinalRank(value) {
@@ -307,7 +309,16 @@ function teamSeasonDetail(record, rank) {
   return [formatSeasonRecord(record), ordinalRank(rank)].filter(Boolean).join(' • ');
 }
 
+function playerIsByeWeek(player) {
+  return Boolean(
+    player?.isBye
+    || player?.gameStatus === 'BYE'
+    || /\bbye\b/i.test(`${player?.gameClock || ''} ${player?.opponent || ''}`)
+  );
+}
+
 function starterActualLabel(player) {
+  if (playerIsByeWeek(player)) return '—';
   const actual = finiteNumber(player?.actualPoints);
   const liveOrFinal = starterIsLive(player) || starterIsFinal(player);
   // Yahoo often stores actualPoints: 0 pre-kickoff; only show a real line once live/final or non-zero.
@@ -623,11 +634,7 @@ function LeagueScoreboard({ league, isLight, onRemove }) {
               <TrashIcon />
             </button>
           )}
-          <span className={`text-[10px] font-mono px-2 py-0.5 rounded-full font-bold border ${
-            isLight ? 'bg-slate-100 text-slate-700 border-slate-200' : 'bg-slate-950 text-slate-300 border-slate-700'
-          }`}>
-            {league?.platform || 'League'}
-          </span>
+          <PlatformBadge platform={league?.platform} isLight={isLight} />
         </div>
       </div>
       <div className="grid grid-cols-[1fr_auto_1fr] items-start gap-2">
@@ -775,8 +782,7 @@ function mergeSyncedLeague(existing, incoming) {
     lineupWeek: incoming.lineupWeek ?? existing.lineupWeek,
     lineupProjected: incoming.lineupProjected ?? existing.lineupProjected,
     customLeagueName: existing.customLeagueName || incoming.customLeagueName || '',
-    displayName: existing.displayName || incoming.displayName || existing.customLeagueName || incoming.customLeagueName || '',
-    leagueGroup: existing.leagueGroup || incoming.leagueGroup || ''
+    displayName: existing.displayName || incoming.displayName || existing.customLeagueName || incoming.customLeagueName || ''
   });
 }
 
@@ -829,8 +835,7 @@ function mergeYahooSyncedLeague(existing, incoming) {
       }
       : existing.oppTeam,
     customLeagueName: existing.customLeagueName || incoming.customLeagueName || '',
-    displayName: existing.displayName || incoming.displayName || existing.customLeagueName || incoming.customLeagueName || '',
-    leagueGroup: existing.leagueGroup || incoming.leagueGroup || ''
+    displayName: existing.displayName || incoming.displayName || existing.customLeagueName || incoming.customLeagueName || ''
   });
 }
 
@@ -1594,7 +1599,7 @@ function LivePoints({ player, isLight, tone = 'for', layout = 'inline', onScoreJ
     const preGame = !view.live && !view.final && !view.bye;
     const scoreLabel = view.bye ? 'BYE' : (view.live || view.final) ? 'PTS' : 'PROJ';
     const mainShown = preGame && view.proj != null ? view.proj : view.shown;
-    const showDash = Boolean(view.unknownProj || (preGame && view.proj == null && !(mainShown > 0)));
+    const showDash = Boolean(view.bye || view.unknownProj || (preGame && view.proj == null && !(mainShown > 0)));
     const projLine = (view.live || view.final) && view.proj != null
       ? (deltaText ? `Proj ${view.proj.toFixed(1)} (${deltaText})` : `Proj ${view.proj.toFixed(1)}`)
       : null;
@@ -1621,7 +1626,7 @@ function LivePoints({ player, isLight, tone = 'for', layout = 'inline', onScoreJ
         <div className="flex items-baseline gap-1.5">
           {view.live && <LivePulse size={8} />}
           <span className={`text-[1.7rem] font-black tabular-nums leading-none tracking-tight ${color} ${scorePop ? 'rootmap-score-pop' : ''}`}>
-            {view.shown.toFixed(1)}
+            {view.bye ? '—' : view.shown.toFixed(1)}
           </span>
           <span className={`text-[10px] font-black uppercase tracking-wide ${view.live ? (isLight ? 'text-emerald-700' : 'text-emerald-300') : muted}`}>
             {scoreLabel}
@@ -1642,8 +1647,10 @@ function LivePoints({ player, isLight, tone = 'for', layout = 'inline', onScoreJ
       {floatNode}
       <span className="inline-flex items-center justify-end gap-1 font-mono font-black text-xs">
         {view.live && <LivePulse />}
-        <span className={scorePop ? 'rootmap-score-pop' : ''}>{view.shown.toFixed(1)} pts</span>
-        {deltaText && <span className={`text-[9px] font-black ${deltaColor}`}>{deltaText}</span>}
+        <span className={scorePop ? 'rootmap-score-pop' : ''}>
+          {view.bye ? '— BYE' : `${view.shown.toFixed(1)} pts`}
+        </span>
+        {!view.bye && deltaText && <span className={`text-[9px] font-black ${deltaColor}`}>{deltaText}</span>}
       </span>
       {view.showProj && (
         <span className={`block font-semibold text-[9px] ${muted}`}>
@@ -2550,7 +2557,6 @@ export default function App() {
   const [showLegend, setShowLegend] = useState(false);
   const [showLeagueFilter, setShowLeagueFilter] = useState(false);
   const [hiddenLeagueIds, setHiddenLeagueIds] = useState(loadHiddenLeagueIds);
-  const [feedScope, setFeedScope] = useState(loadFeedScope);
   const [seenTips, setSeenTips] = useState(loadSeenTips);
   const [renamingLeagueId, setRenamingLeagueId] = useState(null);
   const [renameDraft, setRenameDraft] = useState('');
@@ -2734,16 +2740,18 @@ export default function App() {
         setLeagues((prev) => {
           const next = [...prev];
           imported.forEach((league) => {
-            const key = yahooLeagueIdOf(league) || league.id;
+            const normalized = normalizeLeague(league, next.length);
+            const incomingKey = canonicalLeagueIdentity(normalized);
             const idx = next.findIndex((item) => (
-              item.id === league.id
-              || yahooLeagueIdOf(item) === key
-              || (item.yahooLeagueId && league.yahooLeagueId && item.yahooLeagueId === league.yahooLeagueId)
+              item.id === normalized.id
+              || (incomingKey && canonicalLeagueIdentity(item) === incomingKey)
+              || yahooLeagueIdOf(item) === yahooLeagueIdOf(normalized)
+              || (item.yahooLeagueId && normalized.yahooLeagueId && item.yahooLeagueId === normalized.yahooLeagueId)
             ));
-            if (idx >= 0) next[idx] = mergeYahooSyncedLeague(next[idx], league);
-            else next.push(normalizeLeague(league, next.length));
+            if (idx >= 0) next[idx] = mergeYahooSyncedLeague(next[idx], normalized);
+            else next.push(normalized);
           });
-          return next;
+          return dedupeImportedLeagues(next);
         });
       }).catch(() => {
         // Cookie sync is best-effort after OAuth redirect.
@@ -3205,7 +3213,7 @@ export default function App() {
           ))) return;
           next.push(normalizeLeague(updated));
         });
-        return next;
+        return dedupeImportedLeagues(next);
       });
     };
     refreshStoredLineups();
@@ -3243,14 +3251,6 @@ export default function App() {
       // preference storage is optional
     }
   }, [hiddenLeagueIds]);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(FEED_SCOPE_KEY, feedScope === 'family' ? 'family' : 'personal');
-    } catch {
-      // preference storage is optional
-    }
-  }, [feedScope]);
 
   useEffect(() => {
     if (!showLegend && !showLeagueFilter && !leaguePendingDelete && !showSetupImport && !showConnect && !showSleeper && !showEspn && !showYahooIngest && !showSortSheet && !showAlertSheet && !showWeekPicker && !showMobileSync && !jumpMenuOpen) return undefined;
@@ -3367,12 +3367,6 @@ export default function App() {
     }));
     setRenamingLeagueId(null);
     setRenameDraft('');
-  };
-
-  const setLeagueGroup = (leagueId, group) => {
-    setLeagues((prev) => prev.map((league) => (
-      league.id === leagueId ? { ...league, leagueGroup: group } : league
-    )));
   };
 
   const chooseWeek = (week) => {
@@ -3878,7 +3872,7 @@ export default function App() {
       threats: oppStarters
     }, leagues.length);
 
-    setLeagues((prev) => [...prev, imported]);
+    setLeagues((prev) => dedupeImportedLeagues([...prev, imported]));
     setView('matchups');
     setYahooIngestError('');
     setYahooPaste('');
@@ -3892,17 +3886,6 @@ export default function App() {
     [leagues, hiddenLeagueIds]
   );
 
-  const hasFamilyLeagues = useMemo(
-    () => leagues.some((lg) => isFamilyOrKidsLeague(lg)),
-    [leagues]
-  );
-
-  const feedLeagues = useMemo(() => {
-    const family = visibleLeagues.filter((lg) => isFamilyOrKidsLeague(lg));
-    const personal = visibleLeagues.filter((lg) => !isFamilyOrKidsLeague(lg));
-    return feedScope === 'family' ? family : personal;
-  }, [visibleLeagues, feedScope]);
-
   const hiddenCount = leagues.length - visibleLeagues.length;
 
   const activeSlateWeek = getActiveSlate()?.week || FALLBACK_NFL_WEEK;
@@ -3910,16 +3893,16 @@ export default function App() {
 
   const alertLeagues = useMemo(() => {
     if (!alertsAreCurrent) return [];
-    return feedLeagues.filter((league) => {
+    return visibleLeagues.filter((league) => {
       const lineupWeek = Number(league?.lineupWeek);
       if (!Number.isFinite(lineupWeek) || lineupWeek <= 0) return true;
       return lineupWeek === Number(selectedWeek);
     });
-  }, [alertsAreCurrent, feedLeagues, selectedWeek]);
+  }, [alertsAreCurrent, visibleLeagues, selectedWeek]);
 
   const playerMasterIndex = useMemo(
-    () => buildPlayerMasterIndex(feedLeagues, games, null, liveScores, sleeperPlayers),
-    [feedLeagues, games, liveScores, sleeperPlayers]
+    () => buildPlayerMasterIndex(visibleLeagues, games, null, liveScores, sleeperPlayers),
+    [visibleLeagues, games, liveScores, sleeperPlayers]
   );
 
   const crossFirePointsRef = useRef(null);
@@ -4027,7 +4010,7 @@ export default function App() {
         const leagueName = player.myLeagues?.[0]?.league || 'your league';
         const alertLeague = (!isGenericYahooLeagueName(leagueName) && !/^your league$/i.test(leagueName))
           ? leagueName
-          : (feedLeagues.map(getLeagueDisplayName).find((name) => name && !isGenericYahooLeagueName(name)) || leagueName);
+          : (visibleLeagues.map(getLeagueDisplayName).find((name) => name && !isGenericYahooLeagueName(name)) || leagueName);
         if (alertPrefs.redZoneTv && player.inRedZone) {
           notifyRedZoneAlert({
             id: `rz|${player.cardKey || player.name}|${alertLeague}|${selectedWeek}`,
@@ -4051,7 +4034,7 @@ export default function App() {
       });
     }, delayMs);
     return () => window.clearTimeout(timer);
-  }, [playerMasterIndex, alertPrefs.redZoneTv, alertPrefs.spoilerFreeDelay, selectedWeek, alertsAreCurrent, feedLeagues]);
+  }, [playerMasterIndex, alertPrefs.redZoneTv, alertPrefs.spoilerFreeDelay, selectedWeek, alertsAreCurrent, visibleLeagues]);
 
   useEffect(() => {
     const next = new Map();
@@ -4125,7 +4108,7 @@ export default function App() {
   }, [games]);
 
   const sortedLeagues = useMemo(() => {
-    const hydrated = feedLeagues.map((league) => (
+    const hydrated = visibleLeagues.map((league) => (
       hydrateLeagueForMatchups(league, games, liveScores, sleeperPlayers, playerMasterIndex)
     ));
     hydrated.sort((a, b) => {
@@ -4144,7 +4127,7 @@ export default function App() {
       return getUserTeamName(a).localeCompare(getUserTeamName(b));
     });
     return hydrated;
-  }, [feedLeagues, leagueSort, games, liveScores, sleeperPlayers, playerMasterIndex]);
+  }, [visibleLeagues, leagueSort, games, liveScores, sleeperPlayers, playerMasterIndex]);
 
   const getGamePlayers = (game) => {
     if (!game) return [];
@@ -4766,10 +4749,8 @@ export default function App() {
               <div className={`rounded-2xl px-3 py-4 text-center text-xs font-semibold border ${
                 isLight ? 'bg-white border-slate-200 text-slate-500' : 'bg-slate-900 border-slate-800 text-slate-400'
               }`}>
-                {feedLeagues.length === 0
-                  ? (hasFamilyLeagues && feedScope === 'personal'
-                    ? 'Personal leagues are hidden. Open Family on Matchups, or turn a league back on in Manage Leagues.'
-                    : 'Every league on this board is unchecked. Turn one back on in Manage Leagues.')
+                {visibleLeagues.length === 0
+                  ? 'Every league on this board is unchecked. Turn one back on in Manage Leagues.'
                   : (boardFilters.liveOnly || boardFilters.redZoneOnly || boardFilters.hideFinal || boardFilters.outperformers || boardFilters.conflicted || boardFilters.doubleDown)
                     ? 'No starters match this filter.'
                     : 'No starters in this view.'}
@@ -5023,11 +5004,13 @@ export default function App() {
                           window.setTimeout(() => setFlashGameId((current) => (current === lg.id ? null : current)), 1100);
                           tapHaptic();
                         }}
-                        className={`shrink-0 h-8 px-2.5 rounded-full border text-[10px] font-black whitespace-nowrap ${
+                        className={`shrink-0 h-8 px-2 rounded-full border text-[10px] font-black whitespace-nowrap inline-flex items-center gap-1.5 ${
                           isLight ? 'bg-white text-slate-700 border-slate-200' : 'bg-slate-900 text-slate-200 border-slate-700'
                         }`}
                       >
-                        {leagueFilterLabel(lg, sortedLeagues)} · {outlook.myPct}%
+                        <PlatformBadge platform={lg.platform} isLight={isLight} />
+                        <span className="truncate max-w-[9.5rem]">{leagueFilterLabel(lg, sortedLeagues)}</span>
+                        <span>· {outlook.myPct}%</span>
                       </button>
                     );
                   })}
@@ -5035,35 +5018,10 @@ export default function App() {
               </div>
             )}
 
-            <div className="flex flex-wrap items-center gap-1.5 min-w-0">
+            <div className="flex items-center gap-1.5 min-w-0">
               <div className={`shrink-0 text-[11px] font-black uppercase tracking-wider ${isLight ? 'text-slate-700' : 'text-slate-300'}`}>
                 Matchups ({sortedLeagues.length})
               </div>
-              {hasFamilyLeagues && (
-                <div className={`flex shrink-0 rounded-full border p-0.5 ${isLight ? 'border-slate-200 bg-white' : 'border-slate-700 bg-slate-950'}`} role="group" aria-label="League feed">
-                  {[
-                    ['personal', 'Personal'],
-                    ['family', 'Family']
-                  ].map(([id, label]) => (
-                    <button
-                      key={id}
-                      type="button"
-                      aria-pressed={feedScope === id}
-                      onClick={() => {
-                        setFeedScope(id);
-                        tapHaptic();
-                      }}
-                      className={`h-6 px-2 rounded-full text-[9px] font-black uppercase tracking-wide ${
-                        feedScope === id
-                          ? isLight ? 'bg-slate-900 text-white' : 'bg-white text-slate-950'
-                          : isLight ? 'text-slate-500' : 'text-slate-400'
-                      }`}
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
-              )}
               <label className="min-w-0 flex-1 flex items-center justify-end gap-1">
                 <span className={`shrink-0 text-[9px] font-black uppercase tracking-wider ${isLight ? 'text-slate-400' : 'text-slate-500'}`}>
                   Sort by
@@ -5107,14 +5065,13 @@ export default function App() {
                     <div
                       role="listbox"
                       aria-label="Manage leagues"
-                      className={`absolute right-0 top-full z-20 mt-1 w-72 max-h-80 overflow-y-auto rounded-xl border shadow-xl p-1 ${
+                      className={`absolute right-0 top-full z-20 mt-1 w-64 max-h-80 overflow-y-auto rounded-xl border shadow-xl p-1 ${
                         isLight ? 'bg-white border-slate-200' : 'bg-slate-950 border-slate-700'
                       }`}
                     >
                       {leagues.map((lg) => {
                         const leagueName = leagueFilterLabel(lg, leagues);
                         const onBoard = !hiddenLeagueIds.has(String(lg.id));
-                        const family = isFamilyOrKidsLeague(lg);
                         return (
                           <div key={lg.id} className="rounded-lg">
                             <div className="flex items-center gap-1">
@@ -5126,15 +5083,9 @@ export default function App() {
                                   aria-label={`${onBoard ? 'Hide' : 'Show'} ${leagueName} on the board`}
                                   className="accent-emerald-500 w-3.5 h-3.5 shrink-0"
                                 />
-                                <span className="min-w-0">
-                                  <span className={`block truncate text-xs font-bold ${isLight ? 'text-slate-800' : 'text-slate-100'}`}>
-                                    {leagueName}
-                                  </span>
-                                  {family && (
-                                    <span className={`block text-[9px] font-black uppercase tracking-wide ${isLight ? 'text-amber-700' : 'text-amber-300'}`}>
-                                      Family
-                                    </span>
-                                  )}
+                                <PlatformBadge platform={lg.platform} isLight={isLight} />
+                                <span className={`min-w-0 truncate text-xs font-bold ${isLight ? 'text-slate-800' : 'text-slate-100'}`}>
+                                  {leagueName}
                                 </span>
                               </label>
                               <button
@@ -5143,7 +5094,7 @@ export default function App() {
                                 title={`Rename ${leagueName}`}
                                 onClick={() => {
                                   setRenamingLeagueId(lg.id);
-                                  setRenameDraft(lg.customLeagueName || lg.displayName || platformLeagueTitle(lg));
+                                  setRenameDraft(lg.customLeagueName || lg.displayName || platformLeagueTitle(lg) || getUserTeamName(lg));
                                 }}
                                 className={`w-7 h-7 rounded-lg text-[11px] font-black shrink-0 ${
                                   isLight ? 'text-slate-500 hover:bg-slate-100' : 'text-slate-300 hover:bg-slate-800'
@@ -5161,15 +5112,6 @@ export default function App() {
                                 }`}
                               >
                                 <TrashIcon />
-                              </button>
-                            </div>
-                            <div className="px-2 pb-1 flex items-center gap-1">
-                              <button
-                                type="button"
-                                onClick={() => setLeagueGroup(lg.id, family ? 'personal' : 'family')}
-                                className={`text-[9px] font-black uppercase tracking-wide ${isLight ? 'text-slate-500' : 'text-slate-400'}`}
-                              >
-                                {family ? 'Move to personal' : 'Move to family'}
                               </button>
                             </div>
                             {renamingLeagueId === lg.id && (
@@ -5209,9 +5151,7 @@ export default function App() {
               <div className={`rounded-2xl px-3 py-4 text-center text-xs font-semibold border ${
                 isLight ? 'bg-white border-slate-200 text-slate-500' : 'bg-slate-900 border-slate-800 text-slate-400'
               }`}>
-                {feedScope === 'personal' && hasFamilyLeagues
-                  ? 'No personal matchups. Switch to Family or check a league in Manage Leagues.'
-                  : 'No matchups on this board. Check a league in Manage Leagues.'}
+                No matchups on this board. Check a league in Manage Leagues.
               </div>
             )}
 

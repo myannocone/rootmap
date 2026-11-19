@@ -21,6 +21,43 @@ export function yahooLeagueIdOf(league) {
   return match ? match[1] : '';
 }
 
+/** Numeric Yahoo league id shared by API (`414.l.123`) and scrape (`123`) rows. */
+export function yahooLeagueNumOf(league) {
+  if (!league || typeof league !== 'object') return '';
+  const key = yahooLeagueIdOf(league);
+  if (key) {
+    const fromKey = key.match(/\.l\.(\d+)/i);
+    if (fromKey) return fromKey[1];
+  }
+  const raw = String(league.yahooLeagueId || '').trim();
+  if (/^\d+$/.test(raw)) return raw;
+  const fromRaw = raw.match(/\.l\.(\d+)/i);
+  if (fromRaw) return fromRaw[1];
+  const id = String(league.id || '');
+  const embedded = id.match(/\.l\.(\d+)/i);
+  if (embedded) return embedded[1];
+  // yahoo-123456 or yahoo-123456-7 (never treat the trailing team id as the league).
+  const scrape = id.match(/^yahoo-(\d+)(?:-\d+)?$/i);
+  return scrape ? scrape[1] : '';
+}
+
+/** Numeric Yahoo team id from team_key, yahooTeamId, or scrape id suffix. */
+export function yahooTeamNumOf(league) {
+  if (!league || typeof league !== 'object') return '';
+  const raw = String(league.yahooTeamId || league.teamKey || league.teamId || '').trim();
+  if (raw.includes('.t.')) return raw.split('.t.').pop() || '';
+  if (/^\d+$/.test(raw)) return raw;
+  const id = String(league.id || '');
+  const scrape = id.match(/^yahoo-(?:\d+\.l\.)?\d+-(\d+)$/i) || id.match(/^yahoo-\d+-(\d+)$/i);
+  return scrape ? scrape[1] : '';
+}
+
+function yahooTeamNameKey(league) {
+  return String(league?.myTeamName || league?.teamName || league?.userTeam?.name || '')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, '');
+}
+
 /** Prefer a real Yahoo league name over the section header cached in localStorage. */
 export function preferYahooLeagueName(...candidates) {
   for (const candidate of candidates) {
@@ -30,28 +67,19 @@ export function preferYahooLeagueName(...candidates) {
   return '';
 }
 
-function identityTail(value) {
-  const match = String(value || '').match(/(\d+)\s*$/);
-  return match ? match[1] : '';
-}
-
-/** Stable league + team identity so Yahoo scrapes do not list the same team twice. */
+/**
+ * Stable league + team identity so Yahoo API (`yahoo-414.l.123`) and scrape
+ * (`yahoo-123-1`) rows collapse to one board entry.
+ */
 export function canonicalLeagueIdentity(league) {
   if (!league || typeof league !== 'object') return '';
   const platform = String(league.platform || '').toLowerCase();
-  const yahooKey = yahooLeagueIdOf(league);
-  const yahooNumeric = identityTail(yahooKey)
-    || identityTail(league.yahooLeagueId)
-    || (String(league.id || '').match(/^yahoo-.*?(\d+)$/i) || [])[1]
-    || '';
-  const yahooTeam = identityTail(league.yahooTeamId || league.teamKey || league.teamId);
-  const teamName = String(league.myTeamName || league.teamName || league.userTeam?.name || '')
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}]+/gu, '');
-  if (platform.includes('yahoo') || yahooKey || /^yahoo-/i.test(String(league.id || ''))) {
-    const leaguePart = yahooNumeric || yahooKey;
-    if (!leaguePart) return '';
-    return `yahoo:${leaguePart}:${yahooTeam || teamName}`;
+  const yahooNum = yahooLeagueNumOf(league);
+  const yahooTeam = yahooTeamNumOf(league);
+  const teamName = yahooTeamNameKey(league);
+  if (platform.includes('yahoo') || yahooNum || /^yahoo-/i.test(String(league.id || ''))) {
+    if (!yahooNum) return '';
+    return `yahoo:${yahooNum}:${yahooTeam || teamName || 'team'}`;
   }
   if (platform.includes('sleeper') || league.sleeperLeagueId) {
     return `sleeper:${league.sleeperLeagueId || league.id || ''}`;
@@ -63,9 +91,14 @@ export function canonicalLeagueIdentity(league) {
 }
 
 function leagueRichness(league) {
-  const starters = (league?.portfolio || league?.userTeam?.starters || []).length;
+  const starters = (league?.portfolio || league?.userTeam?.starters || []).length
+    + (league?.threats || league?.oppTeam?.starters || []).length;
   const title = String(league?.leagueName || league?.name || '');
-  return starters * 10 + (title && !isGenericYahooLeagueName(title) ? 3 : 0);
+  const hasFullKey = Boolean(yahooLeagueIdOf(league) || String(league?.leagueKey || '').includes('.l.'));
+  return starters * 10
+    + (title && !isGenericYahooLeagueName(title) ? 3 : 0)
+    + (hasFullKey ? 2 : 0)
+    + (yahooTeamNumOf(league) ? 1 : 0);
 }
 
 function mergeDuplicateLeague(existing, incoming) {
@@ -73,20 +106,36 @@ function mergeDuplicateLeague(existing, incoming) {
   const secondary = primary === existing ? incoming : existing;
   const custom = String(existing?.customLeagueName || incoming?.customLeagueName || '').trim();
   const display = String(existing?.displayName || incoming?.displayName || custom).trim();
+  const leagueKey = existing?.leagueKey || incoming?.leagueKey || primary.leagueKey || '';
+  const yahooLeagueId = existing?.yahooLeagueId || incoming?.yahooLeagueId || primary.yahooLeagueId || leagueKey;
+  const preferredId = leagueKey && String(leagueKey).includes('.l.')
+    ? `yahoo-${leagueKey}`
+    : (existing?.id || incoming?.id);
   return {
     ...secondary,
     ...primary,
-    id: existing?.id || incoming?.id,
+    id: preferredId,
     customLeagueName: custom,
     displayName: display,
-    leagueGroup: existing?.leagueGroup || incoming?.leagueGroup || '',
-    yahooLeagueId: existing?.yahooLeagueId || incoming?.yahooLeagueId || primary.yahooLeagueId,
-    leagueKey: existing?.leagueKey || incoming?.leagueKey || primary.leagueKey,
+    yahooLeagueId,
+    leagueKey: leagueKey || yahooLeagueId,
     yahooTeamId: existing?.yahooTeamId || incoming?.yahooTeamId || primary.yahooTeamId,
+    teamKey: existing?.teamKey || incoming?.teamKey || primary.teamKey,
     sleeperLeagueId: existing?.sleeperLeagueId || incoming?.sleeperLeagueId,
     espnLeagueId: existing?.espnLeagueId || incoming?.espnLeagueId,
     espnTeamId: existing?.espnTeamId || incoming?.espnTeamId
   };
+}
+
+function yahooTeamsCompatible(a, b) {
+  const teamA = yahooTeamNumOf(a);
+  const teamB = yahooTeamNumOf(b);
+  if (teamA && teamB) return teamA === teamB;
+  const nameA = yahooTeamNameKey(a);
+  const nameB = yahooTeamNameKey(b);
+  if (nameA && nameB) return nameA === nameB;
+  // Only one side has identity — treat as the same team for scrape/API merges.
+  return true;
 }
 
 export function dedupeImportedLeagues(list) {
@@ -107,8 +156,33 @@ export function dedupeImportedLeagues(list) {
     const index = indexByKey.get(key);
     out[index] = mergeDuplicateLeague(out[index], league);
   });
-  if (out.length === source.length && out.every((league, index) => league === source[index])) return source;
-  return out;
+
+  // Second pass: collapse Yahoo rows that share a league number but split on
+  // missing team ids (API has `.t.1`, scrape only has the nickname).
+  const collapsed = [];
+  out.forEach((league) => {
+    const yahooNum = yahooLeagueNumOf(league);
+    const isYahoo = String(league?.platform || '').toLowerCase().includes('yahoo')
+      || Boolean(yahooNum)
+      || /^yahoo-/i.test(String(league?.id || ''));
+    if (!isYahoo || !yahooNum) {
+      collapsed.push(league);
+      return;
+    }
+    const matchIndex = collapsed.findIndex((item) => (
+      yahooLeagueNumOf(item) === yahooNum && yahooTeamsCompatible(item, league)
+    ));
+    if (matchIndex < 0) {
+      collapsed.push(league);
+      return;
+    }
+    collapsed[matchIndex] = mergeDuplicateLeague(collapsed[matchIndex], league);
+  });
+
+  if (collapsed.length === source.length && collapsed.every((league, index) => league === source[index])) {
+    return source;
+  }
+  return collapsed;
 }
 
 function yahooNameKey(value) {
@@ -156,7 +230,7 @@ export async function syncYahooLeaguesFromApi({ week } = {}) {
     throw new Error(data.error || data.details || `Yahoo sync failed (${response.status})`);
   }
   const leagues = Array.isArray(data.leagues) ? data.leagues : [];
-  return leagues.map((league) => {
+  return dedupeImportedLeagues(leagues.map((league) => {
     const teamName = preferYahooLeagueName(league.myTeamName, league.teamName, league.userTeam?.name);
     const leagueName = preferYahooLeagueOverTeam(
       teamName,
@@ -170,5 +244,5 @@ export async function syncYahooLeaguesFromApi({ week } = {}) {
       teamName,
       myTeamName: teamName || league.myTeamName
     };
-  });
+  }));
 }
