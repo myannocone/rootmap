@@ -18,6 +18,7 @@ import {
   starterProjectedPoints,
   starterScoredPoints
 } from './utils/matchupLineup';
+import { compareSlateGamePlayers } from './utils/slateGameOrder';
 import {
   backfillPlayerTeam,
   canonTeamCode,
@@ -4331,7 +4332,7 @@ export default function App() {
     const away = canonTeam(game.away);
     return Array.from(playerMasterIndex.values()).filter(
       (p) => isRootMapBoardPlayer(p) && (p.myShares > 0 || p.oppShares > 0) && (canonTeam(p.nflTeam) === away || canonTeam(p.nflTeam) === home)
-    );
+    ).sort(compareSlateGamePlayers);
   };
 
   const orderedGames = useMemo(() => {
