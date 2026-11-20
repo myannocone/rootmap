@@ -1,5 +1,6 @@
 /** Free-tier board limit: at most this many leagues may stay active (unchecked = hidden). */
-export const FREE_ACTIVE_LEAGUE_LIMIT = 2;
+export const MAX_FREE_ACTIVE_LEAGUES = 2;
+export const FREE_ACTIVE_LEAGUE_LIMIT = MAX_FREE_ACTIVE_LEAGUES;
 
 const PRO_STORAGE_KEY = 'rootmap_pro';
 
@@ -29,7 +30,7 @@ export function activeLeagueCount(leagues, hiddenLeagueIds) {
 
 export function freeActiveBadge(activeCount) {
   const used = Math.max(0, Number(activeCount) || 0);
-  return `${used} / ${FREE_ACTIVE_LEAGUE_LIMIT} Free Active`;
+  return `${used} / ${MAX_FREE_ACTIVE_LEAGUES} Free Active`;
 }
 
 /** Hide overflow so a saved free board cannot stay above the 2-league cap. */
@@ -38,7 +39,7 @@ export function clampFreeActiveHidden(leagues, hiddenLeagueIds) {
     ? new Set([...hiddenLeagueIds].map(String))
     : new Set([...(hiddenLeagueIds || [])].map(String));
   const active = (leagues || []).filter((league) => league && !hidden.has(String(league.id)));
-  active.slice(FREE_ACTIVE_LEAGUE_LIMIT).forEach((league) => {
+  active.slice(MAX_FREE_ACTIVE_LEAGUES).forEach((league) => {
     hidden.add(String(league.id));
   });
   return hidden;
