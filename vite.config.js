@@ -90,6 +90,7 @@ function privacyRoute() {
   const sendPrivacy = (req, _res, next) => {
     const path = String(req.url || '').split('?')[0]
     if (path === '/privacy' || path === '/privacy/') req.url = '/privacy.html'
+    if (path === '/terms' || path === '/terms/') req.url = '/terms.html'
     next()
   }
   return {

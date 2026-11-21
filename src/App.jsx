@@ -1,6 +1,7 @@
 ﻿import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { createPortal } from 'react-dom';
+import { createPortal, flushSync } from 'react-dom';
 import RootMapLogo from './components/Logo';
+import ProPaywall from './components/ProPaywall';
 import { fetchLiveNFLSlate, gamePhase } from './services/espnScoreboard';
 import { FALLBACK_NFL_WEEK, getActiveSlate, getSlateByWeek } from './data/nflSchedule';
 import { isEspnMatchupText, parseEspnMatchupText, resolveNflTeam } from './utils/leagueParser';
@@ -62,13 +63,13 @@ import {
   yahooLeagueIdOf
 } from './utils/yahooSync';
 import {
-  FREE_ACTIVE_LEAGUE_LIMIT,
+  MAX_FREE_ACTIVE_LEAGUES,
   activeLeagueCount,
   clampFreeActiveHidden,
   freeActiveBadge,
-  loadIsPro,
-  saveIsPro
+  loadIsPro
 } from './utils/proEntitlement';
+import { useSubscription } from './subscription/useSubscription';
 import { SITE_ORIGIN } from './utils/siteOrigin';
 import { Capacitor } from '@capacitor/core';
 import {
@@ -226,19 +227,27 @@ function capInflatedWeeklyTotal(board, starterSum, starterCount) {
 }
 
 let launchLeagueSnapshot = null;
+let launchMeta = null;
 
 function launchLeagueGate() {
   if (launchLeagueSnapshot) return launchLeagueSnapshot;
   const storedLeagues = loadStoredLeagues();
   const storedHidden = loadHiddenLeagueIds();
-  const overCap = !loadIsPro() && activeLeagueCount(storedLeagues, storedHidden) > FREE_ACTIVE_LEAGUE_LIMIT;
+  const proOnDevice = Capacitor.getPlatform() === 'ios' && loadIsPro();
+  const overCap = !proOnDevice && activeLeagueCount(storedLeagues, storedHidden) > MAX_FREE_ACTIVE_LEAGUES;
   const hidden = overCap ? clampFreeActiveHidden(storedLeagues, storedHidden) : storedHidden;
   const selectedIds = overCap
     ? storedLeagues
       .filter((league) => league && !hidden.has(String(league.id)))
       .map((league) => String(league.id))
     : [];
-  launchLeagueSnapshot = { storedLeagues, hidden, overCap, selectedIds };
+  launchLeagueSnapshot = { storedLeagues, hidden, overCap, selectedIds, originalHidden: storedHidden };
+  if (!launchMeta) {
+    launchMeta = {
+      overCap,
+      originalHidden: new Set([...storedHidden].map(String))
+    };
+  }
   queueMicrotask(() => {
     launchLeagueSnapshot = null;
   });
@@ -2528,7 +2537,15 @@ export default function App() {
     launchLeagueGate().overCap ? launchLeagueGate().storedLeagues : []
   ));
   const [activePickSelected, setActivePickSelected] = useState(() => new Set(launchLeagueGate().selectedIds));
-  const [isPro, setIsPro] = useState(loadIsPro);
+  const {
+    isPro,
+    offerings,
+    isLoading: subscriptionLoading,
+    purchasePackage,
+    restorePurchases
+  } = useSubscription();
+  const proWasRef = useRef(isPro);
+  const activePickCandidatesRef = useRef(activePickCandidates);
   const [sortMode, setSortMode] = useState('slate');
   const [boardFilters, setBoardFilters] = useState({
     liveOnly: false,
@@ -2836,6 +2853,8 @@ export default function App() {
     const importKeys = new Set();
     const importIds = new Set();
     let pickedForModal = [];
+    let nextBoard = [];
+    flushSync(() => {
     setLeagues((prev) => {
       const next = [...prev];
       importedList.forEach((league) => {
@@ -2859,17 +2878,19 @@ export default function App() {
         }
       });
       const deduped = dedupeImportedLeagues(next);
+      nextBoard = deduped;
       pickedForModal = deduped.filter((league) => (
         importIds.has(String(league.id))
         || (canonicalLeagueIdentity(league) && importKeys.has(canonicalLeagueIdentity(league)))
       ));
       return deduped;
     });
+    });
     setIsSyncing(false);
     closeConnect();
-    if (!isPro && pickedForModal.length >= 3) {
-      openActiveLeaguePicker(pickedForModal);
-      setSyncStatus(`Synced ${pickedForModal.length} Yahoo leagues for Week ${week}. Pick ${FREE_ACTIVE_LEAGUE_LIMIT} to keep on the board.`);
+    if (!isPro && activeLeagueCount(nextBoard, hiddenLeagueIds) > MAX_FREE_ACTIVE_LEAGUES) {
+      openActiveLeaguePicker(nextBoard);
+      setSyncStatus(`Synced ${pickedForModal.length} Yahoo leagues for Week ${week}. Pick ${MAX_FREE_ACTIVE_LEAGUES} to keep on the board.`);
       return true;
     }
     setView('matchups');
@@ -3337,8 +3358,43 @@ export default function App() {
   }, [hiddenLeagueIds]);
 
   useEffect(() => {
-    saveIsPro(isPro);
-  }, [isPro]);
+    activePickCandidatesRef.current = activePickCandidates;
+  }, [activePickCandidates]);
+
+  useEffect(() => {
+    if (subscriptionLoading) return undefined;
+    const wasPro = proWasRef.current;
+    proWasRef.current = isPro;
+    if (isPro && !wasPro) {
+      setShowProUpgrade(false);
+      const gate = launchMeta;
+      if (gate?.overCap) {
+        setHiddenLeagueIds(new Set([...gate.originalHidden].map(String)));
+        gate.overCap = false;
+        setShowActivePick(false);
+        setActivePickCandidates([]);
+        setActivePickSelected(new Set());
+        return undefined;
+      }
+      const candidates = activePickCandidatesRef.current || [];
+      if (candidates.length) {
+        setHiddenLeagueIds((prev) => {
+          const next = new Set([...prev].map(String));
+          candidates.forEach((league) => next.delete(String(league.id)));
+          return next;
+        });
+        setShowActivePick(false);
+        setActivePickCandidates([]);
+        setActivePickSelected(new Set());
+        setView('matchups');
+      }
+      return undefined;
+    }
+    if (!isPro && wasPro) {
+      setHiddenLeagueIds((prev) => clampFreeActiveHidden(leaguesRef.current, prev));
+    }
+    return undefined;
+  }, [isPro, subscriptionLoading]);
 
   useEffect(() => {
     if (!showLegend && !showLeagueFilter && !leaguePendingDelete && !showSetupImport && !showConnect && !showSleeper && !showEspn && !showYahooIngest && !showSortSheet && !showAlertSheet && !showWeekPicker && !showMobileSync && !jumpMenuOpen && !showManageLeagues && !showProUpgrade && !showActivePick) return undefined;
@@ -3455,28 +3511,22 @@ export default function App() {
     tapHaptic();
   };
 
-  const unlockRootMapPro = () => {
-    setIsPro(true);
+  const finishProPurchase = (result) => {
+    if (!result?.isPro) return result;
     setShowProUpgrade(false);
-    if (activePickCandidates.length) {
-      setHiddenLeagueIds((prev) => {
-        const next = new Set([...prev].map(String));
-        activePickCandidates.forEach((league) => next.delete(String(league.id)));
-        return next;
-      });
-      setShowActivePick(false);
-      setActivePickCandidates([]);
-      setActivePickSelected(new Set());
-      setView('matchups');
-    }
-    setSyncStatus('RootMap Pro unlocked. You can keep every league active.');
+    setSyncStatus(result.message || 'RootMap Pro is active.');
     tapHaptic();
+    return result;
   };
+
+  const purchaseProPackage = async (pkg) => finishProPurchase(await purchasePackage(pkg));
+
+  const restoreProPurchases = async () => finishProPurchase(await restorePurchases());
 
   const openActiveLeaguePicker = (candidateLeagues) => {
     const candidates = (candidateLeagues || []).filter(Boolean);
     if (!candidates.length) return;
-    const preselected = candidates.slice(0, FREE_ACTIVE_LEAGUE_LIMIT).map((league) => String(league.id));
+    const preselected = candidates.slice(0, MAX_FREE_ACTIVE_LEAGUES).map((league) => String(league.id));
     const selected = new Set(preselected);
     setActivePickCandidates(candidates);
     setActivePickSelected(selected);
@@ -3500,7 +3550,7 @@ export default function App() {
         next.delete(id);
         return next;
       }
-      if (next.size >= FREE_ACTIVE_LEAGUE_LIMIT) {
+      if (next.size >= MAX_FREE_ACTIVE_LEAGUES) {
         openProUpgrade();
         return prev;
       }
@@ -3512,7 +3562,7 @@ export default function App() {
   const confirmActiveLeaguePick = () => {
     const selected = new Set([...activePickSelected].map(String));
     if (!selected.size) {
-      setSyncStatus(`Pick up to ${FREE_ACTIVE_LEAGUE_LIMIT} leagues to keep on the board.`);
+      setSyncStatus(`Pick up to ${MAX_FREE_ACTIVE_LEAGUES} leagues to keep on the board.`);
       return;
     }
     setHiddenLeagueIds(new Set(
@@ -3535,7 +3585,7 @@ export default function App() {
       if (next.has(id)) {
         if (!isPro) {
           const currentlyActive = activeLeagueCount(leagues, next);
-          if (currentlyActive >= FREE_ACTIVE_LEAGUE_LIMIT) {
+          if (currentlyActive >= MAX_FREE_ACTIVE_LEAGUES) {
             openProUpgrade();
             return prev;
           }
@@ -3730,16 +3780,23 @@ export default function App() {
       setLeagueBackupError(true);
       return;
     }
+    const setupOverCap = !isPro && activeLeagueCount(next, new Set()) > MAX_FREE_ACTIVE_LEAGUES;
     setLeagues(next);
-    setHiddenLeagueIds(new Set());
+    if (setupOverCap) openActiveLeaguePicker(next);
+    else setHiddenLeagueIds(new Set());
     setActiveLeagueDrawer(null);
     setLeaguePendingDelete(null);
     setLeagueBackupPaste('');
     setShowSetupImport(false);
     setShowMobileSync(false);
     setLeagueBackupError(false);
-    setLeagueBackupMessage(`Setup imported. ${next.length} league${next.length === 1 ? '' : 's'} on the board.`);
-    setSyncStatus(`Imported setup with ${next.length} league${next.length === 1 ? '' : 's'}.`);
+    const setupLabel = `${next.length} league${next.length === 1 ? '' : 's'}`;
+    setLeagueBackupMessage(setupOverCap
+      ? `Setup imported. Pick ${MAX_FREE_ACTIVE_LEAGUES} of ${setupLabel} to keep on the board.`
+      : `Setup imported. ${setupLabel} on the board.`);
+    setSyncStatus(setupOverCap
+      ? `Imported setup with ${setupLabel}. Pick ${MAX_FREE_ACTIVE_LEAGUES} to keep on the board.`
+      : `Imported setup with ${setupLabel}.`);
   };
 
   const selectConnectTab = (tab) => {
@@ -3847,9 +3904,9 @@ export default function App() {
       const deduped = dedupeImportedLeagues(next);
       setLeagues(deduped);
       closeConnect();
-      if (!isPro && normalized.length >= 3) {
-        openActiveLeaguePicker(normalized);
-        setSyncStatus(`Synced ${normalized.length} Sleeper leagues for Week ${sleeperWeek}. Pick ${FREE_ACTIVE_LEAGUE_LIMIT} to keep on the board.`);
+      if (!isPro && activeLeagueCount(deduped, hiddenLeagueIds) > MAX_FREE_ACTIVE_LEAGUES) {
+        openActiveLeaguePicker(deduped);
+        setSyncStatus(`Synced ${normalized.length} Sleeper leagues for Week ${sleeperWeek}. Pick ${MAX_FREE_ACTIVE_LEAGUES} to keep on the board.`);
       } else {
         setView('matchups');
         setSyncStatus(`Synced ${normalized.length} Sleeper league${normalized.length === 1 ? '' : 's'} for Week ${sleeperWeek}.`);
@@ -3999,10 +4056,16 @@ export default function App() {
         leagueId: espnLeagueId.trim(),
         teamId: String(espnTeamId || '')
       });
-      setLeagues(dedupeImportedLeagues(next));
-      setView('matchups');
+      const dedupedEspn = dedupeImportedLeagues(next);
+      setLeagues(dedupedEspn);
       closeEspnConnect();
-      setSyncStatus(`Synced ${imported.name} from ESPN for Week ${espnWeek}.`);
+      if (!isPro && activeLeagueCount(dedupedEspn, hiddenLeagueIds) > MAX_FREE_ACTIVE_LEAGUES) {
+        openActiveLeaguePicker(dedupedEspn);
+        setSyncStatus(`Synced ${imported.name} from ESPN for Week ${espnWeek}. Pick ${MAX_FREE_ACTIVE_LEAGUES} to keep on the board.`);
+      } else {
+        setView('matchups');
+        setSyncStatus(`Synced ${imported.name} from ESPN for Week ${espnWeek}.`);
+      }
     } catch (error) {
       setEspnError(error?.message || 'Could not sync that ESPN league.');
     }
@@ -4068,13 +4131,19 @@ export default function App() {
       threats: oppStarters
     }, leagues.length);
 
-    setLeagues((prev) => dedupeImportedLeagues([...prev, imported]));
-    setView('matchups');
+    const pastedBoard = dedupeImportedLeagues([...leagues, imported]);
+    setLeagues(pastedBoard);
     setYahooIngestError('');
     setYahooPaste('');
     setYahooLeagueName('');
     closeConnect();
-    setSyncStatus(`Imported ${myStarters.length} starters and ${oppStarters.length} threats into ${leagueName}.`);
+    if (!isPro && activeLeagueCount(pastedBoard, hiddenLeagueIds) > MAX_FREE_ACTIVE_LEAGUES) {
+      openActiveLeaguePicker(pastedBoard);
+      setSyncStatus(`Imported ${leagueName}. Pick ${MAX_FREE_ACTIVE_LEAGUES} leagues to keep on the board.`);
+    } else {
+      setView('matchups');
+      setSyncStatus(`Imported ${myStarters.length} starters and ${oppStarters.length} threats into ${leagueName}.`);
+    }
   };
 
   const visibleLeagues = useMemo(
@@ -5918,7 +5987,7 @@ export default function App() {
                   RootMap Pro
                 </button>
                 <p className={`mt-1.5 text-center text-[10px] font-semibold ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
-                  Free tracks {FREE_ACTIVE_LEAGUE_LIMIT} active leagues. Uncheck one to swap, or upgrade for unlimited.
+                  Free tracks {MAX_FREE_ACTIVE_LEAGUES} active leagues. Uncheck one to swap, or upgrade for unlimited.
                 </p>
               </div>
             )}
@@ -5947,12 +6016,12 @@ export default function App() {
                 Pick Your Active Leagues
               </h3>
               <p className={`mt-1 text-[12px] font-semibold leading-snug ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
-                Free includes {FREE_ACTIVE_LEAGUE_LIMIT} active leagues. Everything stays saved — unchecked leagues hide from the board until you turn them on.
+                Free includes {MAX_FREE_ACTIVE_LEAGUES} active leagues. Everything stays saved — unchecked leagues hide from the board until you turn them on.
               </p>
               <div className={`mt-2 inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-black uppercase tracking-wide border ${
                 isLight ? 'bg-amber-50 text-amber-800 border-amber-200' : 'bg-amber-950/50 text-amber-200 border-amber-800'
               }`}>
-                {activePickSelected.size} / {FREE_ACTIVE_LEAGUE_LIMIT} Selected
+                {activePickSelected.size} / {MAX_FREE_ACTIVE_LEAGUES} Selected
               </div>
             </div>
             <div className="px-3 pb-2 overflow-y-auto flex-1 min-h-0 space-y-1.5">
@@ -5999,9 +6068,9 @@ export default function App() {
                 onClick={confirmActiveLeaguePick}
                 className="w-full min-h-11 rounded-xl bg-emerald-600 text-white text-xs font-black disabled:opacity-40"
               >
-                {activePickSelected.size === FREE_ACTIVE_LEAGUE_LIMIT
-                  ? `Track ${FREE_ACTIVE_LEAGUE_LIMIT} Selected Leagues`
-                  : `Track ${activePickSelected.size || FREE_ACTIVE_LEAGUE_LIMIT} Selected League${activePickSelected.size === 1 ? '' : 's'}`}
+                {activePickSelected.size === MAX_FREE_ACTIVE_LEAGUES
+                  ? `Track ${MAX_FREE_ACTIVE_LEAGUES} Selected Leagues`
+                  : `Track ${activePickSelected.size || MAX_FREE_ACTIVE_LEAGUES} Selected League${activePickSelected.size === 1 ? '' : 's'}`}
               </button>
               <button
                 type="button"
@@ -6018,65 +6087,14 @@ export default function App() {
         document.body
       )}
 
-      {showProUpgrade && createPortal(
-        <div
-          onClick={() => setShowProUpgrade(false)}
-          className="fixed inset-0 z-[95] bg-black/70 backdrop-blur-sm flex items-end sm:items-center justify-center p-3"
-          role="presentation"
-        >
-          <div
-            onClick={(event) => event.stopPropagation()}
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="pro-upgrade-title"
-            className={`w-full max-w-md rounded-3xl border shadow-2xl p-5 space-y-3 ${
-              isLight ? 'bg-white border-slate-200' : 'bg-slate-900 border-slate-700'
-            }`}
-          >
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <h3 id="pro-upgrade-title" className={`text-lg font-black ${isLight ? 'text-slate-900' : 'text-white'}`}>
-                  RootMap Pro
-                </h3>
-                <p className={`mt-1 text-[12px] font-semibold leading-snug ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
-                  Keep every Yahoo, Sleeper, and ESPN league active at once — no swapping, no 2-league cap.
-                </p>
-              </div>
-              <button
-                type="button"
-                aria-label="Close RootMap Pro"
-                onClick={() => setShowProUpgrade(false)}
-                className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm shrink-0 ${
-                  isLight ? 'bg-slate-100 text-slate-500' : 'bg-slate-800 text-slate-300'
-                }`}
-              >
-                ✕
-              </button>
-            </div>
-            <ul className={`space-y-1.5 text-[12px] font-semibold ${isLight ? 'text-slate-700' : 'text-slate-300'}`}>
-              <li>• Unlimited active leagues on Matchups and Game Slate</li>
-              <li>• Keep family and personal boards on at the same time</li>
-              <li>• All imported leagues stay synced without re-scraping</li>
-            </ul>
-            <button
-              type="button"
-              onClick={unlockRootMapPro}
-              className="w-full min-h-11 rounded-xl bg-emerald-600 text-white text-xs font-black"
-            >
-              Unlock RootMap Pro
-            </button>
-            <button
-              type="button"
-              onClick={() => setShowProUpgrade(false)}
-              className={`w-full min-h-10 rounded-xl text-[11px] font-black ${
-                isLight ? 'text-slate-500' : 'text-slate-400'
-              }`}
-            >
-              Not now
-            </button>
-          </div>
-        </div>,
-        document.body
+      {showProUpgrade && (
+        <ProPaywall
+          offerings={offerings}
+          isLoading={subscriptionLoading}
+          onClose={() => setShowProUpgrade(false)}
+          onPurchase={purchaseProPackage}
+          onRestore={restoreProPurchases}
+        />
       )}
 
       {showAlertSheet && (
@@ -6402,7 +6420,13 @@ export default function App() {
               <div className="grid grid-cols-2 gap-1.5 mb-2">
                 <button
                   type="button"
-                  onClick={() => setHiddenLeagueIds(new Set())}
+                  onClick={() => {
+                    if (!isPro && leagues.length > MAX_FREE_ACTIVE_LEAGUES) {
+                      openProUpgrade();
+                      return;
+                    }
+                    setHiddenLeagueIds(new Set());
+                  }}
                   disabled={hiddenCount === 0}
                   className={`py-1.5 rounded-xl text-[11px] font-black border disabled:opacity-40 ${
                     isLight ? 'bg-emerald-50 text-emerald-800 border-emerald-200' : 'bg-emerald-950 text-emerald-300 border-emerald-800'
