@@ -204,6 +204,21 @@ body {
   animation: pulse-blink 1.5s ease-in-out infinite;
 }
 
+@keyframes rootmap-manage-pill {
+  0%, 100% {
+    opacity: 1;
+    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0);
+  }
+  50% {
+    opacity: 0.6;
+    box-shadow: 0 0 10px 0 rgba(16, 185, 129, 0.28);
+  }
+}
+
+.rootmap-manage-pill {
+  animation: rootmap-manage-pill 3.6s ease-in-out infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .rootmap-crossfire,
   .rootmap-score-pop,
@@ -217,7 +232,8 @@ body {
   .rootmap-doubledown-glow,
   .rootmap-view-slide-left,
   .rootmap-view-slide-right,
-  .rootmap-pulse-blink {
+  .rootmap-pulse-blink,
+  .rootmap-manage-pill {
     animation: none;
   }
 

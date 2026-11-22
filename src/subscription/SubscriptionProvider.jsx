@@ -2,6 +2,12 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Capacitor } from '@capacitor/core';
 import { Purchases } from '@revenuecat/purchases-capacitor';
 import { loadIsPro, saveIsPro } from '../utils/proEntitlement';
+import {
+  friendsPassGrantsUnlimited,
+  grantFriendsPass,
+  readFriendsPass
+} from '../utils/friendsPass';
+import { OfferCodeRedemption } from '../utils/offerCodeRedemption';
 import { SubscriptionContext } from './useSubscription';
 
 const PRO_ENTITLEMENT_ID = 'rootmap_pro';
@@ -56,21 +62,50 @@ function unwrapOfferings(result) {
   return null;
 }
 
+function wait(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+function pluginUnavailable(error) {
+  const code = String(error?.code ?? '');
+  if (code === 'UNIMPLEMENTED' || code === 'UNAVAILABLE') return true;
+  return /not implemented|plugin is not implemented|unavailable/i.test(errorMessage(error));
+}
+
 export function SubscriptionProvider({ children }) {
   const nativeIos = isNativeIos();
-  const [isPro, setIsPro] = useState(() => nativeIos && loadIsPro());
+  const [paidPro, setPaidPro] = useState(() => nativeIos && loadIsPro());
+  const [friendsPass, setFriendsPass] = useState(() => readFriendsPass());
   const [offerings, setOfferings] = useState(null);
   const [isLoading, setIsLoading] = useState(nativeIos);
+  const friendsUnlimited = friendsPassGrantsUnlimited(friendsPass);
+  const isPro = paidPro || friendsUnlimited;
+  const accessKind = paidPro ? 'subscription' : (friendsUnlimited ? 'friends' : null);
   const isProRef = useRef(isPro);
+  const friendsUnlimitedRef = useRef(friendsUnlimited);
   useEffect(() => {
     isProRef.current = isPro;
-  }, [isPro]);
+    friendsUnlimitedRef.current = friendsUnlimited;
+  }, [isPro, friendsUnlimited]);
 
   const applyCustomerInfo = useCallback((customerInfo) => {
     const pro = entitlementActive(customerInfo);
-    setIsPro(pro);
+    setPaidPro(pro);
     saveIsPro(pro);
     return pro;
+  }, []);
+
+  const refreshCustomerInfo = useCallback(async () => {
+    if (typeof Purchases.invalidateCustomerInfoCache === 'function') {
+      await Purchases.invalidateCustomerInfoCache().catch(() => {});
+    }
+    if (typeof Purchases.syncPurchases === 'function') {
+      await Purchases.syncPurchases().catch(() => {});
+    }
+    const infoResult = await Purchases.getCustomerInfo();
+    return infoResult?.customerInfo || null;
   }, []);
 
   useEffect(() => {
@@ -149,6 +184,87 @@ export function SubscriptionProvider({ children }) {
     }
   }, [nativeIos, applyCustomerInfo]);
 
+  const presentOfferCodeSheet = useCallback(async () => {
+    try {
+      await OfferCodeRedemption.presentOfferCodeRedeemSheet();
+      return;
+    } catch (error) {
+      if (!pluginUnavailable(error)) throw error;
+    }
+    if (typeof Purchases.presentCodeRedemptionSheet === 'function') {
+      await Purchases.presentCodeRedemptionSheet();
+      return;
+    }
+    throw new Error('Offer code redemption is not available on this device.');
+  }, []);
+
+  const redeemOfferCode = useCallback(async () => {
+    if (!nativeIos) {
+      return {
+        status: 'unavailable',
+        message: 'Offer codes are redeemed in the RootMap iOS app.',
+        isPro: isProRef.current
+      };
+    }
+    try {
+      await ensureIosPurchases();
+      await presentOfferCodeSheet();
+      let paid = false;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        let customerInfo = null;
+        try {
+          customerInfo = await refreshCustomerInfo();
+        } catch {
+          customerInfo = null;
+        }
+        if (customerInfo) paid = applyCustomerInfo(customerInfo);
+        if (paid) break;
+        if (attempt < 2) await wait(700);
+      }
+      const unlimited = paid || friendsUnlimitedRef.current;
+      if (paid) {
+        return {
+          status: 'redeemed',
+          message: 'Offer applied. Unlimited leagues are unlocked.',
+          isPro: true,
+          access: 'subscription'
+        };
+      }
+      return {
+        status: 'pending',
+        message: 'Offer code sheet closed. If Apple accepted a code, unlimited leagues unlock as soon as the receipt updates.',
+        isPro: unlimited
+      };
+    } catch (error) {
+      if (isPurchaseCancelled(error)) {
+        return { status: 'cancelled', message: 'Offer code redemption was cancelled.', isPro: isProRef.current };
+      }
+      return {
+        status: 'error',
+        message: errorMessage(error) || 'Offer code redemption could not be completed.',
+        isPro: isProRef.current
+      };
+    }
+  }, [nativeIos, presentOfferCodeSheet, refreshCustomerInfo, applyCustomerInfo]);
+
+  const redeemFriendsPass = useCallback(async (code) => {
+    const result = grantFriendsPass(code);
+    if (!result.ok) {
+      return {
+        status: 'error',
+        message: result.message,
+        isPro: isProRef.current
+      };
+    }
+    setFriendsPass(result.pass);
+    return {
+      status: 'redeemed',
+      message: 'Friends Pass is active for this season. Unlimited leagues are unlocked, and nothing was charged.',
+      isPro: true,
+      access: 'friends'
+    };
+  }, []);
+
   const restorePurchases = useCallback(async () => {
     if (!nativeIos) {
       return {
@@ -184,11 +300,14 @@ export function SubscriptionProvider({ children }) {
 
   const value = useMemo(() => ({
     isPro,
+    accessKind,
     offerings,
     isLoading,
     purchasePackage,
-    restorePurchases
-  }), [isPro, offerings, isLoading, purchasePackage, restorePurchases]);
+    restorePurchases,
+    redeemOfferCode,
+    redeemFriendsPass
+  }), [isPro, accessKind, offerings, isLoading, purchasePackage, restorePurchases, redeemOfferCode, redeemFriendsPass]);
 
   return (
     <SubscriptionContext.Provider value={value}>

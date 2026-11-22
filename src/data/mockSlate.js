@@ -16,11 +16,11 @@ export const mockGames = [
         exposureColor: "green",
         leaguesSummary: "4/5 Leagues",
         leagueDetails: [
-          { name: "Family League", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Cisco/Bloom" },
-          { name: "High Stakes 12-Man", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Gelardi" },
-          { name: "Work Dynasty", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Stoiber" },
-          { name: "Friends PPR", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Taxin" },
-          { name: "Eliminator", status: "UNOWNED", impact: "0.0x Neutral", opponent: "N/A" }
+          { name: "Yahoo League", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Cisco/Bloom" },
+          { name: "ESPN League", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Gelardi" },
+          { name: "Sleeper League", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Stoiber" },
+          { name: "Yahoo League", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Taxin" },
+          { name: "ESPN League", status: "UNOWNED", impact: "0.0x Neutral", opponent: "N/A" }
         ]
       },
       {
@@ -33,10 +33,10 @@ export const mockGames = [
         exposureColor: "green",
         leaguesSummary: "2/5 Leagues",
         leagueDetails: [
-          { name: "Family League", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Cisco/Bloom" },
-          { name: "High Stakes 12-Man", status: "BENCH", impact: "0.0x (Benched)", opponent: "Gelardi" },
-          { name: "Work Dynasty", status: "OPPONENT", impact: "-1.0x (Against Me)", opponent: "Stoiber" },
-          { name: "Friends PPR", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Taxin" }
+          { name: "Yahoo League", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Cisco/Bloom" },
+          { name: "ESPN League", status: "BENCH", impact: "0.0x (Benched)", opponent: "Gelardi" },
+          { name: "Sleeper League", status: "OPPONENT", impact: "-1.0x (Against Me)", opponent: "Stoiber" },
+          { name: "Yahoo League", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Taxin" }
         ]
       }
     ]
@@ -58,9 +58,9 @@ export const mockGames = [
         exposureColor: "green",
         leaguesSummary: "3/5 Leagues",
         leagueDetails: [
-          { name: "Family League", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Cisco/Bloom" },
-          { name: "Friends PPR", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Taxin" },
-          { name: "Work Dynasty", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Stoiber" }
+          { name: "Yahoo League", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Cisco/Bloom" },
+          { name: "Yahoo League", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Taxin" },
+          { name: "Sleeper League", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Stoiber" }
         ]
       },
       {
@@ -73,9 +73,9 @@ export const mockGames = [
         exposureColor: "red",
         leaguesSummary: "Opponent Starter (3x)",
         leagueDetails: [
-          { name: "High Stakes 12-Man", status: "OPPONENT", impact: "-1.0x (Against Me)", opponent: "Gelardi" },
-          { name: "Work Dynasty", status: "OPPONENT", impact: "-1.0x (Against Me)", opponent: "Stoiber" },
-          { name: "Friends PPR", status: "OPPONENT", impact: "-1.0x (Against Me)", opponent: "Taxin" }
+          { name: "ESPN League", status: "OPPONENT", impact: "-1.0x (Against Me)", opponent: "Gelardi" },
+          { name: "Sleeper League", status: "OPPONENT", impact: "-1.0x (Against Me)", opponent: "Stoiber" },
+          { name: "Yahoo League", status: "OPPONENT", impact: "-1.0x (Against Me)", opponent: "Taxin" }
         ]
       }
     ]
@@ -97,11 +97,11 @@ export const mockGames = [
         exposureColor: "green",
         leaguesSummary: "5/5 Leagues",
         leagueDetails: [
-          { name: "Family League", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Cisco/Bloom" },
-          { name: "High Stakes 12-Man", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Gelardi" },
-          { name: "Work Dynasty", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Stoiber" },
-          { name: "Friends PPR", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Taxin" },
-          { name: "Eliminator", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Shifren" }
+          { name: "Yahoo League", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Cisco/Bloom" },
+          { name: "ESPN League", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Gelardi" },
+          { name: "Sleeper League", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Stoiber" },
+          { name: "Yahoo League", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Taxin" },
+          { name: "ESPN League", status: "STARTER", impact: "+1.0x (For Me)", opponent: "Shifren" }
         ]
       }
     ]
@@ -117,12 +117,12 @@ export const mockH2H = {
       slot: 'RB',
       pts: 21.4,
       proj: 18.2,
-      league: 'Family League',
+      league: 'Yahoo League',
       leagueDetails: [
-        { name: 'Family League', status: 'STARTER', opponent: 'Cisco / Bloom', impact: '+1.0x Win Prob' },
-        { name: 'High Stakes 12-Man', status: 'STARTER', opponent: 'Team Gelardi', impact: '+1.0x Win Prob' },
-        { name: 'Work Dynasty', status: 'STARTER', opponent: 'Stoiber Squad', impact: '+1.0x Win Prob' },
-        { name: 'Friends PPR', status: 'STARTER', opponent: 'Byrnes / Siegel', impact: '+1.0x Win Prob' }
+        { name: 'Yahoo League', status: 'STARTER', opponent: 'Cisco / Bloom', impact: '+1.0x Win Prob' },
+        { name: 'ESPN League', status: 'STARTER', opponent: 'Team Gelardi', impact: '+1.0x Win Prob' },
+        { name: 'Sleeper League', status: 'STARTER', opponent: 'Stoiber Squad', impact: '+1.0x Win Prob' },
+        { name: 'Yahoo League', status: 'STARTER', opponent: 'Byrnes / Siegel', impact: '+1.0x Win Prob' }
       ]
     },
     {
@@ -132,11 +132,11 @@ export const mockH2H = {
       slot: 'WR',
       pts: 14.8,
       proj: 15.6,
-      league: 'High Stakes 12-Man',
+      league: 'ESPN League',
       leagueDetails: [
-        { name: 'High Stakes 12-Man', status: 'STARTER', opponent: 'Team Gelardi', impact: '+1.0x Win Prob' },
-        { name: 'Family League', status: 'STARTER', opponent: 'Cisco / Bloom', impact: '+1.0x Win Prob' },
-        { name: 'Work Dynasty', status: 'OPPONENT', opponent: 'Stoiber Squad', impact: '-1.0x Win Prob' }
+        { name: 'ESPN League', status: 'STARTER', opponent: 'Team Gelardi', impact: '+1.0x Win Prob' },
+        { name: 'Yahoo League', status: 'STARTER', opponent: 'Cisco / Bloom', impact: '+1.0x Win Prob' },
+        { name: 'Sleeper League', status: 'OPPONENT', opponent: 'Stoiber Squad', impact: '-1.0x Win Prob' }
       ]
     },
     {
@@ -146,9 +146,9 @@ export const mockH2H = {
       slot: 'LB',
       pts: 8.5,
       proj: 9.2,
-      league: 'Work Dynasty',
+      league: 'Sleeper League',
       leagueDetails: [
-        { name: 'Work Dynasty', status: 'STARTER', opponent: 'Stoiber Squad', impact: '+1.0x Win Prob' }
+        { name: 'Sleeper League', status: 'STARTER', opponent: 'Stoiber Squad', impact: '+1.0x Win Prob' }
       ]
     },
     {
@@ -158,9 +158,9 @@ export const mockH2H = {
       slot: 'BENCH',
       pts: 0.0,
       proj: 14.0,
-      league: 'Family League',
+      league: 'Yahoo League',
       leagueDetails: [
-        { name: 'Family League', status: 'BENCH', opponent: 'Cisco / Bloom', impact: '0.0x Inactive' }
+        { name: 'Yahoo League', status: 'BENCH', opponent: 'Cisco / Bloom', impact: '0.0x Inactive' }
       ]
     }
   ],
@@ -172,11 +172,11 @@ export const mockH2H = {
       slot: 'TE',
       pts: 6.2,
       proj: 13.5,
-      league: 'Family League',
+      league: 'Yahoo League',
       leagueDetails: [
-        { name: 'Family League', status: 'OPPONENT', opponent: 'Yanno Dynasty', impact: '-1.0x Risk' },
-        { name: 'High Stakes 12-Man', status: 'OPPONENT', opponent: 'Briarcliff Bombers', impact: '-1.0x Risk' },
-        { name: 'Work Dynasty', status: 'OPPONENT', opponent: 'ArrowMark Alpha', impact: '-1.0x Risk' }
+        { name: 'Yahoo League', status: 'OPPONENT', opponent: 'Yanno Dynasty', impact: '-1.0x Risk' },
+        { name: 'ESPN League', status: 'OPPONENT', opponent: 'Briarcliff Bombers', impact: '-1.0x Risk' },
+        { name: 'Sleeper League', status: 'OPPONENT', opponent: 'ArrowMark Alpha', impact: '-1.0x Risk' }
       ]
     },
     {
@@ -186,9 +186,9 @@ export const mockH2H = {
       slot: 'DL',
       pts: 11.0,
       proj: 7.8,
-      league: 'Work Dynasty',
+      league: 'Sleeper League',
       leagueDetails: [
-        { name: 'Work Dynasty', status: 'OPPONENT', opponent: 'ArrowMark Alpha', impact: '-1.0x Risk' }
+        { name: 'Sleeper League', status: 'OPPONENT', opponent: 'ArrowMark Alpha', impact: '-1.0x Risk' }
       ]
     }
   ]

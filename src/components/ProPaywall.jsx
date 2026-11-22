@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Capacitor } from '@capacitor/core';
 import RootMapLogo from './Logo';
+import LeagueAccessActions from './LeagueAccessActions';
 import { SITE_ORIGIN } from '../utils/siteOrigin';
 
 const PACKAGE_SPECS = [
@@ -79,7 +80,10 @@ export default function ProPaywall({
   isLoading = false,
   onClose,
   onPurchase,
-  onRestore
+  onRestore,
+  onRedeemOfferCode,
+  onRedeemFriendsPass,
+  onAccessUnlocked
 }) {
   const packages = useMemo(() => packagesFromOfferings(offerings), [offerings]);
   const [selectedId, setSelectedId] = useState(PACKAGE_SPECS[0].id);
@@ -268,6 +272,15 @@ export default function ProPaywall({
             >
               {busy === 'restore' ? 'Restoring…' : 'Restore Purchases'}
             </button>
+            {onRedeemOfferCode && onRedeemFriendsPass ? (
+              <LeagueAccessActions
+                isLight={false}
+                disabled={Boolean(busy)}
+                onRedeemOfferCode={onRedeemOfferCode}
+                onRedeemFriendsPass={onRedeemFriendsPass}
+                onUnlocked={onAccessUnlocked}
+              />
+            ) : null}
             <div className="flex items-center justify-center gap-3 pt-1 text-[12px] font-bold">
               <button
                 type="button"
