@@ -195,6 +195,14 @@ body {
   animation: rootmap-slide-in-right 220ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
+@keyframes rootmap-spin {
+  to { transform: rotate(360deg); }
+}
+
+.rootmap-spin {
+  animation: rootmap-spin 0.8s linear infinite;
+}
+
 @keyframes pulse-blink {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.6; }
@@ -241,7 +249,8 @@ body {
   .rootmap-view-slide-left,
   .rootmap-view-slide-right,
   .rootmap-pulse-blink,
-  .rootmap-manage-pill {
+  .rootmap-manage-pill,
+  .rootmap-spin {
     animation: none;
   }
 

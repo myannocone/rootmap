@@ -121,7 +121,7 @@ function mergeEspnIntoSlate(scheduleGames, events) {
   });
 }
 
-export async function fetchLiveNFLSlate(now = new Date(), week = null) {
+export async function fetchLiveNFLSlate(now = new Date(), week = null, { forceRefresh = false } = {}) {
   const active = getActiveSlate(now);
   const requested = Number(week) || active?.week || 9;
   const slate = getSlateByWeek(requested) || {
@@ -135,8 +135,9 @@ export async function fetchLiveNFLSlate(now = new Date(), week = null) {
   };
   let events = [];
   try {
-    const url = `https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?dates=${slate.season}&seasontype=2&week=${slate.week}`;
-    const res = await fetch(url);
+    const bust = forceRefresh ? `&_=${Date.now()}` : '';
+    const url = `https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?dates=${slate.season}&seasontype=2&week=${slate.week}${bust}`;
+    const res = await fetch(url, forceRefresh ? { cache: 'no-store' } : undefined);
     if (res.ok) {
       const data = await res.json();
       events = data?.events || [];

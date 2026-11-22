@@ -46,10 +46,19 @@ async function resolveAccess(req, bearer) {
   return { accessToken, refreshed };
 }
 
+function wantsForceRefresh(req) {
+  const value = req.query?.forceRefresh;
+  return value === '1' || value === 'true' || value === 'yes';
+}
+
 export default async function handler(req, res) {
   const secure = requestIsSecure(req);
   const bearer = bearerFrom(req);
   const week = weekFrom(req);
+  if (wantsForceRefresh(req)) {
+    res.setHeader('Cache-Control', 'no-store, max-age=0');
+    res.setHeader('Pragma', 'no-cache');
+  }
 
   try {
     const { accessToken, refreshed } = await resolveAccess(req, bearer);

@@ -97,15 +97,20 @@ export function espnLeagueUrl({ season, leagueId, week }) {
   return `${ESPN_ORIGIN}/apis/v3/games/ffl/seasons/${season}/segments/0/leagues/${leagueId}?${espnViewQuery(week)}`;
 }
 
-function clientEspnUrl({ season, leagueId, week }) {
+function clientEspnUrl({ season, leagueId, week, forceRefresh = false }) {
+  const bust = forceRefresh ? `&forceRefresh=1&_=${Date.now()}` : '';
   if (import.meta.env.DEV) {
-    return `/api/espn/apis/v3/games/ffl/seasons/${season}/segments/0/leagues/${leagueId}?${espnViewQuery(week)}`;
+    return `/api/espn/apis/v3/games/ffl/seasons/${season}/segments/0/leagues/${leagueId}?${espnViewQuery(week)}${bust}`;
   }
   const params = new URLSearchParams({
     leagueId: String(leagueId),
     season: String(season),
     week: String(week)
   });
+  if (forceRefresh) {
+    params.set('forceRefresh', '1');
+    params.set('_', String(Date.now()));
+  }
   const path = `/api/espn?${params.toString()}`;
   return Capacitor.isNativePlatform() ? `${SITE_ORIGIN}${path}` : path;
 }
@@ -184,20 +189,30 @@ export function espnCookieHeader(swid, espnS2) {
   return `SWID=${swid}; espn_s2=${espnS2};`;
 }
 
-export async function fetchEspnLeague({ leagueId, season = 2026, week = 9, swid = '', espnS2 = '' }) {
+export async function fetchEspnLeague({
+  leagueId,
+  season = 2026,
+  week = 9,
+  swid = '',
+  espnS2 = '',
+  forceRefresh = false
+}) {
   const id = String(leagueId || '').trim();
   if (!/^\d+$/.test(id)) throw new Error('Enter an ESPN league ID.');
   const { year, weekNumber } = assertSeasonAndWeek(season, week);
   const session = espnSessionCookies(swid, espnS2);
-  const url = clientEspnUrl({ season: year, leagueId: id, week: weekNumber });
-  const headers = { Accept: 'application/json' };
+  const url = clientEspnUrl({ season: year, leagueId: id, week: weekNumber, forceRefresh });
+  const headers = {
+    Accept: 'application/json',
+    'Cache-Control': 'no-cache'
+  };
   if (session) {
     headers['X-SWID'] = encodeURIComponent(session.swid);
     headers['X-ESPN-S2'] = encodeURIComponent(session.espnS2);
   }
   let response;
   try {
-    response = await fetch(url, { headers });
+    response = await fetch(url, { headers, cache: 'no-store' });
   } catch {
     throw new Error('Could not reach ESPN.');
   }
@@ -263,12 +278,11 @@ function opponentIdFor(league, team, weekNumber) {
   return null;
 }
 
-function sideWeeklyPoints(side) {
+function sideActualPoints(side) {
   if (!side || typeof side !== 'object' || Array.isArray(side)) return null;
-  const live = finiteNumber(side.totalPointsLive);
-  if (live != null) return live;
-  // totalPoints is the matchup-period total when the request is scoped to scoringPeriodId.
-  // rosterForCurrentScoringPeriod.appliedStatTotal often includes bench and is not used.
+  // totalPointsLive is ESPN's live projection (points already scored plus remaining
+  // projections). Using it as the team score counts unplayed statSourceId 1 lines.
+  // totalPoints is the matchup actual when the request is scoped to scoringPeriodId.
   return finiteNumber(side.totalPoints);
 }
 
@@ -305,10 +319,13 @@ function sideWeeklyProjection(side) {
 
 function sumStarterActuals(starters) {
   return (starters || []).reduce((sum, player) => {
+    if (player?.unplayed === true || player?.hasActualLine === false) return sum;
     const actual = finiteNumber(player?.actualPoints);
     if (actual != null) return sum + actual;
-    if (player?.isLive) {
+    if (player?.isLive || player?.hasActualLine === true) {
       const points = finiteNumber(player?.points);
+      const proj = finiteNumber(player?.projPoints ?? player?.projectedPoints);
+      if (points != null && proj != null && points === proj) return sum;
       return sum + (points != null ? points : 0);
     }
     return sum;
@@ -334,22 +351,21 @@ function matchupSide(game, teamId) {
 function weeklyMatchupScore(game, team, teamId, starters, weekNumber) {
   const unique = dedupeStarters(starters);
   const starterActuals = sumStarterActuals(unique);
+  const anyActualLine = unique.some((player) => player?.hasActualLine === true);
   const weekPoints = pointsByPeriod(team, weekNumber, 'pointsByScoringPeriod');
   const side = matchupSide(game, teamId);
-  const live = sideWeeklyPoints(side);
   const season = finiteNumber(team?.points);
-  const period = side && typeof side === 'object' ? finiteNumber(side.totalPoints) : null;
+  const period = sideActualPoints(side);
   const periodIsSeason = period != null && season != null && season > 0 && Math.abs(period - season) < 0.05;
   let board = weekPoints != null
     ? weekPoints
-    : (live != null && !(periodIsSeason && live === period) ? live : (period != null && !periodIsSeason ? period : null));
+    : (period != null && !periodIsSeason ? period : null);
+  // No statSourceId 0 lines yet — a non-zero team total here is a projection or season rollup.
+  if (!anyActualLine && !(starterActuals > 0)) return 0;
   if (board != null && board > 400 && !(starterActuals > 0)) board = null;
-  if (starterActuals > 0 && (board == null || board === 0 || boardIsInflated(board, starterActuals, unique))) {
-    return starterActuals;
-  }
-  if (board != null && board !== 0 && !boardIsInflated(board, Math.max(starterActuals, 0.01), unique)) return board;
-  if (starterActuals > 0) return starterActuals;
-  return board ?? 0;
+  if (!(starterActuals > 0)) return 0;
+  if (board == null || board === 0 || boardIsInflated(board, starterActuals, unique)) return starterActuals;
+  return board;
 }
 
 function weeklyMatchupProjection(game, team, teamId, starters, weekNumber) {
@@ -375,10 +391,42 @@ function playerName(player, defense, nflTeam) {
 
 function statTotal(stat) {
   if (!stat || typeof stat !== 'object') return null;
-  const raw = stat.appliedStatTotal != null ? stat.appliedStatTotal : stat.appliedTotal;
+  // appliedTotal is the fantasy-point line for this statSourceId + scoringPeriodId.
+  // appliedStatTotal on a roster pool is often season-to-date, so it is only a fallback.
+  const raw = stat.appliedTotal != null && stat.appliedTotal !== ''
+    ? stat.appliedTotal
+    : stat.appliedStatTotal;
   if (raw == null || raw === '') return null;
   const value = Number(raw);
   return Number.isFinite(value) ? value : null;
+}
+
+function statsForEntry(player, entry) {
+  const lists = [
+    player?.stats,
+    entry?.playerPoolEntry?.player?.stats,
+    entry?.stats,
+    entry?.playerPoolEntry?.stats
+  ];
+  const merged = [];
+  const seen = new Set();
+  lists.forEach((list) => {
+    (Array.isArray(list) ? list : []).forEach((stat) => {
+      if (!stat || typeof stat !== 'object') return;
+      const key = [
+        stat.id,
+        stat.externalId,
+        stat.statSourceId,
+        stat.scoringPeriodId,
+        stat.statSplitTypeId,
+        stat.appliedTotal
+      ].join(':');
+      if (seen.has(key)) return;
+      seen.add(key);
+      merged.push(stat);
+    });
+  });
+  return merged;
 }
 
 function findWeekStat(stats, weekNumber, sourceId) {
@@ -430,20 +478,23 @@ function espnNflTeam(player, pool) {
   return abbr || '';
 }
 
-function espnScore(player, weekNumber) {
-  const actualStat = findWeekStat(player?.stats, weekNumber, 0);
-  const actual = bestWeekStatTotal(player?.stats, weekNumber, 0);
-  const projected = bestWeekStatTotal(player?.stats, weekNumber, 1);
-  // pool.appliedStatTotal is season-to-date on mRoster — never treat it as this week's line.
-  const started = statLineStarted(actualStat) || (actual != null && actual > 0);
-  const actualPoints = started ? (actual ?? 0) : null;
-  const projPoints = projected;
-  const points = actualPoints != null ? actualPoints : (projPoints ?? 0);
+function espnScore(stats, weekNumber) {
+  const actualStat = findWeekStat(stats, weekNumber, 0);
+  const actual = bestWeekStatTotal(stats, weekNumber, 0);
+  const projected = bestWeekStatTotal(stats, weekNumber, 1);
+  // statSourceId 0 for this scoringPeriodId is the only actual line.
+  // A missing line, or a 0 with an empty box score, means the player has not played.
+  // Never copy statSourceId 1 (projection) into actualPoints or points.
+  const hasActualLine = statLineStarted(actualStat) || (actual != null && actual > 0);
+  const actualPoints = hasActualLine ? (actual ?? 0) : 0;
   return {
-    points,
-    projPoints,
+    points: actualPoints,
+    projPoints: projected,
+    projectedPoints: projected,
     actualPoints,
-    isLive: Boolean(started && actualPoints != null && actualPoints > 0)
+    hasActualLine,
+    unplayed: !hasActualLine,
+    isLive: Boolean(hasActualLine && actualPoints > 0)
   };
 }
 
@@ -465,7 +516,7 @@ function starterFromEntry(entry, weekNumber) {
   const nflTeam = espnNflTeam(player, pool);
   const name = playerName(player, defense, nflTeam);
   if (!name) return null;
-  const score = espnScore(player, weekNumber);
+  const score = espnScore(statsForEntry(player, entry), weekNumber);
   const espnPlayerId = player.id ?? entry.playerId ?? pool?.id;
   return {
     name,
@@ -476,7 +527,11 @@ function starterFromEntry(entry, weekNumber) {
     team: nflTeam,
     points: score.points,
     projPoints: score.projPoints,
+    projectedPoints: score.projectedPoints,
     actualPoints: score.actualPoints,
+    hasActualLine: score.hasActualLine,
+    unplayed: score.unplayed,
+    scoringSource: 'espn',
     isLive: score.isLive,
     inRedZone: false,
     gameClock: `Week ${weekNumber}`,
@@ -594,6 +649,7 @@ export function mapEspnLeague({ league, leagueId, teamId, week, season = 2026 })
     id: `espn-${id}`,
     espnLeagueId: id,
     espnTeamId: String(teamId),
+    scoringSource: 'espn',
     lineupWeek: weekNumber,
     lineupProjected: Boolean(mineLineup.projected || oppLineup.projected),
     rosterPositions: espnRosterPositions(league),

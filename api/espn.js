@@ -141,11 +141,17 @@ export default async function handler(req, res) {
     headers.Cookie = `SWID=${swid}; espn_s2=${espnS2};`;
   }
 
+  const forceRefresh = queryValue(req, 'forceRefresh') === '1' || queryValue(req, 'force') === '1';
+  const liveTarget = forceRefresh ? `${target}&_=${Date.now()}` : target;
+  res.setHeader('Cache-Control', 'no-store, max-age=0');
+  res.setHeader('Pragma', 'no-cache');
+
   try {
-    const upstream = await fetch(target, { headers });
+    const upstream = await fetch(liveTarget, { headers, cache: 'no-store' });
     const text = await upstream.text();
     res.statusCode = upstream.status;
     res.setHeader('Content-Type', upstream.headers.get('content-type') || 'application/json');
+    res.setHeader('Cache-Control', 'no-store, max-age=0');
     res.end(text);
   } catch {
     res.statusCode = 502;

@@ -10,8 +10,9 @@ const BENCH_SLOTS = new Set(['BN', 'IR', 'TAXI']);
 let playerDirectoryCache = null;
 let playerDirectoryPromise = null;
 
-async function sleeperGet(path) {
-  const response = await fetch(`${SLEEPER_BASE}${path}`);
+async function sleeperGet(path, { forceRefresh = false } = {}) {
+  const bust = forceRefresh ? `${path.includes('?') ? '&' : '?'}_=${Date.now()}` : '';
+  const response = await fetch(`${SLEEPER_BASE}${path}${bust}`, forceRefresh ? { cache: 'no-store' } : undefined);
   if (response.status === 404) return null;
   if (!response.ok) throw new Error(`Sleeper request failed (${response.status})`);
   return response.json();
@@ -147,13 +148,18 @@ export async function fetchNflState() {
   };
 }
 
-export async function fetchSleeperLiveScores({ season = SLEEPER_SEASON, week = 9, ids = null } = {}) {
+export async function fetchSleeperLiveScores({
+  season = SLEEPER_SEASON,
+  week = 9,
+  ids = null,
+  forceRefresh = false
+} = {}) {
   const weekNumber = Number(week);
   const onlyIds = Array.isArray(ids) ? ids.map(String).filter(Boolean) : null;
   if (onlyIds && !onlyIds.length) return { byId: {}, byName: {} };
   const [stats, projections, players] = await Promise.all([
-    sleeperGet(`/stats/nfl/regular/${season}/${weekNumber}`).catch(() => ({})),
-    sleeperGet(`/projections/nfl/regular/${season}/${weekNumber}`).catch(() => ({})),
+    sleeperGet(`/stats/nfl/regular/${season}/${weekNumber}`, { forceRefresh }).catch(() => ({})),
+    sleeperGet(`/projections/nfl/regular/${season}/${weekNumber}`, { forceRefresh }).catch(() => ({})),
     onlyIds ? Promise.resolve({}) : prefetchSleeperPlayers().catch(() => ({}))
   ]);
   return buildSleeperLiveIndex(stats || {}, projections || {}, players || {}, onlyIds);
@@ -208,11 +214,11 @@ async function loadSleeperPlayers() {
   return playerDirectoryCache;
 }
 
-export async function fetchSleeperMatchupBundle(leagueId, week) {
+export async function fetchSleeperMatchupBundle(leagueId, week, { forceRefresh = false } = {}) {
   const [rosters, users, matchups] = await Promise.all([
-    sleeperGet(`/league/${leagueId}/rosters`),
-    sleeperGet(`/league/${leagueId}/users`),
-    sleeperGet(`/league/${leagueId}/matchups/${week}`)
+    sleeperGet(`/league/${leagueId}/rosters`, { forceRefresh }),
+    sleeperGet(`/league/${leagueId}/users`, { forceRefresh }),
+    sleeperGet(`/league/${leagueId}/matchups/${week}`, { forceRefresh })
   ]);
   return {
     rosters: Array.isArray(rosters) ? rosters : [],
@@ -250,8 +256,8 @@ function startingSlots(rosterPositions) {
   return (rosterPositions || []).filter((slot) => !BENCH_SLOTS.has(String(slot || '').toUpperCase()));
 }
 
-export async function fetchSleeperLeague(leagueId) {
-  const league = await sleeperGet(`/league/${leagueId}`);
+export async function fetchSleeperLeague(leagueId, { forceRefresh = false } = {}) {
+  const league = await sleeperGet(`/league/${leagueId}`, { forceRefresh });
   if (!league?.league_id) return null;
   return {
     id: String(league.league_id),
@@ -302,13 +308,13 @@ function scoreForStarter(playerId, starterIndex, matchup, stats, projections, sc
   const actualPoints = started
     ? (Number.isFinite(matchupPoints) ? matchupPoints : genericActual)
     : null;
-  const points = actualPoints != null
-    ? actualPoints
-    : (Number.isFinite(projected) ? projected : 0);
+  // Keep the projection on projPoints. points/actual stay 0 until the player has a real line.
+  const points = actualPoints != null ? actualPoints : 0;
   return {
     points: Number.isFinite(Number(points)) ? Number(points) : 0,
     projPoints: Number.isFinite(projected) ? projected : null,
-    actualPoints: actualPoints != null && Number.isFinite(Number(actualPoints)) ? Number(actualPoints) : null,
+    projectedPoints: Number.isFinite(projected) ? projected : null,
+    actualPoints: actualPoints != null && Number.isFinite(Number(actualPoints)) ? Number(actualPoints) : (started ? 0 : null),
     isLive: Boolean(started && actualPoints != null),
     scoringKey
   };
@@ -339,6 +345,7 @@ function starterFromId(playerId, slotHint, score, players) {
     team: nflTeam,
     points: score.points,
     projPoints: score.projPoints,
+    projectedPoints: score.projectedPoints,
     actualPoints: score.actualPoints,
     isLive: score.isLive,
     scoringKey: score.scoringKey,
@@ -562,7 +569,7 @@ export function mapSleeperLeague({
   };
 }
 
-export async function syncSleeperLeagues({ userId, leagues, week }) {
+export async function syncSleeperLeagues({ userId, leagues, week, forceRefresh = false }) {
   const selected = (leagues || []).filter(Boolean);
   if (!selected.length) throw new Error('Select at least one league.');
   const weekNumber = Number(week);
@@ -571,14 +578,14 @@ export async function syncSleeperLeagues({ userId, leagues, week }) {
   }
   const [players, weekStats, weekProjections] = await Promise.all([
     prefetchSleeperPlayers(),
-    sleeperGet(`/stats/nfl/regular/${SLEEPER_SEASON}/${weekNumber}`).catch(() => ({})),
-    sleeperGet(`/projections/nfl/regular/${SLEEPER_SEASON}/${weekNumber}`).catch(() => ({}))
+    sleeperGet(`/stats/nfl/regular/${SLEEPER_SEASON}/${weekNumber}`, { forceRefresh }).catch(() => ({})),
+    sleeperGet(`/projections/nfl/regular/${SLEEPER_SEASON}/${weekNumber}`, { forceRefresh }).catch(() => ({}))
   ]);
   const mapped = [];
   for (const league of selected) {
     const leagueId = league.id || league.sleeperLeagueId;
     const needsMeta = !league.rosterPositions?.length || !league.scoringSettings;
-    const freshMeta = needsMeta ? await fetchSleeperLeague(leagueId).catch(() => null) : null;
+    const freshMeta = needsMeta ? await fetchSleeperLeague(leagueId, { forceRefresh }).catch(() => null) : null;
     const resolved = {
       ...league,
       id: String(leagueId),
@@ -588,7 +595,7 @@ export async function syncSleeperLeagues({ userId, leagues, week }) {
         : (freshMeta?.rosterPositions || []),
       scoringSettings: league.scoringSettings || freshMeta?.scoringSettings || null
     };
-    const bundle = await fetchSleeperMatchupBundle(resolved.id, weekNumber);
+    const bundle = await fetchSleeperMatchupBundle(resolved.id, weekNumber, { forceRefresh });
     mapped.push(mapSleeperLeague({
       league: resolved,
       userId,
