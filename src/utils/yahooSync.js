@@ -297,13 +297,21 @@ export function preferYahooLeagueOverTeam(teamName, ...leagueCandidates) {
  * Fetch the latest Yahoo leagues from /api/sync using HttpOnly cookies.
  * Returns null when no Yahoo session is available (401).
  */
-export async function syncYahooLeaguesFromApi({ week } = {}) {
+export async function syncYahooLeaguesFromApi({ week, forceRefresh = false } = {}) {
   const params = new URLSearchParams();
   if (week != null && Number(week) >= 1) params.set('week', String(week));
+  if (forceRefresh) {
+    params.set('forceRefresh', '1');
+    params.set('_', String(Date.now()));
+  }
   const query = params.toString();
   const response = await fetch(query ? `/api/sync?${query}` : '/api/sync', {
     credentials: 'include',
-    headers: { Accept: 'application/json' }
+    cache: forceRefresh ? 'no-store' : 'default',
+    headers: {
+      Accept: 'application/json',
+      ...(forceRefresh ? { 'Cache-Control': 'no-cache' } : {})
+    }
   });
   let data = {};
   try {

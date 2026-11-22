@@ -229,6 +229,20 @@ function capInflatedWeeklyTotal(board, starterSum, starterCount) {
   return null;
 }
 
+function isEspnPlatformLeague(league) {
+  if (!league) return false;
+  if (league.scoringSource === 'espn' || league.espnLeagueId) return true;
+  const platform = String(league.platform || '').toLowerCase();
+  if (platform.includes('espn')) return true;
+  return String(league.id || '').startsWith('espn-');
+}
+
+function espnLiveTeamScore(board, starterSum) {
+  if (!(starterSum > 0)) return 0;
+  if (board == null || board === 0 || board > starterSum * 1.15 + 1) return starterSum;
+  return board;
+}
+
 let launchLeagueSnapshot = null;
 let launchMeta = null;
 
@@ -1059,8 +1073,26 @@ function buildPlayerMasterIndex(leagueList, games = [], defenseLeagues = null, l
   };
 
   const rememberScore = (item, player) => {
-    item.projPoints = preferFiniteNumber(item.projPoints, player?.projPoints ?? player?.projected, { preferPositive: true });
-    item.actualPoints = preferFiniteNumber(item.actualPoints, player?.actualPoints, { preferPositive: true });
+    item.projPoints = preferFiniteNumber(item.projPoints, player?.projPoints ?? player?.projected ?? player?.projectedPoints, { preferPositive: true });
+    item.projectedPoints = preferFiniteNumber(item.projectedPoints, player?.projectedPoints ?? player?.projPoints, { preferPositive: true });
+    if (player?.hasActualLine === true) {
+      const incomingActual = finiteNumber(player?.actualPoints) ?? 0;
+      item.actualPoints = incomingActual;
+      item.points = incomingActual;
+      item.hasActualLine = true;
+      item.unplayed = false;
+      if (player?.scoringSource) item.scoringSource = player.scoringSource;
+    } else if (player?.hasActualLine === false || player?.unplayed === true) {
+      if (item.hasActualLine !== true) {
+        item.actualPoints = 0;
+        item.points = 0;
+        item.hasActualLine = false;
+        item.unplayed = true;
+        if (player?.scoringSource === 'espn') item.scoringSource = 'espn';
+      }
+    } else {
+      item.actualPoints = preferFiniteNumber(item.actualPoints, player?.actualPoints, { preferPositive: true });
+    }
     if (player?.sleeperId) item.sleeperId = String(player.sleeperId);
     if (player?.scoringKey) item.scoringKey = player.scoringKey;
     const team = resolvePlayerTeam(player, sleeperPlayers, teamIndex) || preferTeamCode(item.nflTeam, player?.nflTeam || player?.team);
@@ -1220,12 +1252,20 @@ function boardMetric(player, windowId) {
     return (player.myShares || 0) + (player.oppShares || 0);
   }
   const upcoming = player.gameStatus !== 'IN_PROGRESS' && player.gameStatus !== 'FINAL' && !player.isLive;
-  if (upcoming) return finiteNumber(player.projPoints) ?? finiteNumber(player.points) ?? 0;
-  return finiteNumber(player.actualPoints) ?? finiteNumber(player.points) ?? finiteNumber(player.projPoints) ?? 0;
+  if (upcoming) {
+    return finiteNumber(player.projPoints) ?? finiteNumber(player.projectedPoints) ?? finiteNumber(player.points) ?? 0;
+  }
+  return playerPoints(player);
 }
 
 function playerPoints(player) {
-  return finiteNumber(player?.actualPoints) ?? finiteNumber(player?.points) ?? 0;
+  if (player?.unplayed === true || player?.hasActualLine === false) return 0;
+  const actual = finiteNumber(player?.actualPoints);
+  if (actual != null) return actual;
+  const points = finiteNumber(player?.points);
+  const proj = finiteNumber(player?.projPoints) ?? finiteNumber(player?.projectedPoints) ?? finiteNumber(player?.projected);
+  if (points != null && proj != null && points === proj) return 0;
+  return points ?? 0;
 }
 
 function playerProj(player) {
@@ -1279,6 +1319,29 @@ function playerUsesYahooNativePoints(player) {
   return Boolean(player?.yahooNative || player?.scoringSource === 'yahoo');
 }
 
+function clearMirroredProjection(player, phase) {
+  if (!player) return;
+  if (player.hasActualLine === true && player.unplayed !== true) return;
+  const proj = finiteNumber(player.projPoints)
+    ?? finiteNumber(player.projectedPoints)
+    ?? finiteNumber(player.projected);
+  const actual = finiteNumber(player.actualPoints);
+  const points = finiteNumber(player.points);
+  const upcoming = phase === 'UPCOMING'
+    || phase === 'BYE'
+    || player.unplayed === true
+    || player.hasActualLine === false;
+  if (!upcoming) return;
+  const mirrored = player.unplayed === true
+    || player.hasActualLine === false
+    || (player.scoringSource === 'espn' && player.hasActualLine !== true)
+    || (proj != null && (actual === proj || points === proj));
+  if (!mirrored) return;
+  player.actualPoints = 0;
+  player.points = 0;
+  player.unplayed = true;
+}
+
 function applyLiveToPlayer(player, games, liveScores, now = new Date(), sleeperPlayers = null, teamIndex = null) {
   if (needsTeamBackfill(player?.nflTeam || player?.team)) {
     const filled = backfillPlayerTeam(player, sleeperPlayers, teamIndex);
@@ -1294,7 +1357,7 @@ function applyLiveToPlayer(player, games, liveScores, now = new Date(), sleeperP
     }
   }
 
-  const preserveYahooPoints = playerUsesYahooNativePoints(player);
+  const preservePlatformPoints = playerUsesYahooNativePoints(player) || player?.scoringSource === 'espn';
   let live = sleeperLiveNumbers(player, liveScores);
   if (live?.team && needsTeamBackfill(player.nflTeam)) {
     player.nflTeam = knownTeam(live.team) || live.team;
@@ -1314,8 +1377,9 @@ function applyLiveToPlayer(player, games, liveScores, now = new Date(), sleeperP
     player.opponent = 'BYE';
     player.gameClock = 'Bye';
     live = sleeperLiveNumbers(player, liveScores) || live;
-    // Yahoo leagues keep Yahoo projections; Sleeper pts_ppr is full-PPR and mismatches 0.5-PPR.
-    if (!preserveYahooPoints && live?.proj != null) {
+    clearMirroredProjection(player, 'BYE');
+    // Yahoo and ESPN keep their own projections; Sleeper pts_ppr is full-PPR and mismatches other scoring.
+    if (!preservePlatformPoints && live?.proj != null) {
       player.projPoints = preferFiniteNumber(player.projPoints, live.proj, { preferPositive: true });
     }
     if (live?.team && (needsTeamBackfill(player.nflTeam) || !knownTeam(player.nflTeam))) {
@@ -1341,12 +1405,13 @@ function applyLiveToPlayer(player, games, liveScores, now = new Date(), sleeperP
     player.nflTeam = preferTeamCode(player.nflTeam, live.team) || knownTeam(live.team) || live.team;
     player.team = player.nflTeam;
   }
-  if (!preserveYahooPoints && live?.proj != null) {
+  clearMirroredProjection(player, phase);
+  if (!preservePlatformPoints && live?.proj != null) {
     player.projPoints = preferFiniteNumber(player.projPoints, live.proj, { preferPositive: true });
   }
   player.zeroProjection = Boolean(starterProjectionStatus(player, { games, liveScores, now })?.zero);
-  if (preserveYahooPoints) {
-    // Keep Yahoo player_points.total even when 0 (pre-kickoff / IDP). Never copy Sleeper pts_ppr.
+  if (preservePlatformPoints) {
+    // Keep Yahoo / ESPN week points even when 0. Never copy a projection or Sleeper pts_ppr into the actual.
     if (finiteNumber(player.actualPoints) != null) player.points = player.actualPoints;
     return player;
   }
@@ -1415,8 +1480,9 @@ function hydrateLeagueForMatchups(league, games, liveScores, sleeperPlayers = nu
       }
     }
     const master = lookupMasterPlayerStats(copy, masterIndex);
+    const espnScored = copy.scoringSource === 'espn' || copy.hasActualLine === true || copy.hasActualLine === false;
     if (master) {
-      if (allowSleeperForPlayer && !playerUsesYahooNativePoints(copy)) {
+      if (!espnScored && allowSleeperForPlayer && !playerUsesYahooNativePoints(copy)) {
         const masterActual = finiteNumber(master.actualPoints) ?? finiteNumber(master.points);
         const localActual = finiteNumber(copy.actualPoints) ?? finiteNumber(copy.points);
         if ((localActual == null || localActual === 0) && masterActual != null && masterActual !== 0) {
@@ -1455,6 +1521,7 @@ function hydrateLeagueForMatchups(league, games, liveScores, sleeperPlayers = nu
   const oppProjRaw = finiteNumber(league.oppProj ?? league.oppProjected);
   const cappedMyScore = capInflatedWeeklyTotal(myScoreRaw, myStarterScore, portfolio.length);
   const cappedOppScore = capInflatedWeeklyTotal(oppScoreRaw, oppStarterScore, threats.length);
+  const espnLeague = isEspnPlatformLeague(league);
   const cappedMyProj = capInflatedWeeklyTotal(myProjRaw, myStarterProj, portfolio.length);
   const cappedOppProj = capInflatedWeeklyTotal(oppProjRaw, oppStarterProj, threats.length);
   // Yahoo scoreboard totals win; do not re-sum from Sleeper-hydrated starter lines.
@@ -1476,16 +1543,34 @@ function hydrateLeagueForMatchups(league, games, liveScores, sleeperPlayers = nu
     oppTeam: league.oppTeam
       ? { ...league.oppTeam, starters: threats }
       : league.oppTeam,
-    myScore: cappedMyScore != null
-      ? cappedMyScore
-      : (preferBoard
-        ? (myScoreRaw != null ? myScoreRaw : myStarterScore)
-        : ((myScoreRaw != null && myScoreRaw !== 0) ? myScoreRaw : myStarterScore)),
-    oppScore: cappedOppScore != null
-      ? cappedOppScore
-      : (preferBoard
-        ? (oppScoreRaw != null ? oppScoreRaw : oppStarterScore)
-        : ((oppScoreRaw != null && oppScoreRaw !== 0) ? oppScoreRaw : oppStarterScore)),
+    myScore: espnLeague
+      ? espnLiveTeamScore(
+        cappedMyScore != null
+          ? cappedMyScore
+          : (preferBoard
+            ? (myScoreRaw != null ? myScoreRaw : myStarterScore)
+            : ((myScoreRaw != null && myScoreRaw !== 0) ? myScoreRaw : myStarterScore)),
+        myStarterScore
+      )
+      : (cappedMyScore != null
+        ? cappedMyScore
+        : (preferBoard
+          ? (myScoreRaw != null ? myScoreRaw : myStarterScore)
+          : ((myScoreRaw != null && myScoreRaw !== 0) ? myScoreRaw : myStarterScore))),
+    oppScore: espnLeague
+      ? espnLiveTeamScore(
+        cappedOppScore != null
+          ? cappedOppScore
+          : (preferBoard
+            ? (oppScoreRaw != null ? oppScoreRaw : oppStarterScore)
+            : ((oppScoreRaw != null && oppScoreRaw !== 0) ? oppScoreRaw : oppStarterScore)),
+        oppStarterScore
+      )
+      : (cappedOppScore != null
+        ? cappedOppScore
+        : (preferBoard
+          ? (oppScoreRaw != null ? oppScoreRaw : oppStarterScore)
+          : ((oppScoreRaw != null && oppScoreRaw !== 0) ? oppScoreRaw : oppStarterScore))),
     myProj: cappedMyProj != null
       ? cappedMyProj
       : (preferBoard
@@ -2585,12 +2670,18 @@ export default function App() {
   const [games, setGames] = useState(() => (getActiveSlate() || getSlateByWeek(FALLBACK_NFL_WEEK))?.games || []);
   const [liveScores, setLiveScores] = useState(null);
   const leaguesRef = useRef(leagues);
+  const gamesRef = useRef(games);
   const gamesSigRef = useRef('');
   const scoresSigRef = useRef('');
   const weekPinnedRef = useRef(false);
   const lineupRefreshRef = useRef(null);
+  const lineupForceRef = useRef(false);
+  const lineupQuietRef = useRef(true);
+  const lineupSyncTokenRef = useRef(0);
+  const manualRefreshRef = useRef(false);
   const requestWeekRef = useRef(getActiveSlate()?.week || FALLBACK_NFL_WEEK);
   leaguesRef.current = leagues;
+  gamesRef.current = games;
   const [slateMeta, setSlateMeta] = useState(() => {
     const slate = getActiveSlate() || getSlateByWeek(FALLBACK_NFL_WEEK);
     return { week: slate?.week || FALLBACK_NFL_WEEK, label: slate?.label || `Week ${FALLBACK_NFL_WEEK}`, range: slate?.range || '', byes: slate?.byes || [] };
@@ -2600,6 +2691,9 @@ export default function App() {
   const [hoveredConflictPlayer, setHoveredConflictPlayer] = useState(null);
   const [activeLeagueDrawer, setActiveLeagueDrawer] = useState(null);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [leagueRefreshing, setLeagueRefreshing] = useState(false);
+  const [pullDistance, setPullDistance] = useState(0);
+  const [lineupRefreshNonce, setLineupRefreshNonce] = useState(0);
   const [syncStatus, setSyncStatus] = useState('');
   const [showYahooIngest, setShowYahooIngest] = useState(false);
   const [showConnect, setShowConnect] = useState(false);
@@ -3047,10 +3141,10 @@ export default function App() {
     }
   };
 
-  const refreshLiveSlate = async (week = selectedWeek) => {
+  const refreshLiveSlate = async (week = selectedWeek, { forceRefresh = false } = {}) => {
     const requested = Number(week) || FALLBACK_NFL_WEEK;
     try {
-      const slate = await fetchLiveNFLSlate(new Date(), requested);
+      const slate = await fetchLiveNFLSlate(new Date(), requested, { forceRefresh });
       if (requestWeekRef.current !== requested) return;
       if (Array.isArray(slate?.games)) {
         const signature = slate.games.map((game) => [
@@ -3080,7 +3174,8 @@ export default function App() {
     try {
       const scores = await fetchSleeperLiveScores({
         season: getSlateByWeek(requested)?.season || getActiveSlate()?.season || 2026,
-        week: requested
+        week: requested,
+        forceRefresh
       });
       if (requestWeekRef.current !== requested) return;
       const signature = sleeperScoreSignature(scores);
@@ -3093,12 +3188,26 @@ export default function App() {
     }
   };
 
+  const forceRefreshBoard = () => {
+    manualRefreshRef.current = true;
+    lineupForceRef.current = true;
+    lineupQuietRef.current = false;
+    setLeagueRefreshing(true);
+    setLineupRefreshNonce((n) => n + 1);
+    refreshLiveSlate(selectedWeek, { forceRefresh: true });
+    tapHaptic();
+  };
+
   useEffect(() => {
     requestWeekRef.current = selectedWeek;
     gamesSigRef.current = '';
     scoresSigRef.current = '';
-    refreshLiveSlate(selectedWeek);
-    const interval = setInterval(() => refreshLiveSlate(selectedWeek), 60000);
+    const tick = () => {
+      const active = (gamesRef.current || []).some((game) => gamePhase(game) === 'IN_PROGRESS');
+      refreshLiveSlate(selectedWeek, { forceRefresh: active });
+    };
+    tick();
+    const interval = setInterval(tick, 60000);
     return () => clearInterval(interval);
   }, [selectedWeek]);
 
@@ -3146,11 +3255,38 @@ export default function App() {
     };
   }, []);
 
+  const liveWindow = games.some((game) => gamePhase(game) === 'IN_PROGRESS');
+
+  useEffect(() => {
+    if (!liveWindow) return undefined;
+    const tick = () => {
+      if (manualRefreshRef.current) return;
+      lineupForceRef.current = true;
+      lineupQuietRef.current = true;
+      setLeagueRefreshing(true);
+      setLineupRefreshNonce((n) => n + 1);
+    };
+    const delay = window.setTimeout(tick, 800);
+    const interval = window.setInterval(tick, 60000);
+    return () => {
+      window.clearTimeout(delay);
+      window.clearInterval(interval);
+    };
+  }, [liveWindow, selectedWeek]);
+
   useEffect(() => {
     const week = Number(selectedWeek);
-    if (!week || lineupRefreshRef.current === week) return undefined;
+    const forceRefresh = Boolean(lineupForceRef.current)
+      || (gamesRef.current || []).some((game) => gamePhase(game) === 'IN_PROGRESS');
+    const quiet = lineupQuietRef.current;
+    lineupForceRef.current = false;
+    lineupQuietRef.current = true;
+    if (!week || (!forceRefresh && lineupRefreshRef.current === week)) return undefined;
     let cancelled = false;
+    const token = ++lineupSyncTokenRef.current;
+    const stale = () => cancelled || lineupSyncTokenRef.current !== token;
     const refreshStoredLineups = async () => {
+      if (!quiet) setSyncStatus('Refreshing scores…');
       const current = leaguesRef.current || [];
       const updates = new Map();
       let sleeperOk = false;
@@ -3165,6 +3301,7 @@ export default function App() {
           const imported = await syncSleeperLeagues({
             userId: user.user_id,
             week,
+            forceRefresh,
             leagues: sleeperLeagues.map((lg) => ({
               id: lg.sleeperLeagueId || String(lg.id).replace(/^sleeper-/, ''),
               name: lg.name,
@@ -3183,14 +3320,15 @@ export default function App() {
       if (!espnLeagues.length) espnOk = true;
       let espnFailures = 0;
       for (const lg of espnLeagues) {
-        if (cancelled) break;
+        if (stale()) break;
         try {
           const raw = await fetchEspnLeague({
             leagueId: lg.espnLeagueId,
             season: lg.season || 2026,
             week,
             swid: espnSession?.swid || '',
-            espnS2: espnSession?.espnS2 || ''
+            espnS2: espnSession?.espnS2 || '',
+            forceRefresh
           });
           const mapped = mapEspnLeague({
             league: raw,
@@ -3256,7 +3394,7 @@ export default function App() {
           || lg?.yahooLeagueId
         ));
         if (hasYahoo) {
-          const imported = await syncYahooLeaguesFromApi({ week });
+          const imported = await syncYahooLeaguesFromApi({ week, forceRefresh });
           if (imported?.length) {
             imported.forEach((league) => {
               const id = league.id || `yahoo-${league.leagueKey || league.yahooLeagueId || Date.now()}`;
@@ -3268,12 +3406,24 @@ export default function App() {
         console.warn('Yahoo API sync failed', err);
       }
 
-      if (cancelled) return;
+      if (stale()) {
+        if (lineupSyncTokenRef.current === token) {
+          manualRefreshRef.current = false;
+          setLeagueRefreshing(false);
+          if (!quiet) setSyncStatus('');
+        }
+        return;
+      }
       // Only lock the week after at least one platform refresh succeeded so a
       // cold-start miss (no Sleeper username yet) can retry.
       if (sleeperOk || espnOk || updates.size) {
         lineupRefreshRef.current = week;
       }
+      if (!quiet) {
+        manualRefreshRef.current = false;
+        setSyncStatus(sleeperOk || espnOk || updates.size ? 'Scores refreshed.' : 'Could not refresh scores.');
+      }
+      if (lineupSyncTokenRef.current === token) setLeagueRefreshing(false);
       if (!updates.size) return;
       setLeagues((prev) => {
         const used = new Set();
@@ -3326,11 +3476,17 @@ export default function App() {
         return dedupeImportedLeagues(next);
       });
     };
-    refreshStoredLineups();
+    refreshStoredLineups().catch(() => {
+      if (lineupSyncTokenRef.current === token) {
+        manualRefreshRef.current = false;
+        setLeagueRefreshing(false);
+        if (!quiet) setSyncStatus('Could not refresh scores.');
+      }
+    });
     return () => {
       cancelled = true;
     };
-  }, [selectedWeek]);
+  }, [selectedWeek, lineupRefreshNonce]);
 
   useEffect(() => {
     let cancelled = false;
@@ -4584,6 +4740,7 @@ export default function App() {
     swipeTouchRef.current = null;
     setSwipeDragging(false);
     setSwipeDragX(0);
+    setPullDistance(0);
   };
 
   const handleViewportTouchStart = (event) => {
@@ -4598,12 +4755,16 @@ export default function App() {
     }
     const touch = event.touches?.[0];
     if (!touch) return;
+    const scrollTop = window.scrollY || document.documentElement.scrollTop || 0;
     swipeTouchRef.current = {
       x: touch.clientX,
       y: touch.clientY,
       t: typeof performance !== 'undefined' ? performance.now() : Date.now(),
       locked: false,
-      ignored: false
+      ignored: false,
+      pull: false,
+      pullDistance: 0,
+      atTop: scrollTop <= 2
     };
     setSwipeDragging(false);
     setSwipeDragX(0);
@@ -4611,7 +4772,7 @@ export default function App() {
 
   const handleViewportTouchMove = (event) => {
     const start = swipeTouchRef.current;
-    if (!start || start.ignored) return;
+    if (!start) return;
     if (showAlertSheet || showSortSheet || showConnect || selectedPlayer || activeLeagueDrawer || leaguePendingDelete) {
       resetSwipeGesture();
       return;
@@ -4620,12 +4781,29 @@ export default function App() {
     if (!touch) return;
     const dx = touch.clientX - start.x;
     const dy = touch.clientY - start.y;
+    if (start.pull) {
+      const scrollTop = window.scrollY || document.documentElement.scrollTop || 0;
+      if (scrollTop > 8 || dy <= 0) {
+        start.pullDistance = 0;
+        setPullDistance(0);
+        return;
+      }
+      start.pullDistance = Math.min(72, dy * 0.45);
+      setPullDistance(start.pullDistance);
+      return;
+    }
+    if (start.ignored) return;
     if (!start.locked) {
       if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
       if (Math.abs(dy) * 1.25 >= Math.abs(dx)) {
         start.ignored = true;
         setSwipeDragging(false);
         setSwipeDragX(0);
+        if (start.atTop && dy > 12) {
+          start.pull = true;
+          start.pullDistance = Math.min(72, dy * 0.45);
+          setPullDistance(start.pullDistance);
+        }
         return;
       }
       start.locked = true;
@@ -4638,8 +4816,14 @@ export default function App() {
   const handleViewportTouchEnd = (event) => {
     const start = swipeTouchRef.current;
     const wasIgnored = Boolean(start?.ignored);
+    const shouldRefresh = Boolean(start?.pull && start.pullDistance >= 52 && !leagueRefreshing);
     swipeTouchRef.current = null;
     setSwipeDragging(false);
+    setPullDistance(0);
+    if (shouldRefresh) {
+      forceRefreshBoard();
+      return;
+    }
     if (!start || wasIgnored) {
       setSwipeDragX(0);
       return;
@@ -4689,17 +4873,35 @@ export default function App() {
       onTouchCancel={resetSwipeGesture}
     >
       <div className={`rootmap-topbar sticky top-0 z-40 max-w-md mx-auto ${isLight ? 'bg-white/95' : 'bg-slate-950/95'} backdrop-blur-md`}>
-      <header className={`border-b px-3 py-1.5 space-y-1.5 transition-colors ${
+      <header className={`border-b px-2.5 py-1.5 space-y-1.5 transition-colors ${
         isLight ? 'border-slate-200 shadow-sm' : 'border-slate-800/80'
       }`}>
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2 min-w-0">
-            <RootMapLogo className="w-10 h-10 rounded-xl shadow-sm ring-1 ring-white/10" showWordmark={false} />
-            <span className={`font-extrabold text-lg tracking-tight ${isLight ? 'text-slate-900' : 'text-white'}`}>
+        <div className="flex items-center justify-between gap-1.5">
+          <div className="flex items-center gap-1.5 shrink-0">
+            <RootMapLogo className="w-[3.25rem] h-[3.25rem] rounded-2xl shadow-sm ring-1 ring-white/10" showWordmark={false} />
+            <span className={`font-extrabold text-[1.45rem] leading-none tracking-tighter ${isLight ? 'text-slate-900' : 'text-white'}`}>
               Root<span className="text-emerald-400">Map</span>
             </span>
           </div>
-          <div className="relative z-50 flex items-center gap-1.5 shrink-0">
+          <div className="relative z-50 flex items-center gap-1 shrink-0">
+            <button
+              type="button"
+              onClick={forceRefreshBoard}
+              disabled={leagueRefreshing}
+              aria-label="Refresh scores"
+              aria-busy={leagueRefreshing}
+              title="Refresh scores"
+              className={`shrink-0 w-9 h-9 rounded-lg border flex items-center justify-center transition touch-manipulation disabled:opacity-80 ${
+                isLight ? 'bg-white text-slate-800 border-slate-200 hover:bg-slate-50' : 'bg-slate-900 text-slate-100 border-slate-700 hover:bg-slate-800'
+              }`}
+            >
+              <svg viewBox="0 0 24 24" className={`w-4 h-4 ${leagueRefreshing ? 'rootmap-spin' : ''}`} fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M21 12a9 9 0 0 1-15.5 6.2L3 16" />
+                <path d="M3 21v-5h5" />
+                <path d="M3 12a9 9 0 0 1 15.5-6.2L21 8" />
+                <path d="M21 3v5h-5" />
+              </svg>
+            </button>
             <button
             type="button"
             aria-haspopup="dialog"
@@ -4724,54 +4926,6 @@ export default function App() {
                 + Import
               </button>
             )}
-            <button
-              type="button"
-              onClick={() => {
-                setNotifHistory(readBannerHistory());
-                setShowNotifDrawer(true);
-                setNotifUnread(0);
-                prepareCrossFireAlerts();
-                prepareZeroProjectionAlerts({ request: false });
-                tapHaptic();
-              }}
-              aria-label={notifUnread > 0 ? `Notifications, ${notifUnread} unread` : 'Notifications'}
-              title="Notifications"
-              className={`relative w-9 h-9 rounded-lg border flex items-center justify-center transition touch-manipulation ${
-                showAlertSheet || showNotifDrawer || notifUnread > 0 || alertPrefs.lineupRescue || alertPrefs.redZoneTv || alertPrefs.fourthQuarterSweat || alertPrefs.finalSlateNailbiter || alertPrefs.lineupLock
-                  ? isLight ? 'bg-emerald-50 text-emerald-700 border-emerald-300' : 'bg-emerald-950/50 text-emerald-300 border-emerald-700'
-                  : isLight ? 'bg-white text-slate-700 border-slate-200' : 'bg-slate-900 text-slate-200 border-slate-700'
-              }`}
-            >
-              <svg viewBox="0 0 16 16" className="w-4 h-4" aria-hidden="true">
-                <path fill="currentColor" d="M8 1.5a3.5 3.5 0 0 0-3.5 3.5v1.3c0 .5-.2 1-.5 1.4L2.8 9.4A1.2 1.2 0 0 0 3.8 11h8.4a1.2 1.2 0 0 0 1-1.6l-1.2-1.7a2.2 2.2 0 0 1-.5-1.4V5A3.5 3.5 0 0 0 8 1.5Zm-1.3 11a1.3 1.3 0 1 0 2.6 0h-2.6Z" />
-              </svg>
-              {notifUnread > 0 && (
-                <span className="absolute -top-1 -right-1 min-w-[1.05rem] h-[1.05rem] px-0.5 rounded-full bg-[#E11D48] text-white text-[9px] font-black leading-[1.05rem] text-center tabular-nums shadow">
-                  {notifUnread > 9 ? '9+' : notifUnread}
-                </span>
-              )}
-            </button>
-            <button
-              type="button"
-              onClick={() => setTheme(isLight ? 'dark' : 'light')}
-              aria-label={isLight ? 'Switch to dark mode' : 'Switch to light mode'}
-              title={isLight ? 'Dark mode' : 'Light mode'}
-              className={`w-9 h-9 rounded-lg border flex items-center justify-center transition touch-manipulation ${
-                isLight
-                  ? 'bg-white text-slate-900 border-slate-200 hover:bg-slate-50'
-                  : 'bg-slate-900 text-amber-300 border-slate-700 hover:bg-slate-800'
-              }`}
-            >
-              {isLight ? (
-                <svg viewBox="0 0 16 16" className="w-4 h-4" aria-hidden="true">
-                  <path fill="currentColor" d="M8 1.2a.7.7 0 0 1 .7.7V3a.7.7 0 1 1-1.4 0V1.9A.7.7 0 0 1 8 1.2Zm0 10.2A3.4 3.4 0 1 0 8 4.6a3.4 3.4 0 0 0 0 6.8Zm6.1-4.1a.7.7 0 0 1-.7.7H12a.7.7 0 1 1 0-1.4h1.4a.7.7 0 0 1 .7.7ZM4.7 8a.7.7 0 0 1-.7.7H2.6a.7.7 0 1 1 0-1.4H4a.7.7 0 0 1 .7.7Zm7.9-4.6a.7.7 0 0 1 0 1L11.6 5.4a.7.7 0 1 1-1-1l1-1a.7.7 0 0 1 1 0ZM5.4 10.6a.7.7 0 0 1 0 1l-1 1a.7.7 0 1 1-1-1l1-1a.7.7 0 0 1 1 0Zm6.2 0a.7.7 0 0 1 1 1l-1 1a.7.7 0 1 1-1-1l1-1Zm-6.2-6.2a.7.7 0 0 1 0 1l-1 1a.7.7 0 1 1-1-1l1-1a.7.7 0 0 1 1 0ZM8 13a.7.7 0 0 1 .7.7v1.1a.7.7 0 1 1-1.4 0V13.7A.7.7 0 0 1 8 13Z" />
-                </svg>
-              ) : (
-                <svg viewBox="0 0 16 16" className="w-4 h-4" aria-hidden="true">
-                  <path fill="currentColor" d="M8.4 1.4a.7.7 0 0 1 .2.8 4.6 4.6 0 0 0 5.2 6.3.7.7 0 0 1 .8.9A6.6 6.6 0 1 1 7.6 1.2a.7.7 0 0 1 .8.2Z" />
-                </svg>
-              )}
-            </button>
             {showWeekPicker && (
               <>
                 <button
@@ -4827,7 +4981,57 @@ export default function App() {
             )}
           </div>
         </div>
-        <div className="flex justify-end">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => {
+                setNotifHistory(readBannerHistory());
+                setShowNotifDrawer(true);
+                setNotifUnread(0);
+                prepareCrossFireAlerts();
+                prepareZeroProjectionAlerts({ request: false });
+                tapHaptic();
+              }}
+              aria-label={notifUnread > 0 ? `Notifications, ${notifUnread} unread` : 'Notifications'}
+              title="Notifications"
+              className={`relative w-9 h-9 rounded-lg border flex items-center justify-center transition touch-manipulation ${
+                showAlertSheet || showNotifDrawer || notifUnread > 0 || alertPrefs.lineupRescue || alertPrefs.redZoneTv || alertPrefs.fourthQuarterSweat || alertPrefs.finalSlateNailbiter || alertPrefs.lineupLock
+                  ? isLight ? 'bg-emerald-50 text-emerald-700 border-emerald-300' : 'bg-emerald-950/50 text-emerald-300 border-emerald-700'
+                  : isLight ? 'bg-white text-slate-700 border-slate-200' : 'bg-slate-900 text-slate-200 border-slate-700'
+              }`}
+            >
+              <svg viewBox="0 0 16 16" className="w-4 h-4" aria-hidden="true">
+                <path fill="currentColor" d="M8 1.5a3.5 3.5 0 0 0-3.5 3.5v1.3c0 .5-.2 1-.5 1.4L2.8 9.4A1.2 1.2 0 0 0 3.8 11h8.4a1.2 1.2 0 0 0 1-1.6l-1.2-1.7a2.2 2.2 0 0 1-.5-1.4V5A3.5 3.5 0 0 0 8 1.5Zm-1.3 11a1.3 1.3 0 1 0 2.6 0h-2.6Z" />
+              </svg>
+              {notifUnread > 0 && (
+                <span className="absolute -top-1 -right-1 min-w-[1.05rem] h-[1.05rem] px-0.5 rounded-full bg-[#E11D48] text-white text-[9px] font-black leading-[1.05rem] text-center tabular-nums shadow">
+                  {notifUnread > 9 ? '9+' : notifUnread}
+                </span>
+              )}
+            </button>
+            <button
+              type="button"
+              onClick={() => setTheme(isLight ? 'dark' : 'light')}
+              aria-label={isLight ? 'Switch to dark mode' : 'Switch to light mode'}
+              title={isLight ? 'Dark mode' : 'Light mode'}
+              className={`w-9 h-9 rounded-lg border flex items-center justify-center transition touch-manipulation ${
+                isLight
+                  ? 'bg-white text-slate-900 border-slate-200 hover:bg-slate-50'
+                  : 'bg-slate-900 text-amber-300 border-slate-700 hover:bg-slate-800'
+              }`}
+            >
+              {isLight ? (
+                <svg viewBox="0 0 16 16" className="w-4 h-4" aria-hidden="true">
+                  <path fill="currentColor" d="M8 1.2a.7.7 0 0 1 .7.7V3a.7.7 0 1 1-1.4 0V1.9A.7.7 0 0 1 8 1.2Zm0 10.2A3.4 3.4 0 1 0 8 4.6a3.4 3.4 0 0 0 0 6.8Zm6.1-4.1a.7.7 0 0 1-.7.7H12a.7.7 0 1 1 0-1.4h1.4a.7.7 0 0 1 .7.7ZM4.7 8a.7.7 0 0 1-.7.7H2.6a.7.7 0 1 1 0-1.4H4a.7.7 0 0 1 .7.7Zm7.9-4.6a.7.7 0 0 1 0 1L11.6 5.4a.7.7 0 1 1-1-1l1-1a.7.7 0 0 1 1 0ZM5.4 10.6a.7.7 0 0 1 0 1l-1 1a.7.7 0 1 1-1-1l1-1a.7.7 0 0 1 1 0Zm6.2 0a.7.7 0 0 1 1 1l-1 1a.7.7 0 1 1-1-1l1-1Zm-6.2-6.2a.7.7 0 0 1 0 1l-1 1a.7.7 0 1 1-1-1l1-1a.7.7 0 0 1 1 0ZM8 13a.7.7 0 0 1 .7.7v1.1a.7.7 0 1 1-1.4 0V13.7A.7.7 0 0 1 8 13Z" />
+                </svg>
+              ) : (
+                <svg viewBox="0 0 16 16" className="w-4 h-4" aria-hidden="true">
+                  <path fill="currentColor" d="M8.4 1.4a.7.7 0 0 1 .2.8 4.6 4.6 0 0 0 5.2 6.3.7.7 0 0 1 .8.9A6.6 6.6 0 1 1 7.6 1.2a.7.7 0 0 1 .8.2Z" />
+                </svg>
+              )}
+            </button>
+          </div>
           <ManageLeaguesPill
             expanded={showManageLeagues}
             onClick={() => {
@@ -4963,6 +5167,29 @@ export default function App() {
         className={`max-w-md mx-auto p-3 space-y-3 rootmap-view-track ${viewSlideClass} ${swipeDragging ? 'is-dragging' : ''}`}
         style={swipeDragX ? { transform: `translate3d(${swipeDragX}px, 0, 0)` } : undefined}
       >
+        {pullDistance > 0 && (
+          <div
+            className="flex items-center justify-center overflow-hidden"
+            style={{ height: pullDistance }}
+          >
+            <svg
+              viewBox="0 0 24 24"
+              className={`w-5 h-5 ${pullDistance >= 52 ? 'rootmap-spin' : ''} ${isLight ? 'text-emerald-700' : 'text-emerald-300'}`}
+              style={pullDistance < 52 ? { transform: `rotate(${pullDistance * 4}deg)` } : undefined}
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M21 12a9 9 0 0 1-15.5 6.2L3 16" />
+              <path d="M3 21v-5h5" />
+              <path d="M3 12a9 9 0 0 1 15.5-6.2L21 8" />
+              <path d="M21 3v5h-5" />
+            </svg>
+          </div>
+        )}
         {TAB_TIPS[view] && !seenTips[view] && (
           <div
             role="note"
