@@ -69,7 +69,10 @@ import {
   freeActiveBadge,
   loadIsPro
 } from './utils/proEntitlement';
+import { friendsPassGrantsUnlimited } from './utils/friendsPass';
+import { platformLeagueLabel } from './utils/platformLabel';
 import { useSubscription } from './subscription/useSubscription';
+import LeagueAccessActions from './components/LeagueAccessActions';
 import { SITE_ORIGIN } from './utils/siteOrigin';
 import { Capacitor } from '@capacitor/core';
 import {
@@ -233,7 +236,7 @@ function launchLeagueGate() {
   if (launchLeagueSnapshot) return launchLeagueSnapshot;
   const storedLeagues = loadStoredLeagues();
   const storedHidden = loadHiddenLeagueIds();
-  const proOnDevice = Capacitor.getPlatform() === 'ios' && loadIsPro();
+  const proOnDevice = (Capacitor.getPlatform() === 'ios' && loadIsPro()) || friendsPassGrantsUnlimited();
   const overCap = !proOnDevice && activeLeagueCount(storedLeagues, storedHidden) > MAX_FREE_ACTIVE_LEAGUES;
   const hidden = overCap ? clampFreeActiveHidden(storedLeagues, storedHidden) : storedHidden;
   const selectedIds = overCap
@@ -300,46 +303,31 @@ function leagueFilterLabel(lg, leagues = []) {
   return name;
 }
 
-function platformMark(platform) {
-  const value = String(platform || '').toLowerCase();
-  if (value.includes('espn')) return 'E';
-  if (value.includes('sleeper')) return 'S';
-  if (value.includes('yahoo')) return 'Y';
-  return '';
-}
-
-function platformLabel(platform) {
-  const value = String(platform || '').toLowerCase();
-  if (value.includes('espn')) return 'ESPN';
-  if (value.includes('sleeper')) return 'Sleeper';
-  if (value.includes('yahoo')) return 'Yahoo';
-  const raw = String(platform || '').trim();
-  return raw || 'League';
-}
-
 function PlatformBadge({ platform, isLight }) {
-  const mark = platformMark(platform);
-  if (!mark) return null;
+  const label = platformLeagueLabel(platform);
+  if (!label) return null;
   return (
     <span
-      title={platformLabel(platform)}
-      className={`inline-flex w-4 h-4 items-center justify-center rounded text-[8px] font-black shrink-0 ${
-        isLight ? 'bg-slate-100 text-slate-600 border border-slate-200' : 'bg-slate-800 text-slate-300 border border-slate-600'
+      title={label}
+      className={`inline-flex shrink-0 max-w-[7.25rem] items-center truncate rounded-md px-1.5 py-0.5 text-[9px] font-black leading-none whitespace-nowrap border ${
+        isLight ? 'bg-slate-100 text-slate-600 border-slate-200' : 'bg-slate-800 text-slate-300 border-slate-600'
       }`}
     >
-      {mark}
+      {label}
     </span>
   );
 }
 
 function PlatformPill({ platform, isLight }) {
+  const label = platformLeagueLabel(platform);
+  if (!label) return null;
   return (
     <span
-      className={`shrink-0 rounded-md px-1.5 py-0.5 text-[9px] font-black uppercase tracking-wide border ${
+      className={`shrink-0 rounded-md px-1.5 py-0.5 text-[9px] font-black leading-none whitespace-nowrap border ${
         isLight ? 'bg-slate-100 text-slate-600 border-slate-200' : 'bg-slate-800 text-slate-300 border-slate-600'
       }`}
     >
-      {platformLabel(platform)}
+      {label}
     </span>
   );
 }
@@ -2494,6 +2482,25 @@ function PlayerHeadshot({ name, team, size = 40, defense = false }) {
   );
 }
 
+function ManageLeaguesPill({ isLight, expanded, onClick }) {
+  return (
+    <button
+      type="button"
+      aria-haspopup="dialog"
+      aria-expanded={expanded}
+      aria-label="Manage Leagues"
+      onClick={onClick}
+      className={`rootmap-manage-pill shrink-0 inline-flex items-center justify-center min-h-11 px-3.5 rounded-full border text-[11px] font-black whitespace-nowrap touch-manipulation ${
+        isLight
+          ? 'bg-white text-slate-800 border-slate-300'
+          : 'bg-slate-950 text-slate-100 border-slate-600'
+      }`}
+    >
+      Manage Leagues
+    </button>
+  );
+}
+
 function ImportEmptyState({ isLight, onImport }) {
   return (
     <div className={`rounded-2xl p-5 border text-center space-y-3 shadow-sm ${
@@ -2539,10 +2546,13 @@ export default function App() {
   const [activePickSelected, setActivePickSelected] = useState(() => new Set(launchLeagueGate().selectedIds));
   const {
     isPro,
+    accessKind,
     offerings,
     isLoading: subscriptionLoading,
     purchasePackage,
-    restorePurchases
+    restorePurchases,
+    redeemOfferCode,
+    redeemFriendsPass
   } = useSubscription();
   const proWasRef = useRef(isPro);
   const activePickCandidatesRef = useRef(activePickCandidates);
@@ -4822,6 +4832,16 @@ export default function App() {
             )}
           </div>
         </div>
+        <div className="flex justify-end">
+          <ManageLeaguesPill
+            isLight={isLight}
+            expanded={showManageLeagues}
+            onClick={() => {
+              setShowManageLeagues(true);
+              tapHaptic();
+            }}
+          />
+        </div>
         {view === 'matchups' && leagues.length > 0 && (
           <div
             className={`rootmap-filter-tray ${filtersCollapsed ? 'is-collapsed' : ''}`}
@@ -5308,24 +5328,6 @@ export default function App() {
                   <option value="win">🎯 Win %</option>
                 </select>
               </label>
-              {leagues.length > 0 && (
-                <button
-                  type="button"
-                  aria-haspopup="dialog"
-                  aria-expanded={showManageLeagues}
-                  onClick={() => {
-                    setShowManageLeagues(true);
-                    tapHaptic();
-                  }}
-                  className={`shrink-0 min-h-8 px-2 rounded-xl text-[10px] font-black border inline-flex items-center gap-1 ${
-                    isLight
-                      ? 'bg-white text-slate-700 border-slate-200'
-                      : 'bg-slate-950 text-slate-200 border-slate-700'
-                  }`}
-                >
-                  Manage Leagues
-                </button>
-              )}
             </div>
 
             {leagues.length === 0 && (
@@ -5410,6 +5412,22 @@ export default function App() {
                   Leagues stay on this phone. Clearing data disconnects every league saved here.
                 </p>
               </div>
+              {accessKind === 'friends' ? (
+                <p className={`text-xs font-bold leading-snug ${isLight ? 'text-emerald-700' : 'text-emerald-300'}`}>
+                  Friends Pass is active for this season. Unlimited leagues, and nothing is billed.
+                </p>
+              ) : accessKind === 'subscription' ? (
+                <p className={`text-xs font-bold leading-snug ${isLight ? 'text-emerald-700' : 'text-emerald-300'}`}>
+                  RootMap Pro is active.
+                </p>
+              ) : (
+                <LeagueAccessActions
+                  isLight={isLight}
+                  onRedeemOfferCode={redeemOfferCode}
+                  onRedeemFriendsPass={redeemFriendsPass}
+                  onUnlocked={finishProPurchase}
+                />
+              )}
               <button
                 type="button"
                 onClick={() => {
@@ -5868,6 +5886,13 @@ export default function App() {
                     {freeActiveLabel}
                   </div>
                 )}
+                {isPro && accessKind === 'friends' && (
+                  <div className={`mt-1 inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-black uppercase tracking-wide border ${
+                    isLight ? 'bg-emerald-50 text-emerald-800 border-emerald-200' : 'bg-emerald-950/50 text-emerald-200 border-emerald-800'
+                  }`}>
+                    Friends Pass · unlimited
+                  </div>
+                )}
               </div>
               <button
                 type="button"
@@ -5978,7 +6003,7 @@ export default function App() {
               )}
             </div>
             {!isPro && (
-              <div className="px-4 pt-2">
+              <div className="px-4 pt-2 space-y-2">
                 <button
                   type="button"
                   onClick={openProUpgrade}
@@ -5986,9 +6011,15 @@ export default function App() {
                 >
                   RootMap Pro
                 </button>
-                <p className={`mt-1.5 text-center text-[10px] font-semibold ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+                <p className={`text-center text-[10px] font-semibold ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
                   Free tracks {MAX_FREE_ACTIVE_LEAGUES} active leagues. Uncheck one to swap, or upgrade for unlimited.
                 </p>
+                <LeagueAccessActions
+                  isLight={isLight}
+                  onRedeemOfferCode={redeemOfferCode}
+                  onRedeemFriendsPass={redeemFriendsPass}
+                  onUnlocked={finishProPurchase}
+                />
               </div>
             )}
           </div>
@@ -6081,6 +6112,12 @@ export default function App() {
               >
                 Track All Leagues with RootMap Pro
               </button>
+              <LeagueAccessActions
+                isLight={isLight}
+                onRedeemOfferCode={redeemOfferCode}
+                onRedeemFriendsPass={redeemFriendsPass}
+                onUnlocked={finishProPurchase}
+              />
             </div>
           </div>
         </div>,
@@ -6094,6 +6131,9 @@ export default function App() {
           onClose={() => setShowProUpgrade(false)}
           onPurchase={purchaseProPackage}
           onRestore={restoreProPurchases}
+          onRedeemOfferCode={redeemOfferCode}
+          onRedeemFriendsPass={redeemFriendsPass}
+          onAccessUnlocked={finishProPurchase}
         />
       )}
 
