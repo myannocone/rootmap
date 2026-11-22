@@ -2482,7 +2482,7 @@ function PlayerHeadshot({ name, team, size = 40, defense = false }) {
   );
 }
 
-function ManageLeaguesPill({ isLight, expanded, onClick }) {
+function ManageLeaguesPill({ expanded, onClick }) {
   return (
     <button
       type="button"
@@ -2490,11 +2490,7 @@ function ManageLeaguesPill({ isLight, expanded, onClick }) {
       aria-expanded={expanded}
       aria-label="Manage Leagues"
       onClick={onClick}
-      className={`rootmap-manage-pill shrink-0 inline-flex items-center justify-center min-h-11 px-3.5 rounded-full border text-[11px] font-black whitespace-nowrap touch-manipulation ${
-        isLight
-          ? 'bg-white text-slate-800 border-slate-300'
-          : 'bg-slate-950 text-slate-100 border-slate-600'
-      }`}
+      className="rootmap-manage-pill shrink-0 inline-flex items-center justify-center min-h-11 px-3.5 rounded-full border-2 border-emerald-300 bg-emerald-500 text-[#042117] text-[11px] font-black whitespace-nowrap touch-manipulation"
     >
       Manage Leagues
     </button>
@@ -2551,8 +2547,7 @@ export default function App() {
     isLoading: subscriptionLoading,
     purchasePackage,
     restorePurchases,
-    redeemOfferCode,
-    redeemFriendsPass
+    redeemOfferCode
   } = useSubscription();
   const proWasRef = useRef(isPro);
   const activePickCandidatesRef = useRef(activePickCandidates);
@@ -4834,7 +4829,6 @@ export default function App() {
         </div>
         <div className="flex justify-end">
           <ManageLeaguesPill
-            isLight={isLight}
             expanded={showManageLeagues}
             onClick={() => {
               setShowManageLeagues(true);
@@ -5424,7 +5418,6 @@ export default function App() {
                 <LeagueAccessActions
                   isLight={isLight}
                   onRedeemOfferCode={redeemOfferCode}
-                  onRedeemFriendsPass={redeemFriendsPass}
                   onUnlocked={finishProPurchase}
                 />
               )}
@@ -6017,7 +6010,6 @@ export default function App() {
                 <LeagueAccessActions
                   isLight={isLight}
                   onRedeemOfferCode={redeemOfferCode}
-                  onRedeemFriendsPass={redeemFriendsPass}
                   onUnlocked={finishProPurchase}
                 />
               </div>
@@ -6115,7 +6107,6 @@ export default function App() {
               <LeagueAccessActions
                 isLight={isLight}
                 onRedeemOfferCode={redeemOfferCode}
-                onRedeemFriendsPass={redeemFriendsPass}
                 onUnlocked={finishProPurchase}
               />
             </div>
@@ -6132,7 +6123,6 @@ export default function App() {
           onPurchase={purchaseProPackage}
           onRestore={restoreProPurchases}
           onRedeemOfferCode={redeemOfferCode}
-          onRedeemFriendsPass={redeemFriendsPass}
           onAccessUnlocked={finishProPurchase}
         />
       )}

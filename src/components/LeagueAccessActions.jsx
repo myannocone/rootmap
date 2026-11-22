@@ -4,24 +4,18 @@ export default function LeagueAccessActions({
   isLight = false,
   disabled = false,
   onRedeemOfferCode,
-  onRedeemFriendsPass,
   onUnlocked
 }) {
-  const [code, setCode] = useState('');
-  const [busy, setBusy] = useState('');
+  const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState(null);
-  const muted = isLight ? '#64748B' : '#94A3B8';
-  const fieldBg = isLight ? '#FFFFFF' : '#0B1220';
-  const fieldBorder = isLight ? '#CBD5E1' : '#334155';
-  const fieldText = isLight ? '#0F172A' : '#F8FAFC';
 
-  const run = async (kind, action) => {
-    if (busy || disabled) return;
-    setBusy(kind);
+  const redeem = async () => {
+    if (busy || disabled || !onRedeemOfferCode) return;
+    setBusy(true);
     setNotice(null);
     let unlocked = false;
     try {
-      const result = await action();
+      const result = await onRedeemOfferCode();
       if (result?.isPro) {
         unlocked = true;
         onUnlocked?.(result);
@@ -40,7 +34,7 @@ export default function LeagueAccessActions({
         message: error?.message || 'Something went wrong. Try again.'
       });
     } finally {
-      if (!unlocked) setBusy('');
+      if (!unlocked) setBusy(false);
     }
   };
 
@@ -48,8 +42,8 @@ export default function LeagueAccessActions({
     <div className="space-y-2">
       <button
         type="button"
-        disabled={Boolean(busy) || disabled}
-        onClick={() => run('offer', () => onRedeemOfferCode())}
+        disabled={busy || disabled || !onRedeemOfferCode}
+        onClick={redeem}
         className="w-full min-h-11 rounded-xl border text-[12px] font-black disabled:opacity-60"
         style={{
           color: isLight ? '#065F46' : '#6EE7B7',
@@ -57,42 +51,8 @@ export default function LeagueAccessActions({
           background: isLight ? '#ECFDF5' : 'rgba(16, 185, 129, 0.08)'
         }}
       >
-        {busy === 'offer' ? 'Opening offer code…' : 'Redeem Offer Code'}
+        {busy ? 'Opening offer code…' : 'Redeem Offer Code'}
       </button>
-      <form
-        className="flex items-center gap-1.5"
-        onSubmit={(event) => {
-          event.preventDefault();
-          run('friends', () => onRedeemFriendsPass(code));
-        }}
-      >
-        <input
-          value={code}
-          onChange={(event) => {
-            setCode(event.target.value);
-            setNotice(null);
-          }}
-          aria-label="Friends Pass code"
-          placeholder="Friends pass code"
-          autoCapitalize="characters"
-          autoCorrect="off"
-          spellCheck={false}
-          disabled={Boolean(busy) || disabled}
-          className="min-w-0 flex-1 min-h-11 rounded-xl border px-3 text-[12px] font-bold"
-          style={{ background: fieldBg, borderColor: fieldBorder, color: fieldText }}
-        />
-        <button
-          type="submit"
-          disabled={Boolean(busy) || disabled}
-          className="shrink-0 min-h-11 px-3 rounded-xl text-[11px] font-black disabled:opacity-60"
-          style={{ background: '#10B981', color: '#042117' }}
-        >
-          {busy === 'friends' ? 'Applying…' : 'Apply'}
-        </button>
-      </form>
-      <p className="text-[10px] font-semibold leading-snug" style={{ color: muted }}>
-        Friends Pass unlocks unlimited leagues for this season and does not start a paid subscription.
-      </p>
       {notice ? (
         <p
           role="status"

@@ -82,7 +82,6 @@ export default function ProPaywall({
   onPurchase,
   onRestore,
   onRedeemOfferCode,
-  onRedeemFriendsPass,
   onAccessUnlocked
 }) {
   const packages = useMemo(() => packagesFromOfferings(offerings), [offerings]);
@@ -272,12 +271,11 @@ export default function ProPaywall({
             >
               {busy === 'restore' ? 'Restoring…' : 'Restore Purchases'}
             </button>
-            {onRedeemOfferCode && onRedeemFriendsPass ? (
+            {onRedeemOfferCode ? (
               <LeagueAccessActions
                 isLight={false}
                 disabled={Boolean(busy)}
                 onRedeemOfferCode={onRedeemOfferCode}
-                onRedeemFriendsPass={onRedeemFriendsPass}
                 onUnlocked={onAccessUnlocked}
               />
             ) : null}

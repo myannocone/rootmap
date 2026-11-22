@@ -207,16 +207,24 @@ body {
 @keyframes rootmap-manage-pill {
   0%, 100% {
     opacity: 1;
-    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0);
+    box-shadow:
+      0 0 0 1px rgba(52, 211, 153, 0.95),
+      0 0 18px 2px rgba(16, 185, 129, 0.62);
   }
   50% {
-    opacity: 0.6;
-    box-shadow: 0 0 10px 0 rgba(16, 185, 129, 0.28);
+    opacity: 0.4;
+    box-shadow:
+      0 0 0 1px rgba(16, 185, 129, 0.18),
+      0 0 0 0 rgba(16, 185, 129, 0);
   }
 }
 
 .rootmap-manage-pill {
-  animation: rootmap-manage-pill 3.6s ease-in-out infinite;
+  opacity: 1;
+  animation: rootmap-manage-pill 2.5s ease-in-out infinite;
+  box-shadow:
+    0 0 0 1px rgba(52, 211, 153, 0.95),
+    0 0 18px 2px rgba(16, 185, 129, 0.62);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -235,6 +243,10 @@ body {
   .rootmap-pulse-blink,
   .rootmap-manage-pill {
     animation: none;
+  }
+
+  .rootmap-manage-pill {
+    opacity: 1;
   }
 
   .rootmap-filter-tray,
