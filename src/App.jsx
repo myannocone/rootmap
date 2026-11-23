@@ -2602,7 +2602,7 @@ function ImportEmptyState({ isLight, onImport }) {
         Connect Yahoo, ESPN, or Sleeper
       </div>
       <p className={`text-xs leading-relaxed ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
-        No leagues are on this phone yet. Import one to fill Matchups, Game Slate, and RootMap.
+        No leagues are on this device yet. Import one to fill Matchups, Game Slate, and RootMap.
       </p>
       <button
         type="button"
@@ -2690,6 +2690,8 @@ export default function App() {
   const lineupQuietRef = useRef(true);
   const lineupSyncTokenRef = useRef(0);
   const manualRefreshRef = useRef(false);
+  const leagueRefreshingRef = useRef(false);
+  const refreshStatusTimerRef = useRef(null);
   const requestWeekRef = useRef(getActiveSlate()?.week || FALLBACK_NFL_WEEK);
   leaguesRef.current = leagues;
   gamesRef.current = games;
@@ -2925,8 +2927,8 @@ export default function App() {
       const count = Number(urlParams.get('count')) || 0;
       setLeagues(loadStoredLeagues());
       setSyncStatus(count === 1
-        ? 'Yahoo connected. 1 league is on this phone.'
-        : `Yahoo connected. ${count} leagues are on this phone.`);
+        ? 'Yahoo connected. 1 league is on this device.'
+        : `Yahoo connected. ${count} leagues are on this device.`);
       // Re-pull Fantasy API data so cached "My Teams & Leagues" / 0.0 points get overwritten.
       syncYahooLeaguesFromApi().then((imported) => {
         if (!imported?.length) return;
@@ -3201,11 +3203,31 @@ export default function App() {
     }
   };
 
+  const clearRefreshStatusTimer = () => {
+    if (refreshStatusTimerRef.current) {
+      window.clearTimeout(refreshStatusTimerRef.current);
+      refreshStatusTimerRef.current = null;
+    }
+  };
+
+  const showBriefSyncStatus = (message, duration = 2800) => {
+    clearRefreshStatusTimer();
+    setSyncStatus(message);
+    refreshStatusTimerRef.current = window.setTimeout(() => {
+      refreshStatusTimerRef.current = null;
+      setSyncStatus((current) => (current === message ? '' : current));
+    }, duration);
+  };
+
   const forceRefreshBoard = () => {
+    if (leagueRefreshingRef.current || manualRefreshRef.current) return;
     manualRefreshRef.current = true;
+    leagueRefreshingRef.current = true;
     lineupForceRef.current = true;
     lineupQuietRef.current = false;
+    clearRefreshStatusTimer();
     setLeagueRefreshing(true);
+    setSyncStatus('Refreshing scores…');
     setLineupRefreshNonce((n) => n + 1);
     refreshLiveSlate(selectedWeek, { forceRefresh: true });
     tapHaptic();
@@ -3276,6 +3298,7 @@ export default function App() {
       if (manualRefreshRef.current) return;
       lineupForceRef.current = true;
       lineupQuietRef.current = true;
+      leagueRefreshingRef.current = true;
       setLeagueRefreshing(true);
       setLineupRefreshNonce((n) => n + 1);
     };
@@ -3289,17 +3312,32 @@ export default function App() {
 
   useEffect(() => {
     const week = Number(selectedWeek);
-    const forceRefresh = Boolean(lineupForceRef.current)
-      || (gamesRef.current || []).some((game) => gamePhase(game) === 'IN_PROGRESS');
+    const consumedForce = Boolean(lineupForceRef.current);
     const quiet = lineupQuietRef.current;
+    const forceRefresh = consumedForce
+      || (gamesRef.current || []).some((game) => gamePhase(game) === 'IN_PROGRESS');
     lineupForceRef.current = false;
     lineupQuietRef.current = true;
-    if (!week || (!forceRefresh && lineupRefreshRef.current === week)) return undefined;
+    if (!week || (!forceRefresh && lineupRefreshRef.current === week)) {
+      if (!quiet) {
+        manualRefreshRef.current = false;
+        leagueRefreshingRef.current = false;
+        setLeagueRefreshing(false);
+        showBriefSyncStatus(week ? 'Scores refreshed.' : 'Could not refresh scores.', week ? 2800 : 4500);
+      }
+      return undefined;
+    }
     let cancelled = false;
+    let finished = false;
     const token = ++lineupSyncTokenRef.current;
     const stale = () => cancelled || lineupSyncTokenRef.current !== token;
     const refreshStoredLineups = async () => {
-      if (!quiet) setSyncStatus('Refreshing scores…');
+      leagueRefreshingRef.current = true;
+      setLeagueRefreshing(true);
+      if (!quiet) {
+        clearRefreshStatusTimer();
+        setSyncStatus('Refreshing scores…');
+      }
       const current = leaguesRef.current || [];
       const updates = new Map();
       let sleeperOk = false;
@@ -3433,6 +3471,7 @@ export default function App() {
       if (stale()) {
         if (lineupSyncTokenRef.current === token) {
           manualRefreshRef.current = false;
+          leagueRefreshingRef.current = false;
           setLeagueRefreshing(false);
           if (!quiet) setSyncStatus('');
         }
@@ -3446,12 +3485,19 @@ export default function App() {
       if (!quiet) {
         manualRefreshRef.current = false;
         if (espnAuthExpired && !updates.size) {
+          clearRefreshStatusTimer();
           setSyncStatus('');
+        } else if (sleeperOk || espnOk || updates.size) {
+          showBriefSyncStatus('Scores refreshed.');
         } else {
-          setSyncStatus(sleeperOk || espnOk || updates.size ? 'Scores refreshed.' : 'Could not refresh scores.');
+          showBriefSyncStatus('Could not refresh scores.', 4500);
         }
       }
-      if (lineupSyncTokenRef.current === token) setLeagueRefreshing(false);
+      if (lineupSyncTokenRef.current === token) {
+        leagueRefreshingRef.current = false;
+        setLeagueRefreshing(false);
+      }
+      finished = true;
       if (!updates.size) return;
       setLeagues((prev) => {
         const used = new Set();
@@ -3505,16 +3551,28 @@ export default function App() {
       });
     };
     refreshStoredLineups().catch(() => {
+      finished = true;
       if (lineupSyncTokenRef.current === token) {
         manualRefreshRef.current = false;
+        leagueRefreshingRef.current = false;
         setLeagueRefreshing(false);
-        if (!quiet) setSyncStatus('Could not refresh scores.');
+        if (!quiet) showBriefSyncStatus('Could not refresh scores.', 4500);
       }
     });
     return () => {
       cancelled = true;
+      // A newer tap already replaced this request. Otherwise hand the same
+      // manual refresh to the effect that replaced this one.
+      if (!finished && !lineupForceRef.current) {
+        lineupForceRef.current = consumedForce;
+        lineupQuietRef.current = quiet;
+      }
     };
   }, [selectedWeek, lineupRefreshNonce]);
+
+  useEffect(() => () => {
+    if (refreshStatusTimerRef.current) window.clearTimeout(refreshStatusTimerRef.current);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -4160,7 +4218,7 @@ export default function App() {
           storeEspnSession({ swid, espnS2: espnS2Value, leagueId: picked, teamId: '' });
         }
         if (picked) {
-          setSyncStatus('Signed in on ESPN. This phone will refresh that league each week.');
+          setSyncStatus('Signed in on ESPN. This device will refresh that league each week.');
           await loadEspnLeague({
             leagueId: picked,
             swid,
@@ -4791,7 +4849,7 @@ export default function App() {
         />
       </div>
       <p className={`text-[11px] leading-snug ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
-        Sign in at ESPN, then copy SWID and espn_s2 from the espn.com cookies. Both are sent with the league request and stay on this phone so weekly refreshes can sign in for you.
+        Sign in at ESPN, then copy SWID and espn_s2 from the espn.com cookies. Both are sent with the league request and stay on this device so weekly refreshes can sign in for you.
       </p>
     </div>
   );
@@ -4985,19 +5043,21 @@ export default function App() {
               type="button"
               onClick={forceRefreshBoard}
               disabled={leagueRefreshing}
-              aria-label="Refresh scores"
+              aria-label={leagueRefreshing ? 'Refreshing scores' : 'Refresh scores'}
               aria-busy={leagueRefreshing}
-              title="Refresh scores"
-              className={`shrink-0 w-9 h-9 rounded-lg border flex items-center justify-center transition touch-manipulation disabled:opacity-80 ${
+              title={leagueRefreshing ? 'Refreshing scores' : 'Refresh scores'}
+              className={`shrink-0 w-9 h-9 rounded-lg border flex items-center justify-center transition-colors touch-manipulation disabled:pointer-events-none disabled:opacity-80 ${
                 isLight ? 'bg-white text-slate-800 border-slate-200 hover:bg-slate-50' : 'bg-slate-900 text-slate-100 border-slate-700 hover:bg-slate-800'
               }`}
             >
-              <svg viewBox="0 0 24 24" className={`w-4 h-4 ${leagueRefreshing ? 'rootmap-spin' : ''}`} fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                <path d="M21 12a9 9 0 0 1-15.5 6.2L3 16" />
-                <path d="M3 21v-5h5" />
-                <path d="M3 12a9 9 0 0 1 15.5-6.2L21 8" />
-                <path d="M21 3v5h-5" />
-              </svg>
+              <span className={`inline-flex items-center justify-center ${leagueRefreshing ? 'rootmap-spin' : ''}`}>
+                <svg viewBox="0 0 24 24" className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M21 12a9 9 0 0 1-15.5 6.2L3 16" />
+                  <path d="M3 21v-5h5" />
+                  <path d="M3 12a9 9 0 0 1 15.5-6.2L21 8" />
+                  <path d="M21 3v5h-5" />
+                </svg>
+              </span>
             </button>
             <button
             type="button"
@@ -5737,7 +5797,7 @@ export default function App() {
                   This device
                 </div>
                 <p className={`text-xs mt-1 leading-relaxed ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
-                  Leagues stay on this phone. Clearing data disconnects every league saved here.
+                  Leagues stay on this device. Clearing data disconnects every league saved here.
                 </p>
               </div>
               {accessKind === 'friends' ? (
@@ -7259,7 +7319,7 @@ export default function App() {
                 </h3>
                 <p className={`text-xs mt-1 leading-relaxed ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
                   {Capacitor.isNativePlatform()
-                    ? 'Public leagues load from an ID. Sign in on ESPN and this phone can also open private leagues.'
+                    ? 'Public leagues load from an ID. Sign in on ESPN and this device can also open private leagues.'
                     : 'Public leagues load from an ID. Private leagues use the iOS app, ESPN cookies, or a pasted matchup.'}
                 </p>
               </div>
@@ -7375,7 +7435,7 @@ export default function App() {
 
             {espnNativeSession && (
               <p className={`text-xs leading-relaxed ${isLight ? 'text-slate-600' : 'text-slate-300'}`}>
-                Signed in on ESPN. This phone keeps that session and refreshes the league each week. The password is not saved.
+                Signed in on ESPN. This device keeps that session and refreshes the league each week. The password is not saved.
               </p>
             )}
 
@@ -7451,7 +7511,7 @@ export default function App() {
             </div>
 
             <p className={`text-[11px] leading-snug ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
-              Public leagues load with the league ID. Private leagues load after you sign in on ESPN, and this phone keeps that session for weekly refreshes.
+              Public leagues load with the league ID. Private leagues load after you sign in on ESPN, and this device keeps that session for weekly refreshes.
             </p>
 
             <button
@@ -7580,7 +7640,7 @@ export default function App() {
                 </h3>
                 <p className={`text-xs mt-1 leading-relaxed ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
                   {Capacitor.isNativePlatform()
-                    ? 'Sign in once. This phone keeps the Yahoo session and refreshes your matchup each week.'
+                    ? 'Sign in once. This device keeps the Yahoo session and refreshes your matchup each week.'
                     : 'Sign in with Yahoo to automatically sync all your leagues and live lineups.'}
                 </p>
               </div>
