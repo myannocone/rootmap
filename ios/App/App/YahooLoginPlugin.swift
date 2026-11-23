@@ -894,16 +894,63 @@ enum YahooLinks {
         }
         return '';
       }
+      function leagueNumFrom(value) {
+        var text = String(value || '');
+        var keyed = text.match(/\\.l\\.(\\d+)/);
+        if (keyed) return keyed[1];
+        var path = text.match(/\\/f1\\/(\\d+)/);
+        if (path) return path[1];
+        if (/^\\d+$/.test(text)) return text;
+        return '';
+      }
+      function teamNumFrom(value) {
+        var text = String(value || '');
+        var keyed = text.match(/\\.t\\.(\\d+)/);
+        if (keyed) return keyed[1];
+        var path = text.match(/\\/f1\\/\\d+\\/(\\d+)(?=\\/|$|\\?|#)/);
+        if (path) return path[1];
+        if (/^\\d+$/.test(text)) return text;
+        return '';
+      }
+      function concreteMatchup(leagueId, teamId, href) {
+        if (!leagueId) return '';
+        var weekMatch = String(href || '').match(/[?&]week=(\\d+)/i);
+        var week = weekMatch ? ('?week=' + weekMatch[1]) : '';
+        if (teamId) {
+          return 'https://football.fantasysports.yahoo.com/f1/' + leagueId + '/' + teamId + '/matchup' + week;
+        }
+        return 'https://football.fantasysports.yahoo.com/f1/' + leagueId + '/matchup' + week;
+      }
+      function leagueHasTeam(out, leagueId) {
+        for (var i = 0; i < out.length; i++) {
+          if (String(out[i].leagueId) === String(leagueId) && out[i].teamId) return true;
+        }
+        return false;
+      }
+      function dropHomeRow(out, seen, leagueId) {
+        var homeKey = String(leagueId) + ':home';
+        if (!seen[homeKey]) return;
+        seen[homeKey] = false;
+        for (var hi = out.length - 1; hi >= 0; hi--) {
+          if (String(out[hi].leagueId) === String(leagueId) && !out[hi].teamId) out.splice(hi, 1);
+        }
+      }
       function pushTeam(out, seen, leagueId, teamId, href, teamName, leagueName) {
-        if (!leagueId || !teamId) return;
-        var key = leagueId + ':' + teamId;
+        leagueId = String(leagueId || '');
+        teamId = String(teamId || '');
+        if (!leagueId) return;
+        // A team row already covers this league home — don't keep both.
+        if (!teamId && leagueHasTeam(out, leagueId)) return;
+        if (teamId) dropHomeRow(out, seen, leagueId);
+        var key = teamId ? (leagueId + ':' + teamId) : (leagueId + ':home');
+        var concrete = concreteMatchup(leagueId, teamId, href);
         var name = clean(teamName).replace(/\\d+\\s*-\\s*\\d+\\s*-\\s*\\d+.*/, '').trim();
         if (!name || name.length > 40 || /^(team\\s*\\d+|my team|opponent)$/i.test(name)) name = '';
         var leagueTitle = usableLeagueName(leagueName);
         if (seen[key]) {
           var existing = null;
           for (var ei = 0; ei < out.length; ei++) {
-            if (out[ei].leagueId === String(leagueId) && out[ei].teamId === String(teamId)) {
+            if (out[ei].leagueId === leagueId && out[ei].teamId === teamId) {
               existing = out[ei];
               break;
             }
@@ -914,16 +961,20 @@ enum YahooLinks {
               existing.teamName = name;
             }
             if (leagueTitle && !existing.leagueName) existing.leagueName = leagueTitle;
-            if (href && !existing.href) existing.href = href;
+            if (concrete) {
+              existing.href = concrete;
+              existing.matchupUrl = concrete;
+            }
           }
           return;
         }
         seen[key] = true;
-        if (!name) name = 'Team ' + teamId;
+        if (!name && teamId) name = 'Team ' + teamId;
         out.push({
-          leagueId: String(leagueId),
-          teamId: String(teamId),
-          href: href || ('https://football.fantasysports.yahoo.com/f1/' + leagueId + '/' + teamId),
+          leagueId: leagueId,
+          teamId: teamId,
+          href: concrete,
+          matchupUrl: concrete,
           name: name,
           teamName: name,
           leagueName: leagueTitle
@@ -935,24 +986,41 @@ enum YahooLinks {
           for (var i = 0; i < value.length; i++) dig(value[i], out, seen, depth + 1);
           return;
         }
-        var leagueRaw = value.league_id || value.leagueId || value.league_key || value.leagueKey || '';
+        var leagueCandidates = [value.league_key, value.leagueKey, value.league_id, value.leagueId];
+        var leagueRaw = '';
+        for (var li = 0; li < leagueCandidates.length; li++) {
+          var leagueText = String(leagueCandidates[li] || '');
+          if (/\\.l\\.\\d+/.test(leagueText) || /\\/f1\\/\\d+/.test(leagueText) || /^\\d+$/.test(leagueText)) {
+            leagueRaw = leagueText;
+            break;
+          }
+        }
         var leagueMetaName = value.league_name || value.leagueName || '';
         if (!leagueMetaName && typeof value.name === 'string' && !value.team_key && !value.teamKey && (value.num_teams != null || value.scoring_type || value.league_type || value.current_week != null)) {
           leagueMetaName = value.name;
         }
         if (leagueRaw && leagueMetaName) rememberLeague(leagueRaw, leagueMetaName);
-        var teamRaw = value.team_id || value.teamId || value.team_key || value.teamKey || '';
-        var leagueNum = String(leagueRaw).match(/(?:\\.l\\.|\\/f1\\/)?(\\d+)/);
-        var teamNum = String(teamRaw).match(/(?:\\.t\\.|\\/)(\\d+)$/) || String(teamRaw).match(/^(\\d+)$/);
-        if (leagueNum && teamNum) {
+        var teamCandidates = [value.team_key, value.teamKey, value.team_id, value.teamId];
+        var teamRaw = '';
+        for (var ti = 0; ti < teamCandidates.length; ti++) {
+          var teamText = String(teamCandidates[ti] || '');
+          if (/\\.t\\.\\d+/.test(teamText) || /\\/f1\\/\\d+\\/\\d+/.test(teamText) || /^\\d+$/.test(teamText)) {
+            teamRaw = teamText;
+            break;
+          }
+        }
+        var rawUrl = value.url || value.href || '';
+        var leagueNum = leagueNumFrom(leagueRaw) || leagueNumFrom(rawUrl);
+        var teamNum = teamNumFrom(teamRaw) || teamNumFrom(rawUrl);
+        if (leagueNum && (teamNum || /\\/f1\\/\\d+/.test(String(rawUrl)))) {
           pushTeam(
             out,
             seen,
-            leagueNum[1],
-            teamNum[1],
-            value.url || value.href || '',
-            value.name || value.team_name || value.teamName || '',
-            value.league_name || value.leagueName || ''
+            leagueNum,
+            teamNum,
+            rawUrl,
+            teamNum ? (value.name || value.team_name || value.teamName || '') : '',
+            value.league_name || value.leagueName || leagueMetaName || ''
           );
         }
         var keys = Object.keys(value);
@@ -966,10 +1034,10 @@ enum YahooLinks {
       var teams = [];
       var leagueTitles = {};
       function rememberLeague(leagueRaw, name) {
-        var num = String(leagueRaw || '').match(/(?:\\.l\\.|\\/f1\\/)?(\\d+)/);
+        var num = leagueNumFrom(leagueRaw);
         var title = usableLeagueName(name);
         if (!num || !title) return;
-        if (!leagueTitles[num[1]]) leagueTitles[num[1]] = title;
+        if (!leagueTitles[num]) leagueTitles[num] = title;
       }
       // Prefer embedded JSON nicknames/league titles before sparse lobby link text.
       try { if (window.ydb) dig(window.ydb, teams, seen, 0); } catch (err) {}
@@ -980,21 +1048,32 @@ enum YahooLinks {
       var links = document.querySelectorAll('a[href]');
       for (var i = 0; i < links.length; i++) {
         var href = links[i].href || '';
-        var match = href.match(/\\/f1\\/(\\d+)\\/(\\d+)(?:\\/|$|\\?)/);
-        if (!match) continue;
         var linkName = links[i].innerText || links[i].textContent
           || links[i].getAttribute('title') || links[i].getAttribute('aria-label') || '';
-        pushTeam(teams, seen, match[1], match[2], href, linkName, leagueNameNear(links[i]));
+        var teamMatch = href.match(/\\/f1\\/(\\d+)\\/(\\d+)(?=\\/|$|\\?|#)/);
+        if (teamMatch) {
+          pushTeam(teams, seen, teamMatch[1], teamMatch[2], href, linkName, leagueNameNear(links[i]));
+          continue;
+        }
+        // League home (/f1/{id}) and league matchup (/f1/{id}/matchup) — no team id yet.
+        var homeMatch = href.match(/\\/f1\\/(\\d+)(?:\\/matchup)?\\/?(?:$|[?#])/);
+        if (!homeMatch) continue;
+        pushTeam(teams, seen, homeMatch[1], '', href, '', leagueNameNear(links[i]));
       }
       try {
         var scripts = document.querySelectorAll('script:not([src])');
         for (var s = 0; s < scripts.length; s++) {
           var text = scripts[s].textContent || '';
           if (text.indexOf('/f1/') === -1 && text.indexOf('league_key') === -1) continue;
-          var re = /\\/f1\\/(\\d+)\\/(\\d+)/g;
+          var re = /\\/f1\\/(\\d+)\\/(\\d+)(?=\\/|$|\\?|#|["'])/g;
           var found;
           while ((found = re.exec(text))) {
             pushTeam(teams, seen, found[1], found[2], '', '', '');
+          }
+          var homeRe = /\\/f1\\/(\\d+)(?:\\/matchup)?(?=["'?\\s]|$)/g;
+          var homeFound;
+          while ((homeFound = homeRe.exec(text))) {
+            pushTeam(teams, seen, homeFound[1], '', '', '', '');
           }
           var keyRe = /"league_key"\\s*:\\s*"(\\d+\\.l\\.\\d+)"/g;
           var keyHit;
@@ -1012,6 +1091,7 @@ enum YahooLinks {
         if (!home) continue;
         var homeName = usableLeagueName(homeLinks[h].innerText || homeLinks[h].textContent || homeLinks[h].getAttribute('title') || '');
         if (homeName) rememberLeague(home[1], homeName);
+        pushTeam(teams, seen, home[1], '', homeHref, '', homeName);
       }
       for (var t = 0; t < teams.length; t++) {
         if (!teams[t].leagueName && leagueTitles[teams[t].leagueId]) {
@@ -1125,21 +1205,64 @@ enum YahooLinks {
         return components.url ?? url
     }
 
+    /// Pure digits, or the id inside a Yahoo key (`461.l.12345` / `461.l.12345.t.2`).
+    static func numericId(_ value: String, team: Bool = false) -> String {
+        let text = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !text.isEmpty && text.allSatisfy(\.isNumber) { return text }
+        let pattern = team ? "\\.t\\.(\\d+)" : "\\.l\\.(\\d+)"
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return "" }
+        let range = NSRange(text.startIndex..., in: text)
+        guard let match = regex.firstMatch(in: text, options: [], range: range),
+              match.numberOfRanges > 1,
+              let piece = Range(match.range(at: 1), in: text) else {
+            return ""
+        }
+        return String(text[piece])
+    }
+
+    static func pathMatchesConcrete(_ url: URL, leagueId: String, teamId: String) -> Bool {
+        let host = url.host?.lowercased() ?? ""
+        guard host == "football.fantasysports.yahoo.com" || host.hasSuffix(".football.fantasysports.yahoo.com") else {
+            return false
+        }
+        let expected = teamId.isEmpty
+            ? "/f1/\(leagueId)/matchup"
+            : "/f1/\(leagueId)/\(teamId)/matchup"
+        var path = url.path.lowercased()
+        if path.hasSuffix("/") { path.removeLast() }
+        return path == expected
+    }
+
+    static func isConcreteMatchupURL(_ value: String) -> Bool {
+        guard let url = URL(string: value) else { return false }
+        let league = leagueId(from: url)
+        guard !league.isEmpty else { return false }
+        return pathMatchesConcrete(url, leagueId: league, teamId: teamId(from: url))
+    }
+
     static func matchupURL(leagueId: String, teamId: String = "", week: String, fallback: URL?) -> URL? {
-        if leagueId.isEmpty { return fallback }
-        if fallback?.path.contains("/matchup") == true, let fallback {
-            return week.isEmpty ? fallback : applying(week: week, to: fallback)
+        let league = numericId(leagueId).isEmpty ? Self.leagueId(from: fallback) : numericId(leagueId)
+        let explicitTeam = numericId(teamId, team: true)
+        let team = explicitTeam.isEmpty ? Self.teamId(from: fallback) : explicitTeam
+        // Bare lobby (football.fantasysports.yahoo.com or /f1 with no league id) is not a matchup.
+        guard !league.isEmpty else { return nil }
+        let weekValue = week.isEmpty ? Self.week(from: fallback) : week
+        if let fallback, pathMatchesConcrete(fallback, leagueId: league, teamId: team) {
+            if weekValue.isEmpty || Self.week(from: fallback) == weekValue {
+                return fallback
+            }
+            return applying(week: weekValue, to: fallback)
         }
         var components = URLComponents()
         components.scheme = "https"
         components.host = "football.fantasysports.yahoo.com"
-        components.path = teamId.isEmpty
-            ? "/f1/\(leagueId)/matchup"
-            : "/f1/\(leagueId)/\(teamId)/matchup"
-        if !week.isEmpty {
-            components.queryItems = [URLQueryItem(name: "week", value: week)]
+        components.path = team.isEmpty
+            ? "/f1/\(league)/matchup"
+            : "/f1/\(league)/\(team)/matchup"
+        if !weekValue.isEmpty {
+            components.queryItems = [URLQueryItem(name: "week", value: weekValue)]
         }
-        return components.url ?? fallback
+        return components.url
     }
 
     static func isMatchup(_ url: URL?) -> Bool {
@@ -1153,8 +1276,8 @@ enum YahooLinks {
         let league = first(string(body["leagueId"]), leagueId(from: href))
         let team = first(string(body["teamId"]), teamId(from: href))
         let weekValue = first(week(from: href), week(from: URL(string: hrefText)))
-        let matchup = matchupURL(leagueId: league, teamId: team, week: weekValue, fallback: href)?.absoluteString
-            ?? (href?.absoluteString ?? "")
+        let built = matchupURL(leagueId: league, teamId: team, week: weekValue, fallback: href)?.absoluteString ?? ""
+        let matchup = isConcreteMatchupURL(built) ? built : ""
         return [
             "leagueId": league,
             "teamId": team,
@@ -1438,9 +1561,18 @@ final class YahooLoginSheet: UIViewController, WKNavigationDelegate, WKUIDelegat
             return []
         }
         return parsed.compactMap { item in
-            let leagueId = item["leagueId"] as? String ?? ""
-            let teamId = item["teamId"] as? String ?? ""
-            if leagueId.isEmpty || teamId.isEmpty { return nil }
+            let leagueId = YahooLinks.numericId(item["leagueId"] as? String ?? "")
+            let teamId = YahooLinks.numericId(item["teamId"] as? String ?? "", team: true)
+            // League home rows have a league id and no team id. Bare lobby rows have neither.
+            if leagueId.isEmpty { return nil }
+            let href = (item["matchupUrl"] as? String) ?? (item["href"] as? String) ?? ""
+            let matchup = YahooLinks.matchupURL(
+                leagueId: leagueId,
+                teamId: teamId,
+                week: YahooLinks.week(from: URL(string: href)),
+                fallback: URL(string: href)
+            )?.absoluteString ?? ""
+            guard YahooLinks.isConcreteMatchupURL(matchup) else { return nil }
             let teamName = item["teamName"] as? String ?? item["name"] as? String ?? ""
             let leagueName = item["leagueName"] as? String ?? ""
             return [
@@ -1448,7 +1580,9 @@ final class YahooLoginSheet: UIViewController, WKNavigationDelegate, WKUIDelegat
                 "teamId": teamId,
                 "name": teamName,
                 "teamName": teamName,
-                "leagueName": leagueName
+                "leagueName": leagueName,
+                "href": matchup,
+                "matchupUrl": matchup
             ]
         }
     }
@@ -1459,15 +1593,17 @@ final class YahooLoginSheet: UIViewController, WKNavigationDelegate, WKUIDelegat
         finished = true
         pollTimer?.invalidate()
         let week = preferredWeek
-        let leagues: [[String: Any]] = teams.map { team in
+        let leagues: [[String: Any]] = teams.compactMap { team in
             let leagueId = team["leagueId"] ?? ""
             let teamId = team["teamId"] ?? ""
+            let stored = team["matchupUrl"] ?? team["href"] ?? ""
             let matchup = YahooLinks.matchupURL(
                 leagueId: leagueId,
                 teamId: teamId,
                 week: week,
-                fallback: URL(string: "https://football.fantasysports.yahoo.com/f1/\(leagueId)/\(teamId)/matchup")
+                fallback: URL(string: stored)
             )?.absoluteString ?? ""
+            guard YahooLinks.isConcreteMatchupURL(matchup) else { return nil }
             return [
                 "leagueId": leagueId,
                 "teamId": teamId,
