@@ -1,6 +1,7 @@
 import { registerPlugin } from '@capacitor/core';
 
 export const ESPN_LOGIN_URL = 'https://www.espn.com/login';
+export const ESPN_FANTASY_URL = 'https://fantasy.espn.com/';
 export const ESPN_SESSION_EXPIRED_HINT =
   'ESPN session expired. Tap here to sign in again so RootMap can refresh your leagues.';
 

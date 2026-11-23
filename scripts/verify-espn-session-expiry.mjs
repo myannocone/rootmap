@@ -97,5 +97,13 @@ assert(appSource.includes('handleEspnSessionExpiredTap'), 'reconnect notice is t
 assert(appSource.includes("selectConnectTab('espn')"), 'tap opens the ESPN import modal');
 assert(!/isEspnSessionRejected[\s\S]{0,400}setLeagues\(/.test(appSource), 'auth failure does not rewrite the league board');
 assert(!loginSource.includes('rootmap_leagues'), 'session helper never writes the league board');
+assert(loginSource.includes("export const ESPN_FANTASY_URL = 'https://fantasy.espn.com/'"), 'fantasy.espn.com helper url');
+assert(appSource.includes('ESPN_FANTASY_URL'), 'browser modal links to fantasy.espn.com');
+assert(appSource.includes('Private League Sign-In'), 'browser modal explains private sign-in');
+assert(appSource.includes("espnSigningIn ? 'Signing in…' : 'Sign in to ESPN'"), 'native modal leads with Sign in to ESPN');
+assert(appSource.includes('openNativeEspnLogin()'), 'native button still opens EspnLoginPlugin');
+assert(appSource.includes('>Load league<') || appSource.includes("espnBusy || 'Load league'"), 'public league load remains');
+assert(appSource.includes('Import pasted matchup'), 'yahoo/espn paste import remains');
+assert(appSource.includes('Paste an ESPN or Yahoo matchup here'), 'unified paste box remains');
 
 console.log('espn session expiry checks passed');

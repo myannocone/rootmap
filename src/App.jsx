@@ -39,6 +39,7 @@ import {
 } from './utils/sleeperApi';
 import { fetchEspnFanLeagues, fetchEspnLeague, listEspnTeams, mapEspnLeague } from './utils/espnDirectApi';
 import {
+  ESPN_FANTASY_URL,
   ESPN_LOGIN_URL,
   ESPN_SESSION_EXPIRED_HINT,
   invalidateEspnSession,
@@ -2732,6 +2733,7 @@ export default function App() {
   const [espnTeamId, setEspnTeamId] = useState(() => readEspnLeagueIdentity().teamId);
   const [espnSessionExpired, setEspnSessionExpired] = useState(() => isEspnSessionExpired());
   const [espnBusy, setEspnBusy] = useState('');
+  const [espnSigningIn, setEspnSigningIn] = useState(false);
   const [espnError, setEspnError] = useState('');
   const [espnPrivateOpen, setEspnPrivateOpen] = useState(false);
   const [espnSwid, setEspnSwid] = useState(() => readEspnSession()?.swid || '');
@@ -4127,12 +4129,15 @@ export default function App() {
     setEspnWeek(String(slateMeta.week || FALLBACK_NFL_WEEK));
     setEspnSeason('2026');
     if (Capacitor.isNativePlatform()) {
+      setEspnSigningIn(true);
       try {
         const result = await openNativeEspnLogin();
         const swid = String(result?.swid || '').trim();
         const espnS2Value = String(result?.espnS2 || '').trim();
         if (!swid || !espnS2Value) {
-          setSyncStatus('ESPN sign-in did not finish. Open Connect ESPN and sign in on ESPN’s page.');
+          const notice = 'ESPN sign-in did not finish. Sign in on ESPN’s page, then tap Sign in to ESPN again.';
+          setEspnError(notice);
+          setSyncStatus(notice);
           return;
         }
         const saved = readEspnSession() || readEspnLeagueIdentity();
@@ -4170,8 +4175,11 @@ export default function App() {
       } catch (error) {
         const message = String(error?.message || '');
         if (!message.toLowerCase().includes('cancel')) {
+          setEspnError('ESPN sign-in could not open.');
           setSyncStatus('ESPN sign-in could not open.');
         }
+      } finally {
+        setEspnSigningIn(false);
       }
       return;
     }
@@ -4185,8 +4193,11 @@ export default function App() {
     const leagueId = options.leagueId ?? espnLeagueId;
     const season = options.season ?? espnSeason;
     const week = options.week ?? espnWeek;
-    const swid = options.swid ?? (espnPrivateOpen ? espnSwid : (espnNativeSession?.swid || espnSwid));
-    const s2 = options.espnS2 ?? (espnPrivateOpen ? espnS2 : (espnNativeSession?.espnS2 || espnS2));
+    const typedSwid = String(espnSwid || '').trim();
+    const typedS2 = String(espnS2 || '').trim();
+    const useTypedCookies = Capacitor.isNativePlatform() ? espnPrivateOpen : true;
+    const swid = options.swid ?? (useTypedCookies ? typedSwid : (espnNativeSession?.swid || typedSwid));
+    const s2 = options.espnS2 ?? (useTypedCookies ? typedS2 : (espnNativeSession?.espnS2 || typedS2));
     setEspnError('');
     setEspnBusy('Loading that ESPN league…');
     setEspnLeague(null);
@@ -4715,10 +4726,7 @@ export default function App() {
             type="button"
             role="tab"
             aria-selected={active}
-            onClick={() => {
-              if (id === 'espn') openEspnConnect();
-              else selectConnectTab(id);
-            }}
+            onClick={() => selectConnectTab(id)}
             className={`min-h-11 rounded-xl text-xs font-black border ${
               active
                 ? activeClass
@@ -4731,6 +4739,60 @@ export default function App() {
           </button>
         );
       })}
+    </div>
+  );
+
+  const espnCookieFields = (
+    <div className="space-y-2">
+      <div>
+        <label className={`text-[11px] font-black uppercase tracking-wider block mb-1 ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+          SWID
+        </label>
+        <input
+          type="text"
+          value={espnSwid}
+          autoComplete="off"
+          spellCheck={false}
+          onChange={(e) => {
+            setEspnSwid(e.target.value);
+            setEspnLeague(null);
+            setEspnTeams([]);
+            if (espnError) setEspnError('');
+          }}
+          placeholder="{A1B2C3D4-...}"
+          className={`w-full px-3 py-2 rounded-xl text-xs font-mono select-text focus:outline-none ${
+            isLight
+              ? 'bg-slate-50 border border-slate-200 text-slate-900 placeholder-slate-400 focus:border-red-400'
+              : 'bg-slate-950 border border-slate-700 text-slate-100 placeholder-slate-500 focus:border-red-500'
+          }`}
+        />
+      </div>
+      <div>
+        <label className={`text-[11px] font-black uppercase tracking-wider block mb-1 ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+          espn_s2
+        </label>
+        <input
+          type="text"
+          value={espnS2}
+          autoComplete="off"
+          spellCheck={false}
+          onChange={(e) => {
+            setEspnS2(e.target.value);
+            setEspnLeague(null);
+            setEspnTeams([]);
+            if (espnError) setEspnError('');
+          }}
+          placeholder="Long session string"
+          className={`w-full px-3 py-2 rounded-xl text-xs font-mono select-text focus:outline-none ${
+            isLight
+              ? 'bg-slate-50 border border-slate-200 text-slate-900 placeholder-slate-400 focus:border-red-400'
+              : 'bg-slate-950 border border-slate-700 text-slate-100 placeholder-slate-500 focus:border-red-500'
+          }`}
+        />
+      </div>
+      <p className={`text-[11px] leading-snug ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+        Sign in at ESPN, then copy SWID and espn_s2 from the espn.com cookies. Both are sent with the league request and stay on this phone so weekly refreshes can sign in for you.
+      </p>
     </div>
   );
 
@@ -7196,7 +7258,9 @@ export default function App() {
                   Connect / Import League
                 </h3>
                 <p className={`text-xs mt-1 leading-relaxed ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
-                  Public leagues load from an ID. Sign in on ESPN and this phone can also open private leagues.
+                  {Capacitor.isNativePlatform()
+                    ? 'Public leagues load from an ID. Sign in on ESPN and this phone can also open private leagues.'
+                    : 'Public leagues load from an ID. Private leagues use the iOS app, ESPN cookies, or a pasted matchup.'}
                 </p>
               </div>
               <button
@@ -7213,6 +7277,47 @@ export default function App() {
             </div>
 
             {connectTabs}
+
+            {Capacitor.isNativePlatform() ? (
+              <button
+                type="button"
+                onClick={openEspnConnect}
+                disabled={Boolean(espnBusy) || espnSigningIn}
+                className="w-full min-h-12 rounded-2xl bg-red-600 hover:bg-red-500 disabled:opacity-60 text-white text-sm font-black shadow-lg"
+              >
+                {espnSigningIn ? 'Signing in…' : 'Sign in to ESPN'}
+              </button>
+            ) : (
+              <section
+                aria-labelledby="espn-private-signin"
+                className={`rounded-2xl border p-3 space-y-3 ${
+                  isLight ? 'border-slate-200 bg-slate-50' : 'border-slate-700 bg-slate-950'
+                }`}
+              >
+                <div>
+                  <h4 id="espn-private-signin" className={`text-sm font-black ${isLight ? 'text-slate-900' : 'text-white'}`}>
+                    Private League Sign-In
+                  </h4>
+                  <p className={`text-xs mt-1 leading-relaxed ${isLight ? 'text-slate-600' : 'text-slate-300'}`}>
+                    On iPhone, open the RootMap app and tap Sign in to ESPN. In Safari or a Home Screen app, connect a private league with the steps below.
+                  </p>
+                </div>
+                <ol className={`list-decimal pl-4 space-y-1.5 text-xs leading-snug ${isLight ? 'text-slate-600' : 'text-slate-300'}`}>
+                  <li>Use the iOS app and tap Sign in to ESPN. The phone keeps that session and refreshes the league each week.</li>
+                  <li>Paste SWID and espn_s2 from your espn.com cookies. Both stay on this device for weekly refreshes.</li>
+                  <li>Copy the full matchup page and paste it in the box at the bottom.</li>
+                </ol>
+                <a
+                  href={ESPN_FANTASY_URL}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="flex items-center justify-center w-full min-h-11 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-black"
+                >
+                  Open fantasy.espn.com
+                </a>
+                {espnCookieFields}
+              </section>
+            )}
 
             {espnLeagueChoices.length > 1 && (
               <div>
@@ -7274,77 +7379,31 @@ export default function App() {
               </p>
             )}
 
-            <div>
-              <button
-                type="button"
-                aria-expanded={espnPrivateOpen}
-                onClick={() => setEspnPrivateOpen((open) => !open)}
-                className={`w-full text-left text-[11px] font-black ${isLight ? 'text-slate-700' : 'text-slate-200'}`}
-              >
-                {espnPrivateOpen ? '▾' : '▸'} Private league: SWID and espn_s2
-              </button>
-              {espnPrivateOpen && (
-                <div className="mt-2 space-y-2">
-                  <div>
-                    <label className={`text-[11px] font-black uppercase tracking-wider block mb-1 ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
-                      SWID
-                    </label>
-                    <input
-                      type="text"
-                      value={espnSwid}
-                      autoComplete="off"
-                      spellCheck={false}
-                      onChange={(e) => {
-                        setEspnSwid(e.target.value);
-                        setEspnLeague(null);
-                        setEspnTeams([]);
-                        if (espnError) setEspnError('');
-                      }}
-                      placeholder="{A1B2C3D4-...}"
-                      className={`w-full px-3 py-2 rounded-xl text-xs font-mono select-text focus:outline-none ${
-                        isLight
-                          ? 'bg-slate-50 border border-slate-200 text-slate-900 placeholder-slate-400 focus:border-red-400'
-                          : 'bg-slate-950 border border-slate-700 text-slate-100 placeholder-slate-500 focus:border-red-500'
-                      }`}
-                    />
+            {Capacitor.isNativePlatform() && (
+              <div>
+                <button
+                  type="button"
+                  aria-expanded={espnPrivateOpen}
+                  onClick={() => setEspnPrivateOpen((open) => !open)}
+                  className={`w-full text-left text-[11px] font-black ${isLight ? 'text-slate-700' : 'text-slate-200'}`}
+                >
+                  {espnPrivateOpen ? '▾' : '▸'} Private league: SWID and espn_s2
+                </button>
+                {espnPrivateOpen && (
+                  <div className="mt-2 space-y-2">
+                    {espnCookieFields}
+                    <a
+                      href={ESPN_LOGIN_URL}
+                      target="_blank"
+                      rel="noreferrer"
+                      className={`inline-flex text-[11px] font-black underline ${isLight ? 'text-red-700' : 'text-red-300'}`}
+                    >
+                      Open ESPN sign-in
+                    </a>
                   </div>
-                  <div>
-                    <label className={`text-[11px] font-black uppercase tracking-wider block mb-1 ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
-                      espn_s2
-                    </label>
-                    <input
-                      type="text"
-                      value={espnS2}
-                      autoComplete="off"
-                      spellCheck={false}
-                      onChange={(e) => {
-                        setEspnS2(e.target.value);
-                        setEspnLeague(null);
-                        setEspnTeams([]);
-                        if (espnError) setEspnError('');
-                      }}
-                      placeholder="Long session string"
-                      className={`w-full px-3 py-2 rounded-xl text-xs font-mono select-text focus:outline-none ${
-                        isLight
-                          ? 'bg-slate-50 border border-slate-200 text-slate-900 placeholder-slate-400 focus:border-red-400'
-                          : 'bg-slate-950 border border-slate-700 text-slate-100 placeholder-slate-500 focus:border-red-500'
-                      }`}
-                    />
-                  </div>
-                  <p className={`text-[11px] leading-snug ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
-                    Sign in at ESPN, then copy SWID and espn_s2 from the espn.com cookies. Both are sent with the league request and stay on this phone so weekly refreshes can sign in for you.
-                  </p>
-                  <a
-                    href={ESPN_LOGIN_URL}
-                    target="_blank"
-                    rel="noreferrer"
-                    className={`inline-flex text-[11px] font-black underline ${isLight ? 'text-red-700' : 'text-red-300'}`}
-                  >
-                    Open ESPN sign-in
-                  </a>
-                </div>
-              )}
-            </div>
+                )}
+              </div>
+            )}
 
             <div className="grid grid-cols-2 gap-2">
               <div>
