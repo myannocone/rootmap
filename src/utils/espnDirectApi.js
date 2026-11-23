@@ -217,9 +217,13 @@ export async function fetchEspnLeague({
     throw new Error('Could not reach ESPN.');
   }
   if (response.status === 401 || response.status === 403) {
-    throw new Error(session
+    const rejectedSession = Boolean(session);
+    const error = new Error(rejectedSession
       ? 'ESPN rejected that SWID and espn_s2. Copy both cookies again from espn.com.'
       : PRIVATE_LEAGUE_ERROR);
+    error.status = response.status;
+    if (rejectedSession) error.code = 'ESPN_SESSION_EXPIRED';
+    throw error;
   }
   if (response.status === 404) throw new Error('League ID not found.');
   if (!response.ok) throw new Error(`ESPN request failed (${response.status}).`);
