@@ -1,5 +1,5 @@
 import { resolveNflTeam } from './leagueParser.js';
-import { sortStartersBySlot } from './matchupLineup.js';
+import { sortStartersBySlot, sumListedStarterActuals, sumListedStarterProjections } from './matchupLineup.js';
 import { canonTeamCode, displayPlayerPosition, normalizePlayerMatchName } from './playerIdentity.js';
 
 const SLEEPER_BASE = 'https://api.sleeper.app/v1';
@@ -414,11 +414,9 @@ function weekLineup(matchup, roster, slots, players, stats, projections, scoring
   return { players: starters, bench, projected: usingProjected };
 }
 
-function sumProj(players) {
-  return (players || []).reduce((sum, player) => {
-    const proj = Number(player?.projPoints);
-    return sum + (Number.isFinite(proj) ? proj : 0);
-  }, 0);
+function scrapedMatchupPoints(matchup) {
+  const board = Number(matchup?.custom_points ?? matchup?.points);
+  return Number.isFinite(board) ? board : 0;
 }
 
 export function mapSleeperLeague({
@@ -516,18 +514,8 @@ export function mapSleeperLeague({
   const oppRoster = opponents.length
     ? (rosters || []).find((entry) => entry.roster_id === opponents[0].roster_id)
     : null;
-  const myProj = sumProj(mine);
-  const oppProj = sumProj(oppStarters);
-  const weekScore = (matchup, starters) => {
-    const board = Number(matchup?.custom_points ?? matchup?.points);
-    const starterActuals = (starters || []).reduce((sum, player) => {
-      const actual = Number(player?.actualPoints);
-      return sum + (Number.isFinite(actual) ? actual : 0);
-    }, 0);
-    if (Number.isFinite(board) && board > 0) return board;
-    if (starterActuals > 0) return starterActuals;
-    return Number.isFinite(board) ? board : 0;
-  };
+  const myProj = mine.length ? sumListedStarterProjections(mine) : 0;
+  const oppProj = oppStarters.length ? sumListedStarterProjections(oppStarters) : 0;
 
   return {
     id: `sleeper-${league.id}`,
@@ -540,16 +528,10 @@ export function mapSleeperLeague({
     name: league.name,
     platform: 'Sleeper',
     season: SLEEPER_SEASON,
-    myScore: weekScore(weekMatchup, mine),
-    oppScore: (() => {
-      if (!opponents.length) return 0;
-      if (opponents.length === 1) return weekScore(opponents[0], oppStarters);
-      const board = opponents.reduce((sum, opponent) => {
-        const value = Number(opponent?.custom_points ?? opponent?.points);
-        return sum + (Number.isFinite(value) ? value : 0);
-      }, 0);
-      return board > 0 ? board : weekScore(null, oppStarters);
-    })(),
+    myScore: mine.length ? sumListedStarterActuals(mine) : scrapedMatchupPoints(weekMatchup),
+    oppScore: oppStarters.length
+      ? sumListedStarterActuals(oppStarters)
+      : opponents.reduce((sum, opponent) => sum + scrapedMatchupPoints(opponent), 0),
     myProj,
     oppProj,
     myProjected: myProj,

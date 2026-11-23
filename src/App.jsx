@@ -16,8 +16,9 @@ import {
 } from './utils/playerIdentity';
 import {
   pairStartersBySlot,
-  starterProjectedPoints,
-  starterScoredPoints
+  starterWeekProjection,
+  sumListedStarterActuals,
+  sumListedStarterProjections
 } from './utils/matchupLineup';
 import { compareSlateGamePlayers } from './utils/slateGameOrder';
 import {
@@ -124,7 +125,6 @@ const DEFAULT_ALERT_PREFS = {
   lineupLock: true,
   spoilerFreeDelay: false
 };
-const REMAINING_STARTER_FALLBACK = 12.5;
 
 const STALE_MOCK_LEAGUE_IDS = new Set(['lg_1', 'l1', 'l2', 'l3', 'l4']);
 const STALE_MOCK_LEAGUE_NAMES = new Set([
@@ -232,28 +232,6 @@ function getLeagueDisplayName(lg) {
   return 'League';
 }
 
-function capInflatedWeeklyTotal(board, starterSum, starterCount) {
-  if (!(starterSum > 0) || board == null) return null;
-  const fullLineup = starterCount >= 6 && board > starterSum * 1.15 + 1;
-  const seasonSized = board > 400 && board > starterSum * 1.5;
-  if (fullLineup || seasonSized) return starterSum;
-  return null;
-}
-
-function isEspnPlatformLeague(league) {
-  if (!league) return false;
-  if (league.scoringSource === 'espn' || league.espnLeagueId) return true;
-  const platform = String(league.platform || '').toLowerCase();
-  if (platform.includes('espn')) return true;
-  return String(league.id || '').startsWith('espn-');
-}
-
-function espnLiveTeamScore(board, starterSum) {
-  if (!(starterSum > 0)) return 0;
-  if (board == null || board === 0 || board > starterSum * 1.15 + 1) return starterSum;
-  return board;
-}
-
 let launchLeagueSnapshot = null;
 let launchMeta = null;
 
@@ -300,23 +278,31 @@ function loadSeenTips() {
   }
 }
 
-function sumActiveStarterPoints(starters) {
-  // Only count real scored points — never projection placeholders sitting in `points`.
-  return listedStarters(starters).reduce((sum, player) => sum + starterScoredPoints(player), 0);
+function leagueSidePlayers(league, side = 'my') {
+  return side === 'opp' ? getLeagueThreats(league) : getLeaguePortfolio(league);
 }
 
-function sumActiveStarterProjections(starters) {
-  return listedStarters(starters).reduce((sum, player) => sum + starterProjectedPoints(player), 0);
+function scrapedSideTotal(league, side, kind) {
+  if (kind === 'proj') {
+    const top = side === 'opp'
+      ? (league?.oppProj ?? league?.oppProjected)
+      : (league?.myProj ?? league?.myProjected);
+    return finiteNumber(top) ?? 0;
+  }
+  const top = side === 'opp' ? league?.oppScore : league?.myScore;
+  return finiteNumber(top) ?? 0;
 }
 
 function leagueSideScore(league, side = 'my') {
-  const top = side === 'opp' ? league?.oppScore : league?.myScore;
-  const parsed = finiteNumber(top);
-  if (parsed != null && parsed !== 0) return parsed;
-  const starters = side === 'opp' ? getLeagueThreats(league) : getLeaguePortfolio(league);
-  const fromStarters = sumActiveStarterPoints(starters);
-  if (fromStarters > 0) return fromStarters;
-  return parsed ?? 0;
+  const starters = leagueSidePlayers(league, side);
+  if (starters.length) return sumListedStarterActuals(starters);
+  return scrapedSideTotal(league, side, 'score');
+}
+
+function leagueSideProjected(league, side = 'my') {
+  const starters = leagueSidePlayers(league, side);
+  if (starters.length) return sumListedStarterProjections(starters);
+  return scrapedSideTotal(league, side, 'proj');
 }
 
 function leagueFilterLabel(lg, leagues = []) {
@@ -425,36 +411,6 @@ function starterIsLive(player) {
   return Boolean(player?.isLive || player?.gameStatus === 'IN_PROGRESS' || clockIsLive(player?.gameClock));
 }
 
-function starterRemainingProjected(player) {
-  if (!player || starterIsFinal(player)) return 0;
-  const actual = finiteNumber(player.actualPoints) ?? 0;
-  const proj = finiteNumber(player.projPoints)
-    ?? finiteNumber(player.projectedPoints)
-    ?? finiteNumber(player.projected)
-    ?? finiteNumber(player.points);
-  if (starterIsLive(player)) {
-    if (proj != null) return Math.max(0, proj - actual);
-    return Math.max(0, REMAINING_STARTER_FALLBACK - actual);
-  }
-  if (proj != null) return Math.max(0, proj);
-  return REMAINING_STARTER_FALLBACK;
-}
-
-function sideLiveProjection(starters, liveScore, leagueProj) {
-  const list = listedStarters(starters);
-  const live = finiteNumber(liveScore) ?? 0;
-  if (list.length) {
-    const remaining = list.reduce((sum, player) => sum + starterRemainingProjected(player), 0);
-    return { live, remaining, projected: live + remaining };
-  }
-  const full = finiteNumber(leagueProj);
-  if (full != null) {
-    const remaining = Math.max(0, full - live);
-    return { live, remaining, projected: live + remaining };
-  }
-  return { live, remaining: 0, projected: live };
-}
-
 function yahooWinOddsPair(league) {
   let mine = finiteNumber(league?.myWinOdds ?? league?.winOdds?.mine ?? league?.userTeam?.winOdds);
   let opp = finiteNumber(league?.oppWinOdds ?? league?.winOdds?.opp ?? league?.oppTeam?.winOdds);
@@ -472,10 +428,8 @@ function yahooWinOddsPair(league) {
 function matchupOutlook(league) {
   const myLive = leagueSideScore(league, 'my');
   const oppLive = leagueSideScore(league, 'opp');
-  const mySide = sideLiveProjection(getLeaguePortfolio(league), myLive, league?.myProj ?? league?.myProjected);
-  const oppSide = sideLiveProjection(getLeagueThreats(league), oppLive, league?.oppProj ?? league?.oppProjected);
-  const myTotal = mySide.projected;
-  const oppTotal = oppSide.projected;
+  const myTotal = leagueSideProjected(league, 'my');
+  const oppTotal = leagueSideProjected(league, 'opp');
   const yahooOdds = yahooWinOddsPair(league);
   const sum = myTotal + oppTotal;
   const myPct = yahooOdds?.myPct ?? (sum > 0 ? Math.round((myTotal / sum) * 100) : 50);
@@ -483,8 +437,8 @@ function matchupOutlook(league) {
   return {
     myLive,
     oppLive,
-    myRem: mySide.remaining,
-    oppRem: oppSide.remaining,
+    myRem: Math.max(0, myTotal - myLive),
+    oppRem: Math.max(0, oppTotal - oppLive),
     myTotal,
     oppTotal,
     myPct,
@@ -1297,6 +1251,7 @@ function compareBoardPlayers(a, b, sortMode) {
   if (sink(aw) !== sink(bw)) return sink(aw) - sink(bw);
   let diff = 0;
   if (sortMode === 'livePoints') diff = playerPoints(b) - playerPoints(a);
+  else if (sortMode === 'weeklyPoints') diff = starterWeekProjection(b) - starterWeekProjection(a);
   else if (sortMode === 'boom') diff = boomDelta(b) - boomDelta(a);
   else if (sortMode === 'exposure') {
     diff = ((b.myShares || 0) + (b.oppShares || 0)) - ((a.myShares || 0) + (a.oppShares || 0));
@@ -1522,21 +1477,16 @@ function hydrateLeagueForMatchups(league, games, liveScores, sleeperPlayers = nu
   const portfolio = getLeaguePortfolio(league).map(hydrateOne);
   const threats = getLeagueThreats(league).map(hydrateOne);
   const bench = getLeagueBench(league).map(hydrateOne);
-  const myStarterScore = sumActiveStarterPoints(portfolio);
-  const oppStarterScore = sumActiveStarterPoints(threats);
-  const myStarterProj = sumActiveStarterProjections(portfolio);
-  const oppStarterProj = sumActiveStarterProjections(threats);
-  const myScoreRaw = finiteNumber(league.myScore);
-  const oppScoreRaw = finiteNumber(league.oppScore);
-  const myProjRaw = finiteNumber(league.myProj ?? league.myProjected);
-  const oppProjRaw = finiteNumber(league.oppProj ?? league.oppProjected);
-  const cappedMyScore = capInflatedWeeklyTotal(myScoreRaw, myStarterScore, portfolio.length);
-  const cappedOppScore = capInflatedWeeklyTotal(oppScoreRaw, oppStarterScore, threats.length);
-  const espnLeague = isEspnPlatformLeague(league);
-  const cappedMyProj = capInflatedWeeklyTotal(myProjRaw, myStarterProj, portfolio.length);
-  const cappedOppProj = capInflatedWeeklyTotal(oppProjRaw, oppStarterProj, threats.length);
-  // Yahoo scoreboard totals win; do not re-sum from Sleeper-hydrated starter lines.
-  const preferBoard = yahooLeague && !allowSleeperPoints;
+  const sideScore = (players, raw) => (
+    players.length ? sumListedStarterActuals(players) : (finiteNumber(raw) ?? 0)
+  );
+  const sideProj = (players, raw) => (
+    players.length ? sumListedStarterProjections(players) : (finiteNumber(raw) ?? 0)
+  );
+  const myScore = sideScore(portfolio, league.myScore);
+  const oppScore = sideScore(threats, league.oppScore);
+  const myProj = sideProj(portfolio, league.myProj ?? league.myProjected);
+  const oppProj = sideProj(threats, league.oppProj ?? league.oppProjected);
 
   return {
     ...league,
@@ -1554,54 +1504,12 @@ function hydrateLeagueForMatchups(league, games, liveScores, sleeperPlayers = nu
     oppTeam: league.oppTeam
       ? { ...league.oppTeam, starters: threats }
       : league.oppTeam,
-    myScore: espnLeague
-      ? espnLiveTeamScore(
-        cappedMyScore != null
-          ? cappedMyScore
-          : (preferBoard
-            ? (myScoreRaw != null ? myScoreRaw : myStarterScore)
-            : ((myScoreRaw != null && myScoreRaw !== 0) ? myScoreRaw : myStarterScore)),
-        myStarterScore
-      )
-      : (cappedMyScore != null
-        ? cappedMyScore
-        : (preferBoard
-          ? (myScoreRaw != null ? myScoreRaw : myStarterScore)
-          : ((myScoreRaw != null && myScoreRaw !== 0) ? myScoreRaw : myStarterScore))),
-    oppScore: espnLeague
-      ? espnLiveTeamScore(
-        cappedOppScore != null
-          ? cappedOppScore
-          : (preferBoard
-            ? (oppScoreRaw != null ? oppScoreRaw : oppStarterScore)
-            : ((oppScoreRaw != null && oppScoreRaw !== 0) ? oppScoreRaw : oppStarterScore)),
-        oppStarterScore
-      )
-      : (cappedOppScore != null
-        ? cappedOppScore
-        : (preferBoard
-          ? (oppScoreRaw != null ? oppScoreRaw : oppStarterScore)
-          : ((oppScoreRaw != null && oppScoreRaw !== 0) ? oppScoreRaw : oppStarterScore))),
-    myProj: cappedMyProj != null
-      ? cappedMyProj
-      : (preferBoard
-        ? (myProjRaw != null ? myProjRaw : (myStarterProj || myProjRaw))
-        : ((myProjRaw != null && myProjRaw !== 0) ? myProjRaw : (myStarterProj || myProjRaw))),
-    oppProj: cappedOppProj != null
-      ? cappedOppProj
-      : (preferBoard
-        ? (oppProjRaw != null ? oppProjRaw : (oppStarterProj || oppProjRaw))
-        : ((oppProjRaw != null && oppProjRaw !== 0) ? oppProjRaw : (oppStarterProj || oppProjRaw))),
-    myProjected: cappedMyProj != null
-      ? cappedMyProj
-      : (preferBoard
-        ? (myProjRaw != null ? myProjRaw : (myStarterProj || myProjRaw))
-        : ((myProjRaw != null && myProjRaw !== 0) ? myProjRaw : (myStarterProj || myProjRaw))),
-    oppProjected: cappedOppProj != null
-      ? cappedOppProj
-      : (preferBoard
-        ? (oppProjRaw != null ? oppProjRaw : (oppStarterProj || oppProjRaw))
-        : ((oppProjRaw != null && oppProjRaw !== 0) ? oppProjRaw : (oppStarterProj || oppProjRaw))),
+    myScore,
+    oppScore,
+    myProj,
+    oppProj,
+    myProjected: myProj,
+    oppProjected: oppProj,
     myWinOdds: league.myWinOdds ?? league.userTeam?.winOdds ?? null,
     oppWinOdds: league.oppWinOdds ?? league.oppTeam?.winOdds ?? null,
     myLogo: league.myLogo || league.userTeam?.logo || '',
@@ -1720,13 +1628,11 @@ function LivePoints({ player, isLight, tone = 'for', layout = 'inline', onScoreJ
     }
     previousShown.current = shown;
   }, [view.shown, onScoreJump]);
-  const color = view.live
-    ? (isLight ? 'text-slate-950' : 'text-white')
-    : tone === 'against'
-      ? (isLight ? 'text-red-600' : 'text-rose-400')
-      : tone === 'cross'
-        ? 'text-violet-500'
-        : (isLight ? 'text-green-600' : 'text-emerald-400');
+  const color = tone === 'against'
+    ? (isLight ? 'text-rose-700' : 'text-rose-400')
+    : tone === 'cross'
+      ? (isLight ? 'text-violet-600' : 'text-violet-300')
+      : (isLight ? 'text-emerald-700' : 'text-emerald-300');
   const deltaText = view.delta == null
     ? ''
     : `${view.delta > 0 ? '+' : ''}${view.delta.toFixed(1)}`;
@@ -1740,7 +1646,9 @@ function LivePoints({ player, isLight, tone = 'for', layout = 'inline', onScoreJ
   const muted = isLight ? 'text-slate-500' : 'text-slate-400';
   const floatNode = floatDelta != null && floatDelta > 0 ? (
     <span className={`absolute -top-3 right-0 rootmap-float-delta text-[10px] font-black tabular-nums ${
-      isLight ? 'text-emerald-600' : 'text-emerald-300'
+      tone === 'against'
+        ? (isLight ? 'text-rose-600' : 'text-rose-300')
+        : (isLight ? 'text-emerald-600' : 'text-emerald-300')
     }`}>
       +{floatDelta.toFixed(1)}
     </span>
@@ -1793,7 +1701,7 @@ function LivePoints({ player, isLight, tone = 'for', layout = 'inline', onScoreJ
     );
   }
   return (
-    <div className={`relative text-right shrink-0 max-w-[9.5rem] leading-tight ${view.live ? (isLight ? 'text-green-600' : 'text-emerald-400') : color}`}>
+    <div className={`relative text-right shrink-0 max-w-[9.5rem] leading-tight ${color}`}>
       {floatNode}
       <span className="inline-flex items-center justify-end gap-1 font-mono font-black text-xs">
         {view.live && <LivePulse />}
@@ -1820,14 +1728,15 @@ function rosterCardSurface(isLight, isLive, isConflict, isHovered, inRedZone, ze
   const zone = inRedZone ? 'rootmap-redzone' : '';
   if (isConflict) {
     const pulse = inRedZone ? zone : 'rootmap-crossfire';
+    const accent = side === 'against' ? 'border-l-[3px] border-l-rose-500' : 'border-l-[3px] border-l-emerald-500';
     if (isLive) {
       return isLight
-        ? `${pulse} border border-violet-600 bg-violet-50 ring-2 ring-inset ring-violet-500 ${isHovered ? 'shadow-md' : 'shadow-sm'}`
-        : `${pulse} border border-violet-300 bg-violet-950/50 ring-2 ring-inset ring-violet-300 ${isHovered ? 'shadow-md' : 'shadow-sm'}`;
+        ? `${pulse} ${accent} border border-violet-600 bg-violet-50 ring-2 ring-inset ring-violet-500 ${isHovered ? 'shadow-md' : 'shadow-sm'}`
+        : `${pulse} ${accent} border border-violet-300 bg-violet-950/50 ring-2 ring-inset ring-violet-300 ${isHovered ? 'shadow-md' : 'shadow-sm'}`;
     }
     return isLight
-      ? `${pulse} border border-violet-500 bg-violet-50 ring-2 ring-violet-400 ${isHovered ? 'shadow-md' : 'shadow-sm'}`
-      : `${pulse} border border-violet-400 bg-violet-950/40 ring-2 ring-violet-400 ${isHovered ? 'shadow-md' : 'shadow-sm'}`;
+      ? `${pulse} ${accent} border border-violet-500 bg-violet-50 ring-2 ring-violet-400 ${isHovered ? 'shadow-md' : 'shadow-sm'}`
+      : `${pulse} ${accent} border border-violet-400 bg-violet-950/40 ring-2 ring-violet-400 ${isHovered ? 'shadow-md' : 'shadow-sm'}`;
   }
   if (isDoubleDown && side === 'against') {
     return isLight
@@ -1841,12 +1750,12 @@ function rosterCardSurface(isLight, isLive, isConflict, isHovered, inRedZone, ze
   }
   if (side === 'against') {
     return isLight
-      ? `${zone} border border-rose-400/70 bg-rose-50 hover:shadow ${isHovered ? 'shadow-md' : 'shadow-sm'}`
-      : `${zone} border border-rose-400/70 bg-rose-950/35 hover:border-rose-400 ${isHovered ? 'shadow-md' : 'shadow-sm'}`;
+      ? `${zone} border border-rose-300 border-l-[3px] border-l-rose-500 bg-rose-50/95 hover:shadow ${isHovered ? 'shadow-md' : 'shadow-sm'}`
+      : `${zone} border border-rose-500/45 border-l-[3px] border-l-rose-400 bg-rose-950/50 hover:border-rose-400 ${isHovered ? 'shadow-md' : 'shadow-sm'}`;
   }
   return isLight
-    ? `${zone} border border-emerald-400/70 bg-emerald-50 hover:shadow ${isHovered ? 'shadow-md' : 'shadow-sm'}`
-    : `${zone} border border-emerald-400/70 bg-emerald-950/35 hover:border-emerald-400 ${isHovered ? 'shadow-md' : 'shadow-sm'}`;
+    ? `${zone} border border-emerald-300 border-l-[3px] border-l-emerald-500 bg-emerald-50/95 hover:shadow ${isHovered ? 'shadow-md' : 'shadow-sm'}`
+    : `${zone} border border-emerald-500/45 border-l-[3px] border-l-emerald-400 bg-emerald-950/50 hover:border-emerald-400 ${isHovered ? 'shadow-md' : 'shadow-sm'}`;
 }
 
 function RosterCard({
@@ -2719,7 +2628,6 @@ export default function App() {
       return '';
     }
   });
-  const [sleeperWeek, setSleeperWeek] = useState(() => String(getActiveSlate()?.week || FALLBACK_NFL_WEEK));
   const [sleeperUserId, setSleeperUserId] = useState('');
   const [sleeperChoices, setSleeperChoices] = useState([]);
   const [sleeperSelected, setSleeperSelected] = useState(() => new Set());
@@ -2728,7 +2636,8 @@ export default function App() {
   const [showEspn, setShowEspn] = useState(false);
   const [espnLeagueId, setEspnLeagueId] = useState(() => readEspnLeagueIdentity().leagueId);
   const [espnLeagueChoices, setEspnLeagueChoices] = useState([]);
-  const [espnWeek, setEspnWeek] = useState(() => String(getActiveSlate()?.week || FALLBACK_NFL_WEEK));
+  const [espnWeekOverride, setEspnWeekOverride] = useState(null);
+  const espnWeek = espnWeekOverride ?? String(slateMeta.week || selectedWeek || FALLBACK_NFL_WEEK);
   const [espnSeason, setEspnSeason] = useState('2026');
   const [espnLeague, setEspnLeague] = useState(null);
   const [espnTeams, setEspnTeams] = useState([]);
@@ -4053,6 +3962,7 @@ export default function App() {
     setShowSleeper(tab === 'sleeper');
     setShowEspn(tab === 'espn');
     if (tab === 'espn') {
+      setEspnWeekOverride(null);
       const saved = readEspnSession();
       const savedId = saved?.leagueId || '';
       if (savedId) setEspnLeagueId((current) => String(current || '').trim() || savedId);
@@ -4131,11 +4041,24 @@ export default function App() {
     }
     setSleeperError('');
     setSleeperBusy('Syncing starters and opponents…');
+    let week = Number(slateMeta.week || selectedWeek);
+    if (!Number.isInteger(week) || week < 1 || week > 18) {
+      try {
+        const state = await fetchNflState();
+        const fromState = Number(state?.week);
+        if (Number.isInteger(fromState) && fromState >= 1 && fromState <= 18) week = fromState;
+      } catch {
+        week = Number(getActiveSlate()?.week) || FALLBACK_NFL_WEEK;
+      }
+    }
+    if (!Number.isInteger(week) || week < 1 || week > 18) {
+      week = Number(getActiveSlate()?.week) || FALLBACK_NFL_WEEK;
+    }
     try {
       const imported = await syncSleeperLeagues({
         userId: sleeperUserId,
         leagues: selected,
-        week: sleeperWeek
+        week
       });
       const normalized = imported.map((league, index) => normalizeLeague(league, index)).filter(Boolean);
       const next = [
@@ -4153,10 +4076,10 @@ export default function App() {
       closeConnect();
       if (!isPro && activeLeagueCount(deduped, hiddenLeagueIds) > MAX_FREE_ACTIVE_LEAGUES) {
         openActiveLeaguePicker(deduped);
-        setSyncStatus(`Synced ${normalized.length} Sleeper leagues for Week ${sleeperWeek}. Pick ${MAX_FREE_ACTIVE_LEAGUES} to keep on the board.`);
+        setSyncStatus(`Synced ${normalized.length} Sleeper leagues for Week ${week}. Pick ${MAX_FREE_ACTIVE_LEAGUES} to keep on the board.`);
       } else {
         setView('matchups');
-        setSyncStatus(`Synced ${normalized.length} Sleeper league${normalized.length === 1 ? '' : 's'} for Week ${sleeperWeek}.`);
+        setSyncStatus(`Synced ${normalized.length} Sleeper league${normalized.length === 1 ? '' : 's'} for Week ${week}.`);
       }
     } catch (error) {
       setSleeperError(error?.message || 'Could not sync those Sleeper leagues.');
@@ -4184,7 +4107,7 @@ export default function App() {
     setEspnLeague(null);
     setEspnTeams([]);
     setEspnPrivateOpen(false);
-    setEspnWeek(String(slateMeta.week || FALLBACK_NFL_WEEK));
+    setEspnWeekOverride(null);
     setEspnSeason('2026');
     if (Capacitor.isNativePlatform()) {
       setEspnSigningIn(true);
@@ -5202,50 +5125,47 @@ export default function App() {
             className={`rootmap-filter-tray ${filtersCollapsed ? 'is-collapsed' : ''}`}
             aria-hidden={filtersCollapsed}
           >
-            <div className="-mx-3 px-3 overflow-x-auto scrollbar-none">
-              <div className="flex items-center gap-1 min-w-max pb-0.5">
-                {[
-                  { key: 'redZoneOnly', label: '🔴 RedZone', active: boardFilters.redZoneOnly },
-                  { key: 'outperformers', label: '🔥 Outperformers', active: boardFilters.outperformers },
-                  { key: 'conflicted', label: '⚡ Conflicted', active: boardFilters.conflicted },
-                  { key: 'doubleDown', label: '🔥 Double Down', active: boardFilters.doubleDown }
-                ].map((pill) => (
-                  <button
-                    key={pill.key}
-                    type="button"
-                    aria-pressed={pill.active}
-                    tabIndex={filtersCollapsed ? -1 : 0}
-                    onClick={() => {
-                      setBoardFilters((current) => ({ ...current, [pill.key]: !current[pill.key] }));
-                      tapHaptic();
-                    }}
-                    className={`shrink-0 h-8 px-1.5 rounded-full border text-[10px] font-black whitespace-nowrap transition ${
-                      pill.active
-                        ? isLight ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-950 border-white'
-                        : isLight ? 'bg-white text-slate-700 border-slate-200' : 'bg-slate-900 text-slate-200 border-slate-700'
-                    }`}
-                  >
-                    {pill.label}
-                  </button>
-                ))}
+            <div className="grid grid-cols-4 gap-1 w-full min-w-0">
+              {[
+                { key: 'outperformers', label: 'Outperformers', active: boardFilters.outperformers },
+                { key: 'conflicted', label: 'Conflicted', active: boardFilters.conflicted },
+                { key: 'doubleDown', label: 'Double Down', active: boardFilters.doubleDown }
+              ].map((pill) => (
                 <button
-                  ref={filterButtonRef}
+                  key={pill.key}
                   type="button"
+                  aria-pressed={pill.active}
                   tabIndex={filtersCollapsed ? -1 : 0}
-                  onClick={() => setShowSortSheet(true)}
-                  className={`shrink-0 inline-flex h-8 items-center gap-0.5 rounded-full border px-1.5 text-[10px] font-black whitespace-nowrap ${
-                    filterCount > 0 || sortMode !== 'slate'
-                      ? isLight ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-emerald-500 text-slate-950 border-emerald-400'
-                      : isLight ? 'bg-white text-slate-700 border-slate-300' : 'bg-slate-900 text-slate-200 border-slate-700'
+                  onClick={() => {
+                    setBoardFilters((current) => ({ ...current, [pill.key]: !current[pill.key] }));
+                    tapHaptic();
+                  }}
+                  className={`min-w-0 h-8 px-0.5 rounded-full border text-[8.5px] min-[380px]:text-[10px] font-black tracking-tight whitespace-nowrap transition ${
+                    pill.active
+                      ? isLight ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-950 border-white'
+                      : isLight ? 'bg-white text-slate-700 border-slate-200' : 'bg-slate-900 text-slate-200 border-slate-700'
                   }`}
                 >
-                  Filter
-                  {filterCount > 0 && (
-                    <span className={`rounded-full px-1 text-[9px] ${isLight ? 'bg-white/20' : 'bg-slate-900/10'}`}>{filterCount}</span>
-                  )}
-                  <span aria-hidden="true">▾</span>
+                  {pill.label}
                 </button>
-              </div>
+              ))}
+              <button
+                ref={filterButtonRef}
+                type="button"
+                tabIndex={filtersCollapsed ? -1 : 0}
+                onClick={() => setShowSortSheet(true)}
+                className={`min-w-0 inline-flex h-8 items-center justify-center gap-0.5 rounded-full border px-0.5 text-[8.5px] min-[380px]:text-[10px] font-black tracking-tight whitespace-nowrap ${
+                  filterCount > 0 || sortMode !== 'slate'
+                    ? isLight ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-emerald-500 text-slate-950 border-emerald-400'
+                    : isLight ? 'bg-white text-slate-700 border-slate-300' : 'bg-slate-900 text-slate-200 border-slate-700'
+                }`}
+              >
+                Filter
+                {filterCount > 0 && (
+                  <span className={`rounded-full px-1 text-[8px] min-[380px]:text-[9px] tabular-nums ${isLight ? 'bg-white/20' : 'bg-slate-900/15'}`}>{filterCount}</span>
+                )}
+                <span aria-hidden="true">▾</span>
+              </button>
             </div>
           </div>
         )}
@@ -5433,18 +5353,18 @@ export default function App() {
 
             <div className="relative">
               {rootView === 'both' ? (
-                <div className="flex items-start gap-0">
+                <div className="flex items-stretch gap-0">
                   <div className={`flex-1 flex flex-col gap-2 min-w-0 px-1 py-1 rounded-xl ${
-                    isLight ? 'bg-emerald-50/70' : 'bg-emerald-950/20'
+                    isLight ? 'bg-emerald-50/80' : 'bg-emerald-950/25'
                   }`}>
                     {renderBoardColumn(myPortfolio, 'for')}
                   </div>
                   <div
                     aria-hidden="true"
-                    className={`w-px shrink-0 self-stretch mx-0.5 ${isLight ? 'bg-slate-300' : 'bg-slate-800'}`}
+                    className={`w-px shrink-0 self-stretch mx-1 ${isLight ? 'bg-slate-400/90' : 'bg-slate-600'}`}
                   />
                   <div className={`flex-1 flex flex-col gap-2 min-w-0 px-1 py-1 rounded-xl ${
-                    isLight ? 'bg-rose-50/70' : 'bg-rose-950/20'
+                    isLight ? 'bg-rose-50/80' : 'bg-rose-950/25'
                   }`}>
                     {renderBoardColumn(oppThreats, 'against')}
                   </div>
@@ -6062,14 +5982,49 @@ export default function App() {
             role="dialog"
             aria-modal="true"
             aria-labelledby="sort-filter-title"
-            className={`border-t rounded-t-3xl p-5 max-w-md w-full max-h-[min(92vh,44rem)] overflow-y-auto space-y-4 shadow-2xl pb-[calc(1.25rem+env(safe-area-inset-bottom))] ${
+            className={`border-t rounded-t-3xl max-w-md w-full max-h-[min(92vh,44rem)] overflow-hidden shadow-2xl flex flex-col ${
               isLight ? 'bg-white border-slate-200' : 'bg-slate-900 border-slate-800'
             }`}
           >
+            <div className="shrink-0 px-4 pt-4 pb-3 space-y-3">
             <div className={`w-12 h-1.5 rounded-full mx-auto ${isLight ? 'bg-slate-300' : 'bg-slate-700'}`} />
             <h3 id="sort-filter-title" className={`text-base font-black ${isLight ? 'text-slate-900' : 'text-white'}`}>
-              Sort
+              Sort & Filter
             </h3>
+            <div className="grid grid-cols-2 gap-1.5">
+              {[
+                { key: 'liveOnly', label: 'Live On Field' },
+                { key: 'redZoneOnly', label: 'Red Zone Only' },
+                { key: 'outperformers', label: 'Outperformers (+4.0)' },
+                { key: 'conflicted', label: 'Conflicted Only' },
+                { key: 'doubleDown', label: 'Double Down (2X+)' },
+                { key: 'hideFinal', label: 'Hide Final Games' }
+              ].map((option) => {
+                const on = boardFilters[option.key];
+                return (
+                  <button
+                    key={option.key}
+                    type="button"
+                    role="switch"
+                    aria-checked={on}
+                    onClick={() => {
+                      setBoardFilters((current) => ({ ...current, [option.key]: !current[option.key] }));
+                      tapHaptic();
+                    }}
+                    className={`min-h-11 flex items-center justify-between gap-1.5 rounded-xl border px-2 py-1.5 text-left text-[11px] font-black leading-tight ${
+                      isLight ? 'bg-slate-50 border-slate-200 text-slate-900' : 'bg-slate-950 border-slate-800 text-white'
+                    }`}
+                  >
+                    <span className="min-w-0">{option.label}</span>
+                    <span className={`w-8 h-5 rounded-full p-0.5 transition shrink-0 ${on ? 'bg-emerald-500' : isLight ? 'bg-slate-300' : 'bg-slate-700'}`}>
+                      <span className={`block w-4 h-4 rounded-full bg-white shadow transition ${on ? 'translate-x-3' : 'translate-x-0'}`} />
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+            </div>
+            <div className="overflow-y-auto px-4 pb-[calc(1.25rem+env(safe-area-inset-bottom))] space-y-4">
             <div>
               <div className={`text-[10px] font-black uppercase tracking-wider mb-1.5 ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
                 Week
@@ -6096,12 +6051,16 @@ export default function App() {
               </div>
             </div>
             <div className="space-y-1.5">
+              <div className={`text-[10px] font-black uppercase tracking-wider ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+                Sort
+              </div>
               {[
                 { id: 'slate', icon: '🏈', label: 'Game Slate', detail: 'Live first, then kickoff time: Thursday, Sunday morning, 1:00, 4:00, Sunday night, Monday night. Final, then bye week.', defaultSort: true },
                 { id: 'livePoints', icon: '⚡', label: 'Most Live Points', detail: 'Leaderboard by points already scored.' },
+                { id: 'weeklyPoints', icon: '📈', label: 'Most Weekly Pts', detail: 'Actual points so far. Unplayed games use the projection.' },
+                { id: 'projected', icon: '🎯', label: 'Highest Projected', detail: 'Biggest projected totals.' },
                 { id: 'boom', icon: '🚀', label: 'Points Above Projection', detail: 'Top booms and value added.' },
-                { id: 'exposure', icon: '🔥', label: 'Portfolio Exposure', detail: 'Most starts plus opponents.' },
-                { id: 'projected', icon: '🎯', label: 'Highest Projected', detail: 'Biggest projected totals.' }
+                { id: 'exposure', icon: '🔥', label: 'Portfolio Exposure', detail: 'Most starts plus opponents.' }
               ].map((option) => {
                 const selected = sortMode === option.id;
                 return (
@@ -6133,39 +6092,7 @@ export default function App() {
                 );
               })}
             </div>
-            <h3 className={`text-base font-black ${isLight ? 'text-slate-900' : 'text-white'}`}>Filter</h3>
-            <div className="space-y-2">
-              {[
-                { key: 'liveOnly', label: 'Live On Field Only' },
-                { key: 'redZoneOnly', label: 'Red Zone Only' },
-                { key: 'outperformers', label: 'Outperformers (+4.0)' },
-                { key: 'conflicted', label: 'Conflicted Only' },
-                { key: 'doubleDown', label: 'Double Down (2X+)' },
-                { key: 'hideFinal', label: 'Hide Completed Games' }
-              ].map((option) => {
-                const on = boardFilters[option.key];
-                return (
-                  <button
-                    key={option.key}
-                    type="button"
-                    role="switch"
-                    aria-checked={on}
-                    onClick={() => {
-                      setBoardFilters((current) => ({ ...current, [option.key]: !current[option.key] }));
-                      tapHaptic();
-                    }}
-                    className={`w-full flex items-center justify-between gap-3 rounded-2xl border px-3 py-2.5 text-xs font-black ${
-                      isLight ? 'bg-slate-50 border-slate-200 text-slate-900' : 'bg-slate-950 border-slate-800 text-white'
-                    }`}
-                  >
-                    {option.label}
-                    <span className={`w-10 h-6 rounded-full p-0.5 transition ${on ? 'bg-emerald-500' : isLight ? 'bg-slate-300' : 'bg-slate-700'}`}>
-                      <span className={`block w-5 h-5 rounded-full bg-white shadow transition ${on ? 'translate-x-4' : 'translate-x-0'}`} />
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
+            <div className={`pt-1 border-t space-y-3 ${isLight ? 'border-slate-100' : 'border-slate-800'}`}>
             <h3 className={`text-base font-black ${isLight ? 'text-slate-900' : 'text-white'}`}>Push Notifications</h3>
             <button
               type="button"
@@ -6236,6 +6163,8 @@ export default function App() {
               >
                 Leagues{hiddenCount > 0 ? ` ${visibleLeagues.length}/${leagues.length}` : ''}
               </button>
+            </div>
+            </div>
             </div>
           </div>
         </div>
@@ -7181,44 +7110,25 @@ export default function App() {
 
             {connectTabs}
 
-            <div className="grid grid-cols-[1fr_5.5rem] gap-2">
-              <div>
-                <label className={`text-[11px] font-black uppercase tracking-wider block mb-1 ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
-                  Enter Sleeper Username
-                </label>
-                <input
-                  type="text"
-                  value={sleeperUsername}
-                  onChange={(e) => {
-                    setSleeperUsername(e.target.value);
-                    if (sleeperError) setSleeperError('');
-                  }}
-                  placeholder="Enter Sleeper Username"
-                  autoComplete="username"
-                  className={`w-full px-3 py-2 rounded-xl text-xs font-bold select-text focus:outline-none ${
-                    isLight
-                      ? 'bg-slate-50 border border-slate-200 text-slate-900 placeholder-slate-400 focus:border-emerald-400'
-                      : 'bg-slate-950 border border-slate-700 text-slate-100 placeholder-slate-500 focus:border-emerald-500'
-                  }`}
-                />
-              </div>
-              <div>
-                <label className={`text-[11px] font-black uppercase tracking-wider block mb-1 ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
-                  NFL week
-                </label>
-                <input
-                  type="number"
-                  min="1"
-                  max="18"
-                  value={sleeperWeek}
-                  onChange={(e) => setSleeperWeek(e.target.value)}
-                  className={`w-full px-3 py-2 rounded-xl text-xs font-bold select-text focus:outline-none ${
-                    isLight
-                      ? 'bg-slate-50 border border-slate-200 text-slate-900 focus:border-emerald-400'
-                      : 'bg-slate-950 border border-slate-700 text-slate-100 focus:border-emerald-500'
-                  }`}
-                />
-              </div>
+            <div>
+              <label className={`text-[11px] font-black uppercase tracking-wider block mb-1 ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+                Enter Sleeper Username
+              </label>
+              <input
+                type="text"
+                value={sleeperUsername}
+                onChange={(e) => {
+                  setSleeperUsername(e.target.value);
+                  if (sleeperError) setSleeperError('');
+                }}
+                placeholder="Enter Sleeper Username"
+                autoComplete="username"
+                className={`w-full px-3 py-2 rounded-xl text-xs font-bold select-text focus:outline-none ${
+                  isLight
+                    ? 'bg-slate-50 border border-slate-200 text-slate-900 placeholder-slate-400 focus:border-emerald-400'
+                    : 'bg-slate-950 border border-slate-700 text-slate-100 placeholder-slate-500 focus:border-emerald-500'
+                }`}
+              />
             </div>
 
             <button
@@ -7476,7 +7386,7 @@ export default function App() {
                   max="18"
                   value={espnWeek}
                   onChange={(e) => {
-                    setEspnWeek(e.target.value);
+                    setEspnWeekOverride(e.target.value);
                     setEspnLeague(null);
                     setEspnTeams([]);
                   }}

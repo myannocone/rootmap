@@ -223,28 +223,77 @@ export function pairStartersBySlot(mine, opp, rosterPositions = null) {
   return rows;
 }
 
+function finiteNumber(value) {
+  if (value == null || value === '') return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function playerIsBye(player) {
+  return Boolean(player?.isBye || player?.gameStatus === 'BYE');
+}
+
+function playerLiveOrFinal(player) {
+  return Boolean(
+    player?.isLive
+    || player?.isFinal
+    || player?.gameStatus === 'IN_PROGRESS'
+    || player?.gameStatus === 'FINAL'
+    || player?.hasActualLine === true
+  );
+}
+
+function countableStarters(starters) {
+  return (starters || []).filter((player) => player && player.isStarter !== false);
+}
+
 /**
- * Pregame "live" totals must not include projection placeholders.
- * Only count actualPoints (or points when the player is live/final).
+ * Points already scored. Projection placeholders (including Number(null) === 0)
+ * are not live points. A live/final line stored only on `points` still counts.
  */
 export function starterScoredPoints(player) {
-  if (!player) return 0;
-  const actual = Number(player.actualPoints);
-  if (Number.isFinite(actual)) return actual;
-  if (player.isLive || player.gameStatus === 'IN_PROGRESS' || player.gameStatus === 'FINAL' || player.isFinal) {
-    const points = Number(player.points);
-    return Number.isFinite(points) ? points : 0;
+  if (!player || playerIsBye(player)) return 0;
+  const actual = finiteNumber(player.actualPoints);
+  const points = finiteNumber(player.points);
+  const proj = finiteNumber(player.projPoints ?? player.projectedPoints ?? player.projected);
+  const liveOrFinal = playerLiveOrFinal(player);
+  if (actual != null) {
+    if (actual === 0 && liveOrFinal && points != null && points !== 0 && (proj == null || points !== proj)) {
+      return points;
+    }
+    return actual;
   }
+  if (!liveOrFinal) return 0;
+  if (points != null && (proj == null || points !== proj)) return points;
   return 0;
 }
 
 export function starterProjectedPoints(player) {
-  if (!player) return 0;
-  const proj = Number(player.projPoints ?? player.projectedPoints ?? player.projected);
-  if (Number.isFinite(proj)) return proj;
-  if (player.isLive || player.gameStatus === 'IN_PROGRESS' || player.gameStatus === 'FINAL' || player.isFinal) {
-    return 0;
-  }
-  const points = Number(player.points);
-  return Number.isFinite(points) ? points : 0;
+  if (!player || playerIsBye(player)) return 0;
+  const proj = finiteNumber(player.projPoints ?? player.projectedPoints ?? player.projected);
+  if (proj != null) return proj;
+  if (playerLiveOrFinal(player)) return 0;
+  const points = finiteNumber(player.points);
+  return points ?? 0;
+}
+
+/**
+ * Week scoring output: actual points once a starter is live or final,
+ * otherwise the pregame projection.
+ */
+export function starterWeekProjection(player) {
+  if (!player || playerIsBye(player)) return 0;
+  if (playerLiveOrFinal(player)) return starterScoredPoints(player);
+  if (player.unplayed === true || player.hasActualLine === false) return starterProjectedPoints(player);
+  const actual = starterScoredPoints(player);
+  if (actual !== 0) return actual;
+  return starterProjectedPoints(player);
+}
+
+export function sumListedStarterActuals(starters) {
+  return countableStarters(starters).reduce((sum, player) => sum + starterScoredPoints(player), 0);
+}
+
+export function sumListedStarterProjections(starters) {
+  return countableStarters(starters).reduce((sum, player) => sum + starterWeekProjection(player), 0);
 }
