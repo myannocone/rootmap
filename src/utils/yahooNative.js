@@ -12,15 +12,56 @@ function textValue(value) {
   return String(value || '').trim();
 }
 
+/** Pure digits, or the league/team number inside a Yahoo key (461.l.123 / ….t.4). */
+function numericYahooId(value, kind) {
+  const text = textValue(value);
+  if (/^\d+$/.test(text)) return text;
+  const pattern = kind === 'team' ? /\.t\.(\d+)/i : /\.l\.(\d+)/i;
+  const keyed = text.match(pattern);
+  return keyed ? keyed[1] : '';
+}
+
+function idsFromYahooUrl(url) {
+  const text = textValue(url);
+  const match = text.match(/\/f1\/(\d+)(?:\/(\d+))?(?=\/|$|\?|#)/i);
+  if (!match) return { leagueId: '', teamId: '' };
+  return { leagueId: match[1], teamId: match[2] || '' };
+}
+
+function weekFromYahooUrl(url) {
+  const weekMatch = textValue(url).match(/[?&]week=(\d+)/i);
+  return weekMatch ? weekMatch[1] : '';
+}
+
+function concreteYahooMatchupUrl(leagueId, teamId, week) {
+  if (!/^\d+$/.test(leagueId || '')) return '';
+  const teamPath = /^\d+$/.test(teamId || '') ? `/${teamId}` : '';
+  const weekQuery = week ? `?week=${week}` : '';
+  return `https://football.fantasysports.yahoo.com/f1/${leagueId}${teamPath}/matchup${weekQuery}`;
+}
+
 function isConcreteYahooMatchupUrl(url) {
-  return /football\.fantasysports\.yahoo\.com\/f1\/\d+/i.test(String(url || ''));
+  return /football\.fantasysports\.yahoo\.com\/f1\/\d+(?:\/\d+)?\/matchup(?:\/|$|\?|#)/i.test(String(url || ''));
+}
+
+/** Lobby rows put the page on href/url; matchupUrl wins when it already names a league. */
+function candidateYahooUrl(result) {
+  const candidates = [result?.matchupUrl, result?.href, result?.url]
+    .map((value) => textValue(value))
+    .filter(Boolean);
+  return candidates.find((url) => /\/f1\/\d+/i.test(url)) || candidates[0] || '';
+}
+
+function withoutCoveredLeagueHomes(list) {
+  const covered = new Set(list.filter((row) => row.teamId).map((row) => row.leagueId));
+  return list.filter((row) => row.teamId || !covered.has(row.leagueId));
 }
 
 function sessionList(raw) {
   const rows = Array.isArray(raw) ? raw : (raw && typeof raw === 'object' ? [raw] : []);
   return rows
     .map((row) => yahooIdentity(row))
-    .filter((identity) => identity.leagueId && identity.matchupUrl);
+    .filter((identity) => identity.leagueId && isConcreteYahooMatchupUrl(identity.matchupUrl));
 }
 
 export function readYahooSessions() {
@@ -37,9 +78,10 @@ export function readYahooSession() {
 }
 
 export function writeYahooSession(session) {
+  // Rewrite league-home (/f1/{id}) and team (/f1/{id}/{team}) URLs to /matchup
+  // before the guard. Bare lobby URLs have no league id and stay dropped.
   const identity = yahooIdentity(session);
-  // Never persist bare Yahoo home / lobby URLs — they poison later banner taps.
-  if (!identity.leagueId || !identity.matchupUrl || !isConcreteYahooMatchupUrl(identity.matchupUrl)) return;
+  if (!identity.leagueId || !isConcreteYahooMatchupUrl(identity.matchupUrl)) return;
   const next = readYahooSessions().filter((item) => {
     if (identity.matchupUrl && item.matchupUrl === identity.matchupUrl) return false;
     const sameLeague = identity.leagueId && item.leagueId === identity.leagueId;
@@ -60,28 +102,17 @@ export function writeYahooSessions(sessions) {
 }
 
 export function yahooIdentity(result) {
-  let matchupUrl = textValue(result?.matchupUrl);
-  let leagueId = textValue(result?.leagueId);
-  let teamId = textValue(result?.teamId);
-  const match = matchupUrl.match(/\/f1\/(\d+)(?:\/(\d+))?/);
-  if (!leagueId && match) leagueId = match[1];
-  if (!teamId && match?.[2]) teamId = match[2];
-  const weekMatch = matchupUrl.match(/[?&]week=(\d+)/i);
-  const weekQuery = weekMatch ? `?week=${weekMatch[1]}` : '';
-  const preferred = leagueId
-    ? (teamId
-      ? `https://football.fantasysports.yahoo.com/f1/${leagueId}/${teamId}/matchup${weekQuery}`
-      : `https://football.fantasysports.yahoo.com/f1/${leagueId}/matchup${weekQuery}`)
-    : '';
-  // Always prefer a concrete /matchup URL — league home pages do not expose starters.
-  if (!matchupUrl || (leagueId && !/\/matchup(?:\/|$|\?)/i.test(matchupUrl))) {
-    matchupUrl = preferred;
-  }
-  const url = preferred || (isConcreteYahooMatchupUrl(matchupUrl) ? matchupUrl : '');
+  const rawUrl = candidateYahooUrl(result);
+  const fromUrl = idsFromYahooUrl(rawUrl);
+  const leagueId = numericYahooId(result?.leagueId, 'league') || fromUrl.leagueId;
+  const teamId = numericYahooId(result?.teamId, 'team') || fromUrl.teamId;
+  // Always prefer a concrete /matchup URL — league home and team pages do not expose starters.
+  // No league id (bare football.fantasysports.yahoo.com or /f1) stays empty.
+  const matchupUrl = concreteYahooMatchupUrl(leagueId, teamId, weekFromYahooUrl(rawUrl));
   return {
     leagueId,
     teamId,
-    matchupUrl: url,
+    matchupUrl,
     leagueName: textValue(result?.leagueName),
     teamName: textValue(result?.teamName || result?.name)
   };
@@ -110,12 +141,12 @@ export function discoverYahooLeagues(result) {
   const rows = Array.isArray(result?.leagues) ? result.leagues : [];
   const fromArray = rows
     .map((row) => yahooIdentity(row))
-    .filter((identity) => identity.leagueId && identity.matchupUrl);
+    .filter((identity) => identity.leagueId && isConcreteYahooMatchupUrl(identity.matchupUrl));
   const source = fromArray.length
     ? fromArray
     : (() => {
       const single = yahooIdentity(result);
-      return single.leagueId && single.matchupUrl ? [single] : [];
+      return single.leagueId && isConcreteYahooMatchupUrl(single.matchupUrl) ? [single] : [];
     })();
   const byKey = new Map();
   source.forEach((identity) => {
@@ -155,7 +186,7 @@ export function discoverYahooLeagues(result) {
       matchupUrl: prev.matchupUrl || identity.matchupUrl
     });
   });
-  return [...merged.values()];
+  return withoutCoveredLeagueHomes([...merged.values()]);
 }
 
 function htmlToMatchupText(html) {
@@ -436,9 +467,9 @@ export async function fetchYahooMatchupCapture(session, week) {
  * After native login/lobby discovery, silently fetch each league's /matchup and parse starters.
  */
 export async function captureAllYahooLeagueMatchups(leagues, week, { onProgress } = {}) {
-  const list = (Array.isArray(leagues) ? leagues : [])
+  const list = withoutCoveredLeagueHomes((Array.isArray(leagues) ? leagues : [])
     .map((row) => yahooIdentity(row))
-    .filter((identity) => identity.leagueId && identity.matchupUrl);
+    .filter((identity) => identity.leagueId && isConcreteYahooMatchupUrl(identity.matchupUrl)));
   const imported = [];
   let expired = false;
   let lastError = null;
