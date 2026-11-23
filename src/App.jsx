@@ -38,7 +38,17 @@ import {
   syncSleeperLeagues
 } from './utils/sleeperApi';
 import { fetchEspnFanLeagues, fetchEspnLeague, listEspnTeams, mapEspnLeague } from './utils/espnDirectApi';
-import { ESPN_LOGIN_URL, openNativeEspnLogin, readEspnSession, writeEspnSession } from './utils/espnLogin';
+import {
+  ESPN_LOGIN_URL,
+  ESPN_SESSION_EXPIRED_HINT,
+  invalidateEspnSession,
+  isEspnSessionExpired,
+  isEspnSessionRejected,
+  openNativeEspnLogin,
+  readEspnLeagueIdentity,
+  readEspnSession,
+  writeEspnSession
+} from './utils/espnLogin';
 import { openYahooLogin } from './utils/openYahooLogin';
 import {
   captureAllYahooLeagueMatchups,
@@ -2713,13 +2723,14 @@ export default function App() {
   const [sleeperBusy, setSleeperBusy] = useState('');
   const [sleeperError, setSleeperError] = useState('');
   const [showEspn, setShowEspn] = useState(false);
-  const [espnLeagueId, setEspnLeagueId] = useState(() => readEspnSession()?.leagueId || '');
+  const [espnLeagueId, setEspnLeagueId] = useState(() => readEspnLeagueIdentity().leagueId);
   const [espnLeagueChoices, setEspnLeagueChoices] = useState([]);
   const [espnWeek, setEspnWeek] = useState(() => String(getActiveSlate()?.week || FALLBACK_NFL_WEEK));
   const [espnSeason, setEspnSeason] = useState('2026');
   const [espnLeague, setEspnLeague] = useState(null);
   const [espnTeams, setEspnTeams] = useState([]);
-  const [espnTeamId, setEspnTeamId] = useState(() => readEspnSession()?.teamId || '');
+  const [espnTeamId, setEspnTeamId] = useState(() => readEspnLeagueIdentity().teamId);
+  const [espnSessionExpired, setEspnSessionExpired] = useState(() => isEspnSessionExpired());
   const [espnBusy, setEspnBusy] = useState('');
   const [espnError, setEspnError] = useState('');
   const [espnPrivateOpen, setEspnPrivateOpen] = useState(false);
@@ -3319,8 +3330,9 @@ export default function App() {
       const espnLeagues = current.filter((lg) => lg?.espnLeagueId && lg?.espnTeamId);
       if (!espnLeagues.length) espnOk = true;
       let espnFailures = 0;
+      let espnAuthExpired = false;
       for (const lg of espnLeagues) {
-        if (stale()) break;
+        if (stale() || espnAuthExpired) break;
         try {
           const raw = await fetchEspnLeague({
             leagueId: lg.espnLeagueId,
@@ -3339,11 +3351,21 @@ export default function App() {
           });
           updates.set(mapped.id, mapped);
         } catch (err) {
+          if (isEspnSessionRejected(err)) {
+            espnAuthExpired = true;
+            invalidateEspnSession();
+            setEspnSessionExpired(true);
+            setEspnSwid('');
+            setEspnS2('');
+            setEspnNativeSession(null);
+            console.warn('ESPN session expired', err);
+            break;
+          }
           espnFailures += 1;
           console.warn('ESPN lineup refresh failed', err);
         }
       }
-      if (espnLeagues.length && espnFailures < espnLeagues.length) espnOk = true;
+      if (espnLeagues.length && !espnAuthExpired && espnFailures < espnLeagues.length) espnOk = true;
       if (Capacitor.isNativePlatform()) {
         try {
           const sessions = readYahooSessions().filter((saved) => saved?.matchupUrl);
@@ -3421,7 +3443,11 @@ export default function App() {
       }
       if (!quiet) {
         manualRefreshRef.current = false;
-        setSyncStatus(sleeperOk || espnOk || updates.size ? 'Scores refreshed.' : 'Could not refresh scores.');
+        if (espnAuthExpired && !updates.size) {
+          setSyncStatus('');
+        } else {
+          setSyncStatus(sleeperOk || espnOk || updates.size ? 'Scores refreshed.' : 'Could not refresh scores.');
+        }
       }
       if (lineupSyncTokenRef.current === token) setLeagueRefreshing(false);
       if (!updates.size) return;
@@ -4083,6 +4109,15 @@ export default function App() {
     closeConnect();
   };
 
+  const storeEspnSession = (session) => {
+    writeEspnSession(session);
+    if (!isEspnSessionExpired()) setEspnSessionExpired(false);
+  };
+
+  const handleEspnSessionExpiredTap = () => {
+    selectConnectTab('espn');
+  };
+
   const openEspnConnect = async () => {
     setEspnError('');
     setEspnBusy('');
@@ -4100,7 +4135,7 @@ export default function App() {
           setSyncStatus('ESPN sign-in did not finish. Open Connect ESPN and sign in on ESPN’s page.');
           return;
         }
-        const saved = readEspnSession();
+        const saved = readEspnSession() || readEspnLeagueIdentity();
         const leagueId = String(result?.leagueId || saved?.leagueId || '').trim();
         const sameLeague = Boolean(leagueId) && saved?.leagueId === leagueId;
         const teamId = sameLeague ? String(saved?.teamId || '').trim() : '';
@@ -4109,7 +4144,7 @@ export default function App() {
         setEspnNativeSession({ swid, espnS2: espnS2Value });
         if (leagueId) setEspnLeagueId(leagueId);
         setEspnTeamId(teamId);
-        writeEspnSession({ swid, espnS2: espnS2Value, leagueId, teamId });
+        storeEspnSession({ swid, espnS2: espnS2Value, leagueId, teamId });
         selectConnectTab('espn');
         const choices = await fetchEspnFanLeagues({ swid, espnS2: espnS2Value }).catch(() => []);
         setEspnLeagueChoices(choices);
@@ -4117,7 +4152,7 @@ export default function App() {
         const picked = known?.id || (choices.length === 1 ? choices[0].id : leagueId);
         if (picked) setEspnLeagueId(picked);
         if (picked && picked !== leagueId) {
-          writeEspnSession({ swid, espnS2: espnS2Value, leagueId: picked, teamId: '' });
+          storeEspnSession({ swid, espnS2: espnS2Value, leagueId: picked, teamId: '' });
         }
         if (picked) {
           setSyncStatus('Signed in on ESPN. This phone will refresh that league each week.');
@@ -4211,7 +4246,7 @@ export default function App() {
         setEspnError('Could not save this league on this device.');
         return;
       }
-      writeEspnSession({
+      storeEspnSession({
         swid: espnNativeSession?.swid || espnSwid,
         espnS2: espnNativeSession?.espnS2 || espnS2,
         leagueId: espnLeagueId.trim(),
@@ -5242,6 +5277,16 @@ export default function App() {
               {syncStatus}
             </div>
           )
+        )}
+
+        {espnSessionExpired && leagues.some((lg) => lg?.espnLeagueId && lg?.espnTeamId) && (
+          <button
+            type="button"
+            onClick={handleEspnSessionExpiredTap}
+            className="w-full px-3 py-2.5 rounded-xl text-xs font-bold text-center shadow-lg border bg-[#0D9488] text-white animate-pulse rootmap-pulse-blink border-teal-300"
+          >
+            {ESPN_SESSION_EXPIRED_HINT}
+          </button>
         )}
 
         {/* VIEW 1: MATCHUPS */}
