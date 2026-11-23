@@ -1,6 +1,6 @@
 import { Capacitor } from '@capacitor/core';
 import { activeOrProjected, isActiveEspnSlot } from './activeLineup.js';
-import { sortStartersBySlot } from './matchupLineup.js';
+import { sortStartersBySlot, sumListedStarterActuals, sumListedStarterProjections } from './matchupLineup.js';
 import { canonTeamCode, displayPlayerPosition } from './playerIdentity.js';
 import { SITE_ORIGIN } from './siteOrigin.js';
 
@@ -192,7 +192,7 @@ export function espnCookieHeader(swid, espnS2) {
 export async function fetchEspnLeague({
   leagueId,
   season = 2026,
-  week = 9,
+  week,
   swid = '',
   espnS2 = '',
   forceRefresh = false
@@ -307,41 +307,11 @@ function dedupeStarters(starters) {
   });
 }
 
-function boardIsInflated(board, starterSum, starters) {
-  if (board == null || !(starterSum > 0)) return false;
-  const count = (starters || []).length;
-  if (count >= 6 && board > starterSum * 1.15 + 1) return true;
-  return board > 400 && board > starterSum * 1.5;
-}
-
 function sideWeeklyProjection(side) {
   if (!side || typeof side !== 'object' || Array.isArray(side)) return null;
   return finiteNumber(side.totalProjectedPointsLive)
     ?? finiteNumber(side.totalProjectedPoints)
     ?? null;
-}
-
-function sumStarterActuals(starters) {
-  return (starters || []).reduce((sum, player) => {
-    if (player?.unplayed === true || player?.hasActualLine === false) return sum;
-    const actual = finiteNumber(player?.actualPoints);
-    if (actual != null) return sum + actual;
-    if (player?.isLive || player?.hasActualLine === true) {
-      const points = finiteNumber(player?.points);
-      const proj = finiteNumber(player?.projPoints ?? player?.projectedPoints);
-      if (points != null && proj != null && points === proj) return sum;
-      return sum + (points != null ? points : 0);
-    }
-    return sum;
-  }, 0);
-}
-
-function sumStarterProjections(starters) {
-  return (starters || []).reduce((sum, player) => {
-    const proj = finiteNumber(player?.projPoints);
-    if (proj != null) return sum + proj;
-    return sum;
-  }, 0);
 }
 
 function matchupSide(game, teamId) {
@@ -352,36 +322,31 @@ function matchupSide(game, teamId) {
   return null;
 }
 
-function weeklyMatchupScore(game, team, teamId, starters, weekNumber) {
-  const unique = dedupeStarters(starters);
-  const starterActuals = sumStarterActuals(unique);
-  const anyActualLine = unique.some((player) => player?.hasActualLine === true);
+function scrapedWeekScore(game, team, teamId, weekNumber) {
   const weekPoints = pointsByPeriod(team, weekNumber, 'pointsByScoringPeriod');
   const side = matchupSide(game, teamId);
   const season = finiteNumber(team?.points);
   const period = sideActualPoints(side);
   const periodIsSeason = period != null && season != null && season > 0 && Math.abs(period - season) < 0.05;
-  let board = weekPoints != null
+  const board = weekPoints != null
     ? weekPoints
     : (period != null && !periodIsSeason ? period : null);
-  // No statSourceId 0 lines yet — a non-zero team total here is a projection or season rollup.
-  if (!anyActualLine && !(starterActuals > 0)) return 0;
-  if (board != null && board > 400 && !(starterActuals > 0)) board = null;
-  if (!(starterActuals > 0)) return 0;
-  if (board == null || board === 0 || boardIsInflated(board, starterActuals, unique)) return starterActuals;
-  return board;
+  return board ?? 0;
+}
+
+function weeklyMatchupScore(game, team, teamId, starters, weekNumber) {
+  const unique = dedupeStarters(starters);
+  if (unique.length) return sumListedStarterActuals(unique);
+  return scrapedWeekScore(game, team, teamId, weekNumber);
 }
 
 function weeklyMatchupProjection(game, team, teamId, starters, weekNumber) {
   const unique = dedupeStarters(starters);
-  const starterProj = sumStarterProjections(unique);
+  if (unique.length) return sumListedStarterProjections(unique);
   const weekProj = pointsByPeriod(team, weekNumber, 'projectedPointsByScoringPeriod');
   const side = matchupSide(game, teamId);
-  let board = weekProj != null ? weekProj : sideWeeklyProjection(side);
-  if (board != null && board > 400 && !(starterProj > 0)) board = null;
-  if (board != null && board > 0 && !boardIsInflated(board, starterProj, unique)) return board;
-  if (starterProj > 0) return starterProj;
-  return board ?? null;
+  const board = weekProj != null ? weekProj : sideWeeklyProjection(side);
+  return board ?? 0;
 }
 
 function playerName(player, defense, nflTeam) {
