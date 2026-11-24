@@ -17,7 +17,6 @@ import {
 import {
   pairStartersBySlot,
   starterWeekProjection,
-  sumListedStarterActuals,
   sumListedStarterProjections
 } from './utils/matchupLineup';
 import { compareSlateGamePlayers } from './utils/slateGameOrder';
@@ -295,8 +294,17 @@ function scrapedSideTotal(league, side, kind) {
 
 function leagueSideScore(league, side = 'my') {
   const starters = leagueSidePlayers(league, side);
-  if (starters.length) return sumListedStarterActuals(starters);
-  return scrapedSideTotal(league, side, 'score');
+  if (!starters.length) return scrapedSideTotal(league, side, 'score');
+  const rows = lineupMatchupRows(
+    leagueSidePlayers(league, 'my'),
+    leagueSidePlayers(league, 'opp'),
+    league?.rosterPositions
+  );
+  const key = side === 'opp' ? 'opp' : 'mine';
+  const shown = rows.map((row) => row[key]).filter(Boolean);
+  // The big score is the starter figures on this card, not a separate projection or header total.
+  if (!shown.length) return scrapedSideTotal(league, side, 'score');
+  return shown.reduce((sum, player) => sum + starterShownPoints(player), 0);
 }
 
 function leagueSideProjected(league, side = 'my') {
@@ -390,6 +398,11 @@ function starterActualLabel(player) {
     return proj != null ? scoreText(proj) : '—';
   }
   return scoreText(points);
+}
+
+function starterShownPoints(player) {
+  if (!player) return 0;
+  return finiteNumber(starterActualLabel(player)) ?? 0;
 }
 
 function leagueSideRecord(league, side) {
@@ -619,7 +632,7 @@ function LeagueScoreboard({ league, isLight, onRemove }) {
       ? isLight ? 'text-emerald-700' : 'text-emerald-300'
       : isLight ? 'text-slate-400' : 'text-slate-500'
   );
-  const teamSide = (name, record, rank, score, projected, leading, align) => (
+  const teamSide = (name, record, rank, score, leading, align) => (
     <div className={`min-w-0 flex flex-col gap-0.5 ${align === 'end' ? 'items-end text-right' : 'items-start text-left'}`}>
       <div className={`w-full min-w-0 font-extrabold text-[13px] leading-tight truncate ${isLight ? 'text-slate-900' : 'text-white'}`}>
         {name}
@@ -631,9 +644,6 @@ function LeagueScoreboard({ league, isLight, onRemove }) {
       ) : null}
       <div className={`font-black text-3xl leading-none tabular-nums tracking-tight ${scoreClass(leading)}`}>
         {scoreText(score)}
-      </div>
-      <div className={`text-[10px] font-semibold tabular-nums ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
-        Proj {scoreText(projected)}
       </div>
     </div>
   );
@@ -664,9 +674,9 @@ function LeagueScoreboard({ league, isLight, onRemove }) {
         </div>
       </div>
       <div className="grid grid-cols-[1fr_auto_1fr] items-start gap-2">
-        {teamSide(myName, mine.record, mine.rank, myScore, outlook.myTotal, outlook.myTotal >= outlook.oppTotal, 'end')}
+        {teamSide(myName, mine.record, mine.rank, myScore, myScore >= oppScore, 'end')}
         <div className={`pt-6 text-[10px] font-black tracking-[0.2em] ${isLight ? 'text-slate-400' : 'text-slate-500'}`}>VS</div>
-        {teamSide(oppName, opp.record, opp.rank, oppScore, outlook.oppTotal, outlook.oppTotal >= outlook.myTotal, 'start')}
+        {teamSide(oppName, opp.record, opp.rank, oppScore, oppScore >= myScore, 'start')}
       </div>
       <div className="space-y-1">
         <div className="flex items-center justify-between text-[10px] font-black tabular-nums">
@@ -1477,14 +1487,18 @@ function hydrateLeagueForMatchups(league, games, liveScores, sleeperPlayers = nu
   const portfolio = getLeaguePortfolio(league).map(hydrateOne);
   const threats = getLeagueThreats(league).map(hydrateOne);
   const bench = getLeagueBench(league).map(hydrateOne);
-  const sideScore = (players, raw) => (
-    players.length ? sumListedStarterActuals(players) : (finiteNumber(raw) ?? 0)
-  );
   const sideProj = (players, raw) => (
     players.length ? sumListedStarterProjections(players) : (finiteNumber(raw) ?? 0)
   );
-  const myScore = sideScore(portfolio, league.myScore);
-  const oppScore = sideScore(threats, league.oppScore);
+  const scoredLeague = {
+    ...league,
+    portfolio,
+    threats,
+    starters: portfolio,
+    opponentStarters: threats
+  };
+  const myScore = leagueSideScore(scoredLeague, 'my');
+  const oppScore = leagueSideScore(scoredLeague, 'opp');
   const myProj = sideProj(portfolio, league.myProj ?? league.myProjected);
   const oppProj = sideProj(threats, league.oppProj ?? league.oppProjected);
 
@@ -5582,36 +5596,6 @@ export default function App() {
         {/* VIEW 3: MATCHUPS */}
         {view === 'all-leagues' && (
           <div className="space-y-3">
-            {sortedLeagues.length > 0 && (
-              <div className="-mx-1 overflow-x-auto">
-                <div className="flex items-center gap-1.5 min-w-max px-1 pb-0.5">
-                  {sortedLeagues.map((lg) => {
-                    const outlook = matchupOutlook(lg);
-                    return (
-                      <button
-                        key={`jump-league-${lg.id}`}
-                        type="button"
-                        onClick={() => {
-                          const node = document.getElementById(`league-card-${lg.id}`);
-                          node?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                          setFlashGameId(lg.id);
-                          window.setTimeout(() => setFlashGameId((current) => (current === lg.id ? null : current)), 1100);
-                          tapHaptic();
-                        }}
-                        className={`shrink-0 h-8 px-2 rounded-full border text-[10px] font-black whitespace-nowrap inline-flex items-center gap-1.5 ${
-                          isLight ? 'bg-white text-slate-700 border-slate-200' : 'bg-slate-900 text-slate-200 border-slate-700'
-                        }`}
-                      >
-                        <PlatformBadge platform={lg.platform} isLight={isLight} />
-                        <span className="truncate max-w-[9.5rem]">{leagueFilterLabel(lg, sortedLeagues)}</span>
-                        <span>· {outlook.myPct}%</span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-
             <div className="flex items-center gap-1.5 min-w-0">
               <div className={`shrink-0 text-[11px] font-black uppercase tracking-wider ${isLight ? 'text-slate-700' : 'text-slate-300'}`}>
                 Matchups ({sortedLeagues.length})
@@ -5651,8 +5635,10 @@ export default function App() {
 
             {sortedLeagues.map((lg) => {
               const outlook = matchupOutlook(lg);
-              const ahead = outlook.myTotal > outlook.oppTotal;
-              const behind = outlook.oppTotal > outlook.myTotal;
+              const myShown = leagueSideScore(lg, 'my');
+              const oppShown = leagueSideScore(lg, 'opp');
+              const ahead = myShown > oppShown;
+              const behind = oppShown > myShown;
               const nailbiter = finalSlateNailbiters.has(lg.id)
                 || (Math.abs(outlook.myTotal - outlook.oppTotal) <= 10 && leagueHasLivePlayers(lg, games));
               const finalSlate = finalSlateNailbiters.get(lg.id);
