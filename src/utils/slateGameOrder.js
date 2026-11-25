@@ -37,3 +37,14 @@ export function compareSlateGamePlayers(a, b) {
 export function sortSlateGamePlayers(players) {
   return [...(players || [])].sort(compareSlateGamePlayers);
 }
+
+/** True kickoff instant. Missing timestamps sort after every real kickoff. */
+export function kickoffMillis(value) {
+  const parsed = Date.parse(value || '');
+  return Number.isFinite(parsed) ? parsed : Number.POSITIVE_INFINITY;
+}
+
+/** Earliest kickoff first. Wednesday precedes Thursday; Monday Night is last. */
+export function compareGamesByKickoff(a, b) {
+  return kickoffMillis(a?.kickoff) - kickoffMillis(b?.kickoff);
+}

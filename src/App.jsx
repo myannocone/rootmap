@@ -19,7 +19,7 @@ import {
   starterWeekProjection,
   sumListedStarterProjections
 } from './utils/matchupLineup';
-import { compareSlateGamePlayers } from './utils/slateGameOrder';
+import { compareGamesByKickoff, compareSlateGamePlayers, kickoffMillis } from './utils/slateGameOrder';
 import {
   backfillPlayerTeam,
   canonTeamCode,
@@ -293,18 +293,14 @@ function scrapedSideTotal(league, side, kind) {
 }
 
 function leagueSideScore(league, side = 'my') {
-  const starters = leagueSidePlayers(league, side);
-  if (!starters.length) return scrapedSideTotal(league, side, 'score');
   const rows = lineupMatchupRows(
     leagueSidePlayers(league, 'my'),
     leagueSidePlayers(league, 'opp'),
     league?.rosterPositions
   );
   const key = side === 'opp' ? 'opp' : 'mine';
-  const shown = rows.map((row) => row[key]).filter(Boolean);
-  // The big score is the starter figures on this card, not a separate projection or header total.
-  if (!shown.length) return scrapedSideTotal(league, side, 'score');
-  return shown.reduce((sum, player) => sum + starterShownPoints(player), 0);
+  // Header totals are real points from kicked-off games only. Pregame projections stay on the rows.
+  return rows.reduce((sum, row) => sum + starterRealGamePoints(row[key]), 0);
 }
 
 function leagueSideProjected(league, side = 'my') {
@@ -383,26 +379,30 @@ function playerIsByeWeek(player) {
   );
 }
 
-function starterActualLabel(player) {
-  if (playerIsByeWeek(player)) return '—';
-  const actual = finiteNumber(player?.actualPoints);
-  const liveOrFinal = starterIsLive(player) || starterIsFinal(player);
-  // Yahoo often stores actualPoints: 0 pre-kickoff; only show a real line once live/final or non-zero.
-  if (actual != null && (liveOrFinal || actual !== 0)) return scoreText(actual);
-  const points = finiteNumber(player?.points);
-  const proj = finiteNumber(player?.projPoints)
-    ?? finiteNumber(player?.projected)
-    ?? finiteNumber(player?.projectedPoints);
-  // points often mirrors projection before kickoff — show proj so rows aren't empty dashes.
-  if (points == null || points === 0 || (proj != null && points === proj)) {
-    return proj != null ? scoreText(proj) : '—';
-  }
-  return scoreText(points);
+function starterProjectionValue(player) {
+  return finiteNumber(player?.projPoints)
+    ?? finiteNumber(player?.projectedPoints)
+    ?? finiteNumber(player?.projected);
 }
 
-function starterShownPoints(player) {
-  if (!player) return 0;
-  return finiteNumber(starterActualLabel(player)) ?? 0;
+function starterGameHasKickedOff(player) {
+  if (!player || playerIsByeWeek(player)) return false;
+  return starterIsLive(player) || starterIsFinal(player);
+}
+
+/** Actual fantasy points once the NFL game is live or final. Pregame projections contribute 0. */
+function starterRealGamePoints(player) {
+  if (!starterGameHasKickedOff(player)) return 0;
+  const actual = finiteNumber(player?.actualPoints);
+  const points = finiteNumber(player?.points);
+  const proj = starterProjectionValue(player);
+  const pointsAreProjection = points != null && proj != null && points === proj;
+  if (actual != null) {
+    if (actual === 0 && points != null && points !== 0 && !pointsAreProjection) return points;
+    return actual;
+  }
+  if (points != null && !pointsAreProjection) return points;
+  return 0;
 }
 
 function leagueSideRecord(league, side) {
@@ -523,6 +523,46 @@ function leagueHasLivePlayers(league, games) {
   });
 }
 
+function MatchupPointFigure({ player, isLight }) {
+  if (!player) return null;
+  if (playerIsByeWeek(player)) {
+    return (
+      <span className={`shrink-0 text-[8px] font-black uppercase tracking-wide ${isLight ? 'text-slate-400' : 'text-slate-500'}`}>
+        BYE
+      </span>
+    );
+  }
+  const kickedOff = starterGameHasKickedOff(player);
+  if (!kickedOff) {
+    const proj = starterProjectionValue(player);
+    return (
+      <span className={`inline-flex shrink-0 items-center gap-1 text-[9px] font-bold tabular-nums ${isLight ? 'text-slate-400' : 'text-slate-500'}`}>
+        <span>{proj == null ? '—' : scoreText(proj)}</span>
+        <span className={`rounded px-1 py-px text-[7px] font-black tracking-wider ${isLight ? 'bg-slate-200 text-slate-500' : 'bg-slate-800 text-slate-400'}`}>
+          PROJ
+        </span>
+      </span>
+    );
+  }
+  const live = starterIsLive(player);
+  const finalGame = !live && starterIsFinal(player);
+  const status = live ? 'LIVE' : finalGame ? 'FINAL' : null;
+  return (
+    <span className={`inline-flex shrink-0 items-center gap-1 text-[10px] font-black tabular-nums ${isLight ? 'text-slate-950' : 'text-white'}`}>
+      <span>{scoreText(starterRealGamePoints(player))}</span>
+      {status ? (
+        <span className={`rounded px-1 py-px text-[7px] font-black tracking-wider ${
+          live
+            ? (isLight ? 'bg-emerald-100 text-emerald-700' : 'bg-emerald-950 text-emerald-300')
+            : (isLight ? 'bg-slate-200 text-slate-600' : 'bg-slate-800 text-slate-300')
+        }`}>
+          {status}
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
 function MatchupLineups({ league, week, isLight }) {
   const [benchOpen, setBenchOpen] = useState(false);
   const mine = getLeaguePortfolio(league);
@@ -538,8 +578,11 @@ function MatchupLineups({ league, week, isLight }) {
           <div className={`truncate text-[11px] font-extrabold leading-tight ${isLight ? 'text-slate-900' : 'text-white'}`}>
             {player.name}
           </div>
-          <div className={`truncate text-[9px] font-bold tabular-nums ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
-            {[knownTeam(player.nflTeam || player.team) || String(player.nflTeam || player.team || '').toUpperCase(), starterActualLabel(player)].filter(Boolean).join(' · ')}
+          <div className={`mt-0.5 flex items-center gap-1 min-w-0 ${align === 'end' ? 'justify-end' : 'justify-start'}`}>
+            <span className={`truncate text-[9px] font-bold ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+              {knownTeam(player.nflTeam || player.team) || String(player.nflTeam || player.team || '').toUpperCase()}
+            </span>
+            <MatchupPointFigure player={player} isLight={isLight} />
           </div>
         </>
       ) : (
@@ -606,9 +649,7 @@ function MatchupLineups({ league, week, isLight }) {
                 <span className={`min-w-0 truncate font-bold ${isLight ? 'text-slate-800' : 'text-slate-100'}`}>
                   {player.name}
                 </span>
-                <span className={`shrink-0 font-black tabular-nums ${isLight ? 'text-slate-600' : 'text-slate-300'}`}>
-                  {starterActualLabel(player)}
-                </span>
+                <MatchupPointFigure player={player} isLight={isLight} />
               </div>
             ))
           )}
@@ -1187,39 +1228,38 @@ function playerIsBye(player, game) {
   return Boolean(team);
 }
 
-function kickoffMillis(value) {
-  const parsed = Date.parse(value || '');
-  return Number.isFinite(parsed) ? parsed : Number.POSITIVE_INFINITY;
-}
-
 function slateWindowFor(player) {
   if (player?.isBye || player?.gameStatus === 'BYE' || /\bbye\b/i.test(`${player?.gameClock || ''} ${player?.opponent || ''}`)) {
-    return { id: 'bye', label: 'Bye Week', rank: 8 };
+    return { id: 'bye', label: 'Bye Week', rank: 9 };
   }
   if (player?.gameStatus === 'IN_PROGRESS' || player?.isLive) return { id: 'live', label: 'Live', rank: 0 };
-  if (player?.gameStatus === 'FINAL') return { id: 'final', label: 'Final', rank: 7 };
+  if (player?.gameStatus === 'FINAL') return { id: 'final', label: 'Final', rank: 8 };
   const et = etClock(player?.kickoff);
   const text = `${player?.gameClock || ''} ${player?.time || ''}`;
   if (!et) {
-    if (/\bthu/i.test(text)) return { id: 'thursday', label: 'Thursday', rank: 1 };
-    if (/\bfri/i.test(text)) return { id: 'friday', label: 'Friday', rank: 2 };
-    if (/\bsat/i.test(text)) return { id: 'saturday', label: 'Saturday', rank: 2 };
-    if (/9:30|morning/i.test(text)) return { id: 'morning', label: 'Sunday Morning', rank: 3 };
-    if (/1:00/.test(text)) return { id: 'early', label: 'Sunday Early', rank: 4 };
-    if (/4:(00|05|25)/.test(text)) return { id: 'afternoon', label: 'Sunday Afternoon', rank: 5 };
-    if (/\bmon/i.test(text)) return { id: 'mnf', label: 'Monday Night', rank: 6 };
-    if (/\bsun/i.test(text)) return { id: 'snf', label: 'Sunday Night', rank: 6 };
-    return { id: 'bye', label: 'Bye Week', rank: 8 };
+    if (/\btue/i.test(text)) return { id: 'tuesday', label: 'Tuesday', rank: 0 };
+    if (/\bwed/i.test(text)) return { id: 'wednesday', label: 'Wednesday', rank: 1 };
+    if (/\bthu/i.test(text)) return { id: 'thursday', label: 'Thursday', rank: 2 };
+    if (/\bfri/i.test(text)) return { id: 'friday', label: 'Friday', rank: 3 };
+    if (/\bsat/i.test(text)) return { id: 'saturday', label: 'Saturday', rank: 3 };
+    if (/9:30|morning/i.test(text)) return { id: 'morning', label: 'Sunday Morning', rank: 4 };
+    if (/1:00/.test(text)) return { id: 'early', label: 'Sunday Early', rank: 5 };
+    if (/4:(00|05|25)/.test(text)) return { id: 'afternoon', label: 'Sunday Afternoon', rank: 6 };
+    if (/\bmon/i.test(text)) return { id: 'mnf', label: 'Monday Night', rank: 7 };
+    if (/\bsun/i.test(text)) return { id: 'snf', label: 'Sunday Night', rank: 7 };
+    return { id: 'bye', label: 'Bye Week', rank: 9 };
   }
-  if (et.weekday === 'Thu') return { id: 'thursday', label: 'Thursday', rank: 1 };
-  if (et.weekday === 'Fri') return { id: 'friday', label: 'Friday', rank: 2 };
-  if (et.weekday === 'Sat') return { id: 'saturday', label: 'Saturday', rank: 2 };
-  if (et.weekday === 'Sun' && et.minutes < 12 * 60) return { id: 'morning', label: 'Sunday Morning', rank: 3 };
-  if (et.weekday === 'Sun' && et.minutes < 16 * 60) return { id: 'early', label: 'Sunday Early', rank: 4 };
-  if (et.weekday === 'Sun' && et.minutes < 19 * 60) return { id: 'afternoon', label: 'Sunday Afternoon', rank: 5 };
-  if (et.weekday === 'Sun') return { id: 'snf', label: 'Sunday Night', rank: 6 };
-  if (et.weekday === 'Mon') return { id: 'mnf', label: 'Monday Night', rank: 6 };
-  return { id: 'bye', label: 'Bye Week', rank: 8 };
+  if (et.weekday === 'Tue') return { id: 'tuesday', label: 'Tuesday', rank: 0 };
+  if (et.weekday === 'Wed') return { id: 'wednesday', label: 'Wednesday', rank: 1 };
+  if (et.weekday === 'Thu') return { id: 'thursday', label: 'Thursday', rank: 2 };
+  if (et.weekday === 'Fri') return { id: 'friday', label: 'Friday', rank: 3 };
+  if (et.weekday === 'Sat') return { id: 'saturday', label: 'Saturday', rank: 3 };
+  if (et.weekday === 'Sun' && et.minutes < 12 * 60) return { id: 'morning', label: 'Sunday Morning', rank: 4 };
+  if (et.weekday === 'Sun' && et.minutes < 16 * 60) return { id: 'early', label: 'Sunday Early', rank: 5 };
+  if (et.weekday === 'Sun' && et.minutes < 19 * 60) return { id: 'afternoon', label: 'Sunday Afternoon', rank: 6 };
+  if (et.weekday === 'Sun') return { id: 'snf', label: 'Sunday Night', rank: 7 };
+  if (et.weekday === 'Mon') return { id: 'mnf', label: 'Monday Night', rank: 7 };
+  return { id: 'bye', label: 'Bye Week', rank: 9 };
 }
 
 function boardMetric(player, windowId) {
@@ -1267,7 +1307,6 @@ function compareBoardPlayers(a, b, sortMode) {
     diff = ((b.myShares || 0) + (b.oppShares || 0)) - ((a.myShares || 0) + (a.oppShares || 0));
   } else if (sortMode === 'projected') diff = playerProj(b) - playerProj(a);
   else {
-    if (aw.rank !== bw.rank) return aw.rank - bw.rank;
     const kickoffDelta = kickoffMillis(a.kickoff) - kickoffMillis(b.kickoff);
     if (kickoffDelta) return kickoffDelta;
     diff = boardMetric(b, aw.id) - boardMetric(a, aw.id);
@@ -1814,24 +1853,22 @@ function RosterCard({
     )
     : isDoubleFor
       ? (
-        <span className={`relative inline-flex items-center gap-1 overflow-hidden rounded-full border px-1.5 py-0.5 text-[8px] font-bold tracking-wide ${
+        <span className={`rootmap-doubledown-for inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[8px] font-bold tracking-wide ${
           isLight
             ? 'bg-emerald-500/20 border-emerald-500 text-emerald-800'
             : 'bg-emerald-500/25 border-emerald-400 text-emerald-200'
         }`}>
-          <span aria-hidden="true" className="pointer-events-none absolute inset-0 animate-pulse bg-emerald-400/15" />
-          <span className="relative">🔥 {forCount}X FOR</span>
+          <span>🔥 {forCount}X FOR</span>
         </span>
       )
       : isDoubleAgainst
         ? (
-          <span className={`relative inline-flex items-center gap-1 overflow-hidden rounded-full border px-1.5 py-0.5 text-[8px] font-bold tracking-wide ${
+          <span className={`rootmap-doubledown-against inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[8px] font-bold tracking-wide ${
             isLight
               ? 'bg-rose-500/20 border-rose-500 text-rose-800'
               : 'bg-rose-500/25 border-rose-400 text-rose-200'
           }`}>
-            <span aria-hidden="true" className="pointer-events-none absolute inset-0 animate-pulse bg-rose-400/15" />
-            <span className="relative">🚨 {againstCount}X AGAINST</span>
+            <span>🚨 {againstCount}X AGAINST</span>
           </span>
         )
         : null;
@@ -1847,7 +1884,7 @@ function RosterCard({
       onClick={onSelect}
       onMouseEnter={onHoverStart}
       onMouseLeave={onHoverEnd}
-      className={`relative w-full min-w-0 overflow-hidden rounded-xl px-2 py-1.5 pl-2.5 transition active:scale-[0.98] cursor-pointer touch-manipulation ${scorePulse} ${rosterCardSurface(isLight, live, isConflict, isHovered, player.inRedZone, player.zeroProjection, side, isDoubleDown)}`}
+      className={`relative w-full min-w-0 overflow-visible rounded-xl px-2 py-1.5 pl-2.5 transition active:scale-[0.98] cursor-pointer touch-manipulation ${scorePulse} ${rosterCardSurface(isLight, live, isConflict, isHovered, player.inRedZone, player.zeroProjection, side, isDoubleDown)}`}
     >
       <span
         aria-hidden="true"
@@ -2042,25 +2079,23 @@ function SlateExposureBadge({ exposure, isLight }) {
   }
   if (kind === 'multiFor') {
     return (
-      <span className={`relative inline-flex items-center gap-1 overflow-hidden rounded-full border px-1.5 py-0.5 text-[8px] font-black tracking-wide whitespace-nowrap ${
+      <span className={`rootmap-doubledown-for inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[8px] font-black tracking-wide whitespace-nowrap ${
         isLight
           ? 'bg-emerald-500/20 border-emerald-500 text-emerald-800'
           : 'bg-emerald-500/25 border-emerald-400 text-emerald-200'
       }`}>
-        <span aria-hidden="true" className="pointer-events-none absolute inset-0 animate-pulse bg-emerald-400/20" />
-        <span className="relative">{label}</span>
+        <span>{label}</span>
       </span>
     );
   }
   if (kind === 'multiAgainst') {
     return (
-      <span className={`relative inline-flex items-center gap-1 overflow-hidden rounded-full border px-1.5 py-0.5 text-[8px] font-black tracking-wide whitespace-nowrap ${
+      <span className={`rootmap-doubledown-against inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[8px] font-black tracking-wide whitespace-nowrap ${
         isLight
           ? 'bg-rose-500/20 border-rose-500 text-rose-800'
           : 'bg-rose-500/25 border-rose-400 text-rose-200'
       }`}>
-        <span aria-hidden="true" className="pointer-events-none absolute inset-0 animate-pulse bg-rose-400/20" />
-        <span className="relative">{label}</span>
+        <span>{label}</span>
       </span>
     );
   }
@@ -4612,22 +4647,12 @@ export default function App() {
       0
     );
     return [...(games || [])].sort((a, b) => {
-      const asWindow = slateWindowFor({
-        gameStatus: a.gameStatus || gamePhase(a),
-        isLive: a.gameStatus === 'IN_PROGRESS' || /\bLIVE\b/i.test(a.status || ''),
-        kickoff: a.kickoff,
-        gameClock: a.status || a.time
-      });
-      const bsWindow = slateWindowFor({
-        gameStatus: b.gameStatus || gamePhase(b),
-        isLive: b.gameStatus === 'IN_PROGRESS' || /\bLIVE\b/i.test(b.status || ''),
-        kickoff: b.kickoff,
-        gameClock: b.status || b.time
-      });
-      if (asWindow.rank !== bsWindow.rank) return asWindow.rank - bsWindow.rank;
-      const kickoffDelta = kickoffMillis(a.kickoff) - kickoffMillis(b.kickoff);
+      const kickoffDelta = compareGamesByKickoff(a, b);
       if (kickoffDelta) return kickoffDelta;
-      return exposure(b) - exposure(a);
+      const exposureDelta = exposure(b) - exposure(a);
+      if (exposureDelta) return exposureDelta;
+      return String(a?.away || '').localeCompare(String(b?.away || ''))
+        || String(a?.home || '').localeCompare(String(b?.home || ''));
     });
   }, [games, playerMasterIndex]);
 
@@ -5482,12 +5507,12 @@ export default function App() {
                     if (node) gameCardRefs.current.set(game.id, node);
                     else gameCardRefs.current.delete(game.id);
                   }}
-                  className={`rounded-2xl overflow-hidden border shadow-sm ${flashGameId === game.id ? 'rootmap-game-flash' : ''} ${
+                  className={`rounded-2xl overflow-visible border shadow-sm ${flashGameId === game.id ? 'rootmap-game-flash' : ''} ${
                     isLight ? 'bg-white border-slate-200' : 'bg-slate-900 border-slate-800'
                   }`}
                 >
                   <div
-                    className="h-1.5 w-full"
+                    className="h-1.5 w-full rounded-t-2xl"
                     style={{ background: `linear-gradient(90deg, ${awayColor} 0%, ${awayColor} 48%, ${homeColor} 52%, ${homeColor} 100%)` }}
                   />
                   <div className={`px-3 py-2.5 border-b ${isLight ? 'border-slate-100' : 'border-slate-800'}`}>
@@ -6041,7 +6066,7 @@ export default function App() {
                 Sort
               </div>
               {[
-                { id: 'slate', icon: '🏈', label: 'Game Slate', detail: 'Live first, then kickoff time: Thursday, Sunday morning, 1:00, 4:00, Sunday night, Monday night. Final, then bye week.', defaultSort: true },
+                { id: 'slate', icon: '🏈', label: 'Game Slate', detail: 'Earliest kickoff first, Wednesday through Monday Night. Final, then bye week.', defaultSort: true },
                 { id: 'livePoints', icon: '⚡', label: 'Most Live Points', detail: 'Leaderboard by points already scored.' },
                 { id: 'weeklyPoints', icon: '📈', label: 'Most Weekly Pts', detail: 'Actual points so far. Unplayed games use the projection.' },
                 { id: 'projected', icon: '🎯', label: 'Highest Projected', detail: 'Biggest projected totals.' },
@@ -7636,7 +7661,7 @@ export default function App() {
                     <span className={`font-bold ${isLight ? 'text-slate-900' : 'text-white'}`}>{p.name}</span>
                     <span className={`text-[11px] ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>{p.nflTeam}</span>
                   </div>
-                  <LivePoints player={p} isLight={isLight} />
+                  <MatchupPointFigure player={p} isLight={isLight} />
                 </div>
                 );
               })}

@@ -109,6 +109,7 @@ function mergeEspnIntoSlate(scheduleGames, events) {
       id: live.id || game.id,
       home: canonTeam(game.home),
       away: canonTeam(game.away),
+      kickoff: live.kickoff || game.kickoff,
       homeScore: homeIsScheduleHome ? live.homeScore : live.awayScore,
       awayScore: homeIsScheduleHome ? live.awayScore : live.homeScore,
       state: live.state || game.state || '',
