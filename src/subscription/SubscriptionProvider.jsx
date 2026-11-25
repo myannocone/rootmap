@@ -8,6 +8,11 @@ import {
   readFriendsPass
 } from '../utils/friendsPass';
 import { OfferCodeRedemption } from '../utils/offerCodeRedemption';
+import {
+  isInvalidOfferCodeError,
+  isOfferCodeCancellation,
+  offerCodeFailureMessage
+} from '../utils/offerCodeErrors';
 import { SubscriptionContext } from './useSubscription';
 
 const PRO_ENTITLEMENT_ID = 'rootmap_pro';
@@ -236,12 +241,19 @@ export function SubscriptionProvider({ children }) {
         isPro: unlimited
       };
     } catch (error) {
-      if (isPurchaseCancelled(error)) {
-        return { status: 'cancelled', message: 'Offer code redemption was cancelled.', isPro: isProRef.current };
+      if (isInvalidOfferCodeError(error)) {
+        return {
+          status: 'error',
+          message: offerCodeFailureMessage(error),
+          isPro: isProRef.current
+        };
+      }
+      if (isOfferCodeCancellation(error) || isPurchaseCancelled(error)) {
+        return { status: 'cancelled', isPro: isProRef.current };
       }
       return {
         status: 'error',
-        message: errorMessage(error) || 'Offer code redemption could not be completed.',
+        message: offerCodeFailureMessage(error) || 'Offer code redemption could not be completed.',
         isPro: isProRef.current
       };
     }

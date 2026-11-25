@@ -129,13 +129,50 @@ body {
   animation: rootmap-jump-pulse 1.8s ease-in-out infinite;
 }
 
-@keyframes rootmap-doubledown-glow {
-  0%, 100% { opacity: 0.55; }
-  50% { opacity: 1; }
+@keyframes rootmap-doubledown-for {
+  0%, 100% {
+    transform: scale(1);
+    box-shadow:
+      0 0 0 0 rgba(16, 185, 129, 0.2),
+      0 0 8px 0 rgba(16, 185, 129, 0.4);
+  }
+  50% {
+    transform: scale(1.14);
+    box-shadow:
+      0 0 0 6px rgba(16, 185, 129, 0.5),
+      0 0 22px 6px rgba(16, 185, 129, 0.95);
+  }
 }
 
-.rootmap-doubledown-glow {
-  animation: rootmap-doubledown-glow 2.2s ease-in-out infinite;
+@keyframes rootmap-doubledown-against {
+  0%, 100% {
+    transform: scale(1);
+    box-shadow:
+      0 0 0 0 rgba(225, 29, 72, 0.2),
+      0 0 8px 0 rgba(225, 29, 72, 0.4);
+  }
+  50% {
+    transform: scale(1.14);
+    box-shadow:
+      0 0 0 6px rgba(225, 29, 72, 0.5),
+      0 0 22px 6px rgba(225, 29, 72, 0.95);
+  }
+}
+
+.rootmap-doubledown-for,
+.rootmap-doubledown-against {
+  position: relative;
+  z-index: 1;
+  transform-origin: center;
+  will-change: transform, box-shadow;
+}
+
+.rootmap-doubledown-for {
+  animation: rootmap-doubledown-for 1.35s ease-in-out infinite;
+}
+
+.rootmap-doubledown-against {
+  animation: rootmap-doubledown-against 1.35s ease-in-out infinite;
 }
 
 .rootmap-filter-tray {
@@ -253,7 +290,8 @@ svg.rootmap-spin {
   .rootmap-float-delta,
   .rootmap-game-flash,
   .rootmap-jump-pulse,
-  .rootmap-doubledown-glow,
+  .rootmap-doubledown-for,
+  .rootmap-doubledown-against,
   .rootmap-view-slide-left,
   .rootmap-view-slide-right,
   .rootmap-pulse-blink,
@@ -264,6 +302,18 @@ svg.rootmap-spin {
 
   .rootmap-manage-pill {
     opacity: 1;
+  }
+
+  .rootmap-doubledown-for {
+    box-shadow:
+      0 0 0 2px rgba(16, 185, 129, 0.35),
+      0 0 10px 1px rgba(16, 185, 129, 0.45);
+  }
+
+  .rootmap-doubledown-against {
+    box-shadow:
+      0 0 0 2px rgba(225, 29, 72, 0.35),
+      0 0 10px 1px rgba(225, 29, 72, 0.45);
   }
 
   .rootmap-filter-tray,

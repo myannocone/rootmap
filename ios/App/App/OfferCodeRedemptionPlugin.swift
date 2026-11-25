@@ -26,12 +26,8 @@ public class OfferCodeRedemptionPlugin: CAPPlugin, CAPBridgedPlugin {
                     try await AppStore.presentOfferCodeRedeemSheet(in: scene)
                     call.resolve(["presented": true])
                 } catch {
-                    let text = error.localizedDescription
-                    if text.range(of: "cancel", options: .caseInsensitive) != nil {
-                        call.reject("Offer code redemption was cancelled.", "1")
-                    } else {
-                        call.reject(text.isEmpty ? "Offer code redemption could not open." : text)
-                    }
+                    let rejection = offerCodeRejection(error)
+                    call.reject(rejection.message, rejection.code)
                 }
             }
             return
@@ -39,6 +35,50 @@ public class OfferCodeRedemptionPlugin: CAPPlugin, CAPBridgedPlugin {
 
         SKPaymentQueue.default().presentCodeRedemptionSheet()
         call.resolve(["presented": true])
+    }
+
+    private func offerCodeRejection(_ error: Error) -> (message: String, code: String) {
+        let nsError = error as NSError
+        let description = nsError.localizedDescription
+        if isInvalidOrInactiveCode(domain: nsError.domain, code: nsError.code, description: description) {
+            return (
+                "That offer code isn't valid or isn't active yet. Double-check the code or try again later.",
+                "INVALID_OFFER_CODE"
+            )
+        }
+        if isUserCancellation(domain: nsError.domain, code: nsError.code, description: description) {
+            return ("Offer code redemption was cancelled.", "1")
+        }
+        if description.range(of: "SKInternalErrorDomain", options: .caseInsensitive) != nil
+            || description.range(of: "SKErrorDomain", options: .caseInsensitive) != nil {
+            return ("Offer code redemption could not be completed. Try again.", "OFFER_UNAVAILABLE")
+        }
+        let text = description.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (text.isEmpty ? "Offer code redemption could not open." : text, String(nsError.code))
+    }
+
+    private func isInvalidOrInactiveCode(domain: String, code: Int, description: String) -> Bool {
+        let text = description.lowercased()
+        if domain == "SKInternalErrorDomain" && code == 12 { return true }
+        if text.range(of: #"skinternalerrordomain[^\n]{0,48}\b12\b"#, options: .regularExpression) != nil {
+            return true
+        }
+        // SKError.invalidOfferIdentifier 11, missingOfferParams 13, invalidOfferPrice 14, ineligibleForOffer 18.
+        if domain == SKError.errorDomain && [11, 13, 14, 18].contains(code) { return true }
+        if text.contains("invalid") && (text.contains("code") || text.contains("offer")) { return true }
+        if text.contains("inactive") && (text.contains("code") || text.contains("offer")) { return true }
+        if text.contains("not active") || text.contains("isn't active") || text.contains("is not valid") {
+            return true
+        }
+        return false
+    }
+
+    private func isUserCancellation(domain: String, code: Int, description: String) -> Bool {
+        // SKError.paymentCancelled 2, SKError.overlayCancelled 15.
+        if domain == SKError.errorDomain && (code == 2 || code == 15) { return true }
+        let text = description.lowercased()
+        if text.contains("cancel") || text.contains("dismiss") { return true }
+        return false
     }
 
     private func foregroundWindowScene() -> UIWindowScene? {
