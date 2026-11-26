@@ -81,6 +81,14 @@ import {
   freeActiveBadge,
   loadIsPro
 } from './utils/proEntitlement';
+import {
+  FAMILY_UNLOCK_OFF_MESSAGE,
+  FAMILY_UNLOCK_ON_MESSAGE,
+  loadFamilyUnlock,
+  maxLeaguesFor,
+  noteFamilyUnlockTap,
+  saveFamilyUnlock
+} from './utils/familyUnlock';
 import { friendsPassGrantsUnlimited } from './utils/friendsPass';
 import { platformLeagueLabel } from './utils/platformLabel';
 import { useSubscription } from './subscription/useSubscription';
@@ -240,8 +248,10 @@ function launchLeagueGate() {
   const storedLeagues = loadStoredLeagues();
   const storedHidden = loadHiddenLeagueIds();
   const proOnDevice = (Capacitor.getPlatform() === 'ios' && loadIsPro()) || friendsPassGrantsUnlimited();
-  const overCap = !proOnDevice && activeLeagueCount(storedLeagues, storedHidden) > MAX_FREE_ACTIVE_LEAGUES;
-  const hidden = overCap ? clampFreeActiveHidden(storedLeagues, storedHidden) : storedHidden;
+  // TEMPORARY family-unlock cap. Remove with src/utils/familyUnlock.js.
+  const maxLeagues = proOnDevice ? Infinity : maxLeaguesFor(loadFamilyUnlock());
+  const overCap = activeLeagueCount(storedLeagues, storedHidden) > maxLeagues;
+  const hidden = overCap ? clampFreeActiveHidden(storedLeagues, storedHidden, maxLeagues) : storedHidden;
   const selectedIds = overCap
     ? storedLeagues
       .filter((league) => league && !hidden.has(String(league.id)))
@@ -2640,6 +2650,12 @@ export default function App() {
     restorePurchases,
     redeemOfferCode
   } = useSubscription();
+  // TEMPORARY: rootmap_family_unlock lifts only the free league cap. Remove with src/utils/familyUnlock.js.
+  const [familyUnlock, setFamilyUnlock] = useState(() => loadFamilyUnlock());
+  const maxLeagues = isPro ? Infinity : maxLeaguesFor(familyUnlock);
+  const [familyUnlockToast, setFamilyUnlockToast] = useState('');
+  const familyUnlockToastTimerRef = useRef(null);
+  const weekBadgeTapsRef = useRef([]);
   const proWasRef = useRef(isPro);
   const activePickCandidatesRef = useRef(activePickCandidates);
   const [sortMode, setSortMode] = useState('slate');
@@ -2997,7 +3013,7 @@ export default function App() {
     });
     setIsSyncing(false);
     closeConnect();
-    if (!isPro && activeLeagueCount(nextBoard, hiddenLeagueIds) > MAX_FREE_ACTIVE_LEAGUES) {
+    if (activeLeagueCount(nextBoard, hiddenLeagueIds) > maxLeagues) {
       openActiveLeaguePicker(nextBoard);
       setSyncStatus(`Synced ${pickedForModal.length} Yahoo leagues for Week ${week}. Pick ${MAX_FREE_ACTIVE_LEAGUES} to keep on the board.`);
       return true;
@@ -3603,40 +3619,83 @@ export default function App() {
     activePickCandidatesRef.current = activePickCandidates;
   }, [activePickCandidates]);
 
+  const releaseLeagueCapHides = () => {
+    const gate = launchMeta;
+    if (gate?.overCap) {
+      setHiddenLeagueIds(new Set([...gate.originalHidden].map(String)));
+      gate.overCap = false;
+      setShowActivePick(false);
+      setActivePickCandidates([]);
+      setActivePickSelected(new Set());
+      return;
+    }
+    const candidates = activePickCandidatesRef.current || [];
+    if (!candidates.length) return;
+    setHiddenLeagueIds((prev) => {
+      const next = new Set([...prev].map(String));
+      candidates.forEach((league) => next.delete(String(league.id)));
+      return next;
+    });
+    setShowActivePick(false);
+    setActivePickCandidates([]);
+    setActivePickSelected(new Set());
+    setView('matchups');
+  };
+
+  const showFamilyUnlockToast = (message) => {
+    setFamilyUnlockToast(message);
+    window.clearTimeout(familyUnlockToastTimerRef.current);
+    familyUnlockToastTimerRef.current = window.setTimeout(() => {
+      setFamilyUnlockToast('');
+    }, 2600);
+  };
+
+  // TEMPORARY Week-badge gesture. Remove with src/utils/familyUnlock.js.
+  const toggleFamilyUnlock = () => {
+    const next = !familyUnlock;
+    saveFamilyUnlock(next);
+    setFamilyUnlock(next);
+    if (next) releaseLeagueCapHides();
+    else if (!isPro) {
+      setHiddenLeagueIds((prev) => clampFreeActiveHidden(leaguesRef.current, prev, MAX_FREE_ACTIVE_LEAGUES));
+    }
+    showFamilyUnlockToast(next ? FAMILY_UNLOCK_ON_MESSAGE : FAMILY_UNLOCK_OFF_MESSAGE);
+    tapHaptic();
+  };
+
+  const onWeekBadgeClick = () => {
+    const result = noteFamilyUnlockTap(weekBadgeTapsRef.current);
+    weekBadgeTapsRef.current = result.stamps;
+    if (result.triggered) {
+      setShowWeekPicker(false);
+      toggleFamilyUnlock();
+      return;
+    }
+    if (result.burst) {
+      setShowWeekPicker(false);
+      return;
+    }
+    setShowWeekPicker((open) => !open);
+  };
+
+  useEffect(() => () => {
+    window.clearTimeout(familyUnlockToastTimerRef.current);
+  }, []);
+
   useEffect(() => {
     if (subscriptionLoading) return undefined;
     const wasPro = proWasRef.current;
     proWasRef.current = isPro;
     if (isPro && !wasPro) {
       setShowProUpgrade(false);
-      const gate = launchMeta;
-      if (gate?.overCap) {
-        setHiddenLeagueIds(new Set([...gate.originalHidden].map(String)));
-        gate.overCap = false;
-        setShowActivePick(false);
-        setActivePickCandidates([]);
-        setActivePickSelected(new Set());
-        return undefined;
-      }
-      const candidates = activePickCandidatesRef.current || [];
-      if (candidates.length) {
-        setHiddenLeagueIds((prev) => {
-          const next = new Set([...prev].map(String));
-          candidates.forEach((league) => next.delete(String(league.id)));
-          return next;
-        });
-        setShowActivePick(false);
-        setActivePickCandidates([]);
-        setActivePickSelected(new Set());
-        setView('matchups');
-      }
+      releaseLeagueCapHides();
       return undefined;
     }
-    if (!isPro && wasPro) {
-      setHiddenLeagueIds((prev) => clampFreeActiveHidden(leaguesRef.current, prev));
+    if (!isPro && wasPro && !familyUnlock) {
+      setHiddenLeagueIds((prev) => clampFreeActiveHidden(leaguesRef.current, prev, MAX_FREE_ACTIVE_LEAGUES));
     }
     return undefined;
-  }, [isPro, subscriptionLoading]);
+  }, [isPro, subscriptionLoading, familyUnlock]);
 
   useEffect(() => {
     if (!showLegend && !showLeagueFilter && !leaguePendingDelete && !showSetupImport && !showConnect && !showSleeper && !showEspn && !showYahooIngest && !showSortSheet && !showAlertSheet && !showWeekPicker && !showMobileSync && !jumpMenuOpen && !showManageLeagues && !showProUpgrade && !showActivePick) return undefined;
@@ -3766,9 +3825,10 @@ export default function App() {
   const restoreProPurchases = async () => finishProPurchase(await restorePurchases());
 
   const openActiveLeaguePicker = (candidateLeagues) => {
+    if (!Number.isFinite(maxLeagues)) return;
     const candidates = (candidateLeagues || []).filter(Boolean);
     if (!candidates.length) return;
-    const preselected = candidates.slice(0, MAX_FREE_ACTIVE_LEAGUES).map((league) => String(league.id));
+    const preselected = candidates.slice(0, maxLeagues).map((league) => String(league.id));
     const selected = new Set(preselected);
     setActivePickCandidates(candidates);
     setActivePickSelected(selected);
@@ -3792,7 +3852,7 @@ export default function App() {
         next.delete(id);
         return next;
       }
-      if (next.size >= MAX_FREE_ACTIVE_LEAGUES) {
+      if (next.size >= maxLeagues) {
         openProUpgrade();
         return prev;
       }
@@ -3825,12 +3885,10 @@ export default function App() {
     setHiddenLeagueIds((prev) => {
       const next = new Set([...prev].map(String));
       if (next.has(id)) {
-        if (!isPro) {
-          const currentlyActive = activeLeagueCount(leagues, next);
-          if (currentlyActive >= MAX_FREE_ACTIVE_LEAGUES) {
-            openProUpgrade();
-            return prev;
-          }
+        const currentlyActive = activeLeagueCount(leagues, next);
+        if (currentlyActive >= maxLeagues) {
+          openProUpgrade();
+          return prev;
         }
         next.delete(id);
       } else {
@@ -4022,7 +4080,7 @@ export default function App() {
       setLeagueBackupError(true);
       return;
     }
-    const setupOverCap = !isPro && activeLeagueCount(next, new Set()) > MAX_FREE_ACTIVE_LEAGUES;
+    const setupOverCap = activeLeagueCount(next, new Set()) > maxLeagues;
     setLeagues(next);
     if (setupOverCap) openActiveLeaguePicker(next);
     else setHiddenLeagueIds(new Set());
@@ -4160,7 +4218,7 @@ export default function App() {
       const deduped = dedupeImportedLeagues(next);
       setLeagues(deduped);
       closeConnect();
-      if (!isPro && activeLeagueCount(deduped, hiddenLeagueIds) > MAX_FREE_ACTIVE_LEAGUES) {
+      if (activeLeagueCount(deduped, hiddenLeagueIds) > maxLeagues) {
         openActiveLeaguePicker(deduped);
         setSyncStatus(`Synced ${normalized.length} Sleeper leagues for Week ${week}. Pick ${MAX_FREE_ACTIVE_LEAGUES} to keep on the board.`);
       } else {
@@ -4333,7 +4391,7 @@ export default function App() {
       const dedupedEspn = dedupeImportedLeagues(next);
       setLeagues(dedupedEspn);
       closeEspnConnect();
-      if (!isPro && activeLeagueCount(dedupedEspn, hiddenLeagueIds) > MAX_FREE_ACTIVE_LEAGUES) {
+      if (activeLeagueCount(dedupedEspn, hiddenLeagueIds) > maxLeagues) {
         openActiveLeaguePicker(dedupedEspn);
         setSyncStatus(`Synced ${imported.name} from ESPN for Week ${espnWeek}. Pick ${MAX_FREE_ACTIVE_LEAGUES} to keep on the board.`);
       } else {
@@ -4411,7 +4469,7 @@ export default function App() {
     setYahooPaste('');
     setYahooLeagueName('');
     closeConnect();
-    if (!isPro && activeLeagueCount(pastedBoard, hiddenLeagueIds) > MAX_FREE_ACTIVE_LEAGUES) {
+    if (activeLeagueCount(pastedBoard, hiddenLeagueIds) > maxLeagues) {
       openActiveLeaguePicker(pastedBoard);
       setSyncStatus(`Imported ${leagueName}. Pick ${MAX_FREE_ACTIVE_LEAGUES} leagues to keep on the board.`);
     } else {
@@ -5013,7 +5071,8 @@ export default function App() {
       onTouchEnd={handleViewportTouchEnd}
       onTouchCancel={resetSwipeGesture}
     >
-      <div className={`rootmap-topbar sticky top-0 z-40 max-w-md mx-auto ${isLight ? 'bg-white/95' : 'bg-slate-950/95'} backdrop-blur-md`}>
+      {/* z-[120] while the free-cap picker is open so the temporary Week-badge unlock can dismiss it. */}
+      <div className={`rootmap-topbar sticky top-0 ${showActivePick ? 'z-[120]' : 'z-40'} max-w-md mx-auto ${isLight ? 'bg-white/95' : 'bg-slate-950/95'} backdrop-blur-md`}>
       <header className={`border-b px-2.5 py-1.5 space-y-1.5 transition-colors ${
         isLight ? 'border-slate-200 shadow-sm' : 'border-slate-800/80'
       }`}>
@@ -5049,8 +5108,8 @@ export default function App() {
             type="button"
             aria-haspopup="dialog"
             aria-expanded={showWeekPicker}
-            onClick={() => setShowWeekPicker((open) => !open)}
-            className={`shrink-0 h-9 px-2 rounded-lg text-[10px] font-black border whitespace-nowrap transition ${
+            onClick={onWeekBadgeClick}
+            className={`relative z-[60] shrink-0 h-9 px-2 rounded-lg text-[10px] font-black border whitespace-nowrap transition ${
               showWeekPicker || view === 'game-slate'
                 ? isLight ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-emerald-950 text-emerald-300 border-emerald-600'
                 : isLight ? 'bg-slate-100 text-slate-700 border-slate-300 hover:bg-slate-200' : 'bg-slate-900 text-slate-200 border-slate-700 hover:bg-slate-800'
@@ -5288,6 +5347,24 @@ export default function App() {
         )}
       </header>
       </div>
+
+      {familyUnlockToast && (
+        <div className="pointer-events-none fixed inset-x-0 top-[calc(env(safe-area-inset-top)+4.5rem)] z-[80] flex justify-center px-3">
+          <div
+            role="status"
+            aria-live="polite"
+            className={`pointer-events-none max-w-md w-full px-3 py-2.5 rounded-xl text-xs font-black text-center shadow-2xl border ${
+              familyUnlockToast === FAMILY_UNLOCK_ON_MESSAGE
+                ? 'bg-[#0F9D68] text-white border-emerald-400'
+                : isLight
+                  ? 'bg-amber-50 text-amber-950 border-amber-300'
+                  : 'bg-amber-950 text-amber-50 border-amber-700'
+            }`}
+          >
+            {familyUnlockToast}
+          </div>
+        </div>
+      )}
 
       {/* Single floating toast — never an inline multi-card stack above the board */}
       {liveToast && (
@@ -6235,7 +6312,7 @@ export default function App() {
                 <h3 id="manage-leagues-title" className={`text-base font-black ${isLight ? 'text-slate-900' : 'text-white'}`}>
                   Manage Leagues
                 </h3>
-                {!isPro && (
+                {!isPro && Number.isFinite(maxLeagues) && (
                   <div className={`mt-1 inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-black uppercase tracking-wide border ${
                     isLight ? 'bg-amber-50 text-amber-800 border-amber-200' : 'bg-amber-950/50 text-amber-200 border-amber-800'
                   }`}>
@@ -6367,9 +6444,11 @@ export default function App() {
                 >
                   RootMap Pro
                 </button>
-                <p className={`text-center text-[10px] font-semibold ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
-                  Free tracks {MAX_FREE_ACTIVE_LEAGUES} active leagues. Uncheck one to swap, or upgrade for unlimited.
-                </p>
+                {Number.isFinite(maxLeagues) && (
+                  <p className={`text-center text-[10px] font-semibold ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+                    Free tracks {MAX_FREE_ACTIVE_LEAGUES} active leagues. Uncheck one to swap, or upgrade for unlimited.
+                  </p>
+                )}
                 <LeagueAccessActions
                   isLight={isLight}
                   onRedeemOfferCode={redeemOfferCode}
@@ -6814,7 +6893,7 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => {
-                    if (!isPro && leagues.length > MAX_FREE_ACTIVE_LEAGUES) {
+                    if (leagues.length > maxLeagues) {
                       openProUpgrade();
                       return;
                     }

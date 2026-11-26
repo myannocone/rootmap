@@ -33,13 +33,17 @@ export function freeActiveBadge(activeCount) {
   return `${used} / ${MAX_FREE_ACTIVE_LEAGUES} Free Active`;
 }
 
-/** Hide overflow so a saved free board cannot stay above the 2-league cap. */
-export function clampFreeActiveHidden(leagues, hiddenLeagueIds) {
+/**
+ * Hide overflow so a saved free board cannot stay above the active-league cap.
+ * Pass Infinity (the temporary family-unlock cap) to leave the hidden set unchanged.
+ */
+export function clampFreeActiveHidden(leagues, hiddenLeagueIds, maxActive = MAX_FREE_ACTIVE_LEAGUES) {
   const hidden = hiddenLeagueIds instanceof Set
     ? new Set([...hiddenLeagueIds].map(String))
     : new Set([...(hiddenLeagueIds || [])].map(String));
+  if (!Number.isFinite(maxActive)) return hidden;
   const active = (leagues || []).filter((league) => league && !hidden.has(String(league.id)));
-  active.slice(MAX_FREE_ACTIVE_LEAGUES).forEach((league) => {
+  active.slice(maxActive).forEach((league) => {
     hidden.add(String(league.id));
   });
   return hidden;
