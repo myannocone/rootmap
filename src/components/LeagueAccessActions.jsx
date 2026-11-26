@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { isOfferCodeCancellation, offerCodeFailureMessage } from '../utils/offerCodeErrors';
+import { isOfferCodeCancellation, offerCodeFailureMessage, publicOfferCodeNotice } from '../utils/offerCodeErrors';
 
 export default function LeagueAccessActions({
   isLight = false,
@@ -22,18 +22,15 @@ export default function LeagueAccessActions({
         onUnlocked?.(result);
         return;
       }
-      if (result?.status === 'cancelled') return;
-      if (result?.message) {
-        setNotice({
-          tone: result.status === 'error' ? 'error' : 'info',
-          message: result.message
-        });
-      }
+      const notice = publicOfferCodeNotice(result);
+      if (notice) setNotice(notice);
     } catch (error) {
       if (isOfferCodeCancellation(error)) return;
+      const message = offerCodeFailureMessage(error);
+      if (!message) return;
       setNotice({
         tone: 'error',
-        message: offerCodeFailureMessage(error) || 'Something went wrong. Try again.'
+        message
       });
     } finally {
       if (!unlocked) setBusy(false);

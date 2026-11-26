@@ -37,24 +37,51 @@ public class OfferCodeRedemptionPlugin: CAPPlugin, CAPBridgedPlugin {
         call.resolve(["presented": true])
     }
 
+    private let invalidCodeMessage = "That offer code isn't valid or isn't active yet. Double-check the code or try again later."
+
     private func offerCodeRejection(_ error: Error) -> (message: String, code: String) {
         let nsError = error as NSError
-        let description = nsError.localizedDescription
-        if isInvalidOrInactiveCode(domain: nsError.domain, code: nsError.code, description: description) {
-            return (
-                "That offer code isn't valid or isn't active yet. Double-check the code or try again later.",
-                "INVALID_OFFER_CODE"
-            )
+        let description = collectedDescription(nsError)
+        if isInvalidOrInactiveCode(domain: nsError.domain, code: nsError.code, description: description)
+            || underlyingInvalid(nsError) {
+            return (invalidCodeMessage, "INVALID_OFFER_CODE")
         }
-        if isUserCancellation(domain: nsError.domain, code: nsError.code, description: description) {
+        if isUserCancellation(domain: nsError.domain, code: nsError.code, description: nsError.localizedDescription) {
             return ("Offer code redemption was cancelled.", "1")
         }
         if description.range(of: "SKInternalErrorDomain", options: .caseInsensitive) != nil
             || description.range(of: "SKErrorDomain", options: .caseInsensitive) != nil {
+            if description.range(of: #"\b12\b"#, options: .regularExpression) != nil {
+                return (invalidCodeMessage, "INVALID_OFFER_CODE")
+            }
             return ("Offer code redemption could not be completed. Try again.", "OFFER_UNAVAILABLE")
         }
-        let text = description.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = nsError.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.range(of: "SKInternalErrorDomain", options: .caseInsensitive) != nil {
+            return (invalidCodeMessage, "INVALID_OFFER_CODE")
+        }
         return (text.isEmpty ? "Offer code redemption could not open." : text, String(nsError.code))
+    }
+
+    private func collectedDescription(_ error: NSError) -> String {
+        var parts = [error.localizedDescription, error.domain, String(error.code)]
+        if let underlying = error.userInfo[NSUnderlyingErrorKey] as? NSError, underlying !== error {
+            parts.append(underlying.localizedDescription)
+            parts.append(underlying.domain)
+            parts.append(String(underlying.code))
+        }
+        return parts.joined(separator: " ")
+    }
+
+    private func underlyingInvalid(_ error: NSError) -> Bool {
+        guard let underlying = error.userInfo[NSUnderlyingErrorKey] as? NSError, underlying !== error else {
+            return false
+        }
+        return isInvalidOrInactiveCode(
+            domain: underlying.domain,
+            code: underlying.code,
+            description: underlying.localizedDescription
+        )
     }
 
     private func isInvalidOrInactiveCode(domain: String, code: Int, description: String) -> Bool {

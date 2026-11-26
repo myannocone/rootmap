@@ -4,6 +4,7 @@ import { Capacitor } from '@capacitor/core';
 import RootMapLogo from './Logo';
 import LeagueAccessActions from './LeagueAccessActions';
 import { SITE_ORIGIN } from '../utils/siteOrigin';
+import { isOfferCodeCancellation, offerCodeFailureMessage, publicOfferCodeNotice } from '../utils/offerCodeErrors';
 
 const PACKAGE_SPECS = [
   {
@@ -97,20 +98,13 @@ export default function ProPaywall({
     try {
       const result = await action();
       if (result?.isPro) return;
-      if (result?.status === 'cancelled') {
-        setNotice(null);
-        return;
-      }
-      if (result?.message) {
-        setNotice({
-          tone: result.status === 'error' ? 'error' : 'info',
-          message: result.message
-        });
-      }
+      const next = publicOfferCodeNotice(result);
+      if (next) setNotice(next);
     } catch (error) {
+      if (isOfferCodeCancellation(error)) return;
       setNotice({
         tone: 'error',
-        message: error?.message || 'Something went wrong. Try again.'
+        message: offerCodeFailureMessage(error) || 'Something went wrong. Try again.'
       });
     } finally {
       setBusy('');
