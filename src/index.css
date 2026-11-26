@@ -129,36 +129,54 @@ body {
   animation: rootmap-jump-pulse 1.8s ease-in-out infinite;
 }
 
-@keyframes rootmap-doubledown-for {
+@keyframes rootmap-breathe-emerald {
   0%, 100% {
     transform: scale(1);
     box-shadow:
-      0 0 0 0 rgba(16, 185, 129, 0.2),
-      0 0 8px 0 rgba(16, 185, 129, 0.4);
+      0 0 0 1px rgba(16, 185, 129, 0.22),
+      0 0 12px 2px rgba(16, 185, 129, 0.22);
   }
   50% {
-    transform: scale(1.14);
+    transform: scale(1.015);
     box-shadow:
-      0 0 0 6px rgba(16, 185, 129, 0.5),
-      0 0 22px 6px rgba(16, 185, 129, 0.95);
+      0 0 0 3px rgba(16, 185, 129, 0.28),
+      0 0 16px 4px rgba(16, 185, 129, 0.28);
   }
 }
 
-@keyframes rootmap-doubledown-against {
+@keyframes rootmap-breathe-crimson {
   0%, 100% {
     transform: scale(1);
     box-shadow:
-      0 0 0 0 rgba(225, 29, 72, 0.2),
-      0 0 8px 0 rgba(225, 29, 72, 0.4);
+      0 0 0 1px rgba(244, 63, 94, 0.22),
+      0 0 12px 2px rgba(244, 63, 94, 0.22);
   }
   50% {
-    transform: scale(1.14);
+    transform: scale(1.015);
     box-shadow:
-      0 0 0 6px rgba(225, 29, 72, 0.5),
-      0 0 22px 6px rgba(225, 29, 72, 0.95);
+      0 0 0 3px rgba(244, 63, 94, 0.28),
+      0 0 16px 4px rgba(244, 63, 94, 0.28);
   }
 }
 
+@keyframes rootmap-breathe-conflict {
+  0%, 100% {
+    transform: scale(1);
+    box-shadow:
+      0 0 0 1px rgba(245, 158, 11, 0.22),
+      0 0 12px 2px rgba(167, 139, 250, 0.22);
+  }
+  50% {
+    transform: scale(1.015);
+    box-shadow:
+      0 0 0 3px rgba(245, 158, 11, 0.28),
+      0 0 16px 4px rgba(139, 92, 246, 0.28);
+  }
+}
+
+.rootmap-glow-emerald,
+.rootmap-glow-crimson,
+.rootmap-glow-conflict,
 .rootmap-doubledown-for,
 .rootmap-doubledown-against {
   position: relative;
@@ -167,12 +185,18 @@ body {
   will-change: transform, box-shadow;
 }
 
+.rootmap-glow-emerald,
 .rootmap-doubledown-for {
-  animation: rootmap-doubledown-for 1.35s ease-in-out infinite;
+  animation: rootmap-breathe-emerald 3s ease-in-out infinite;
 }
 
+.rootmap-glow-crimson,
 .rootmap-doubledown-against {
-  animation: rootmap-doubledown-against 1.35s ease-in-out infinite;
+  animation: rootmap-breathe-crimson 3s ease-in-out infinite;
+}
+
+.rootmap-glow-conflict {
+  animation: rootmap-breathe-conflict 3s ease-in-out infinite;
 }
 
 .rootmap-filter-tray {
@@ -290,6 +314,9 @@ svg.rootmap-spin {
   .rootmap-float-delta,
   .rootmap-game-flash,
   .rootmap-jump-pulse,
+  .rootmap-glow-emerald,
+  .rootmap-glow-crimson,
+  .rootmap-glow-conflict,
   .rootmap-doubledown-for,
   .rootmap-doubledown-against,
   .rootmap-view-slide-left,
@@ -304,16 +331,24 @@ svg.rootmap-spin {
     opacity: 1;
   }
 
+  .rootmap-glow-emerald,
   .rootmap-doubledown-for {
     box-shadow:
-      0 0 0 2px rgba(16, 185, 129, 0.35),
-      0 0 10px 1px rgba(16, 185, 129, 0.45);
+      0 0 0 2px rgba(16, 185, 129, 0.25),
+      0 0 12px 2px rgba(16, 185, 129, 0.25);
   }
 
+  .rootmap-glow-crimson,
   .rootmap-doubledown-against {
     box-shadow:
-      0 0 0 2px rgba(225, 29, 72, 0.35),
-      0 0 10px 1px rgba(225, 29, 72, 0.45);
+      0 0 0 2px rgba(244, 63, 94, 0.25),
+      0 0 12px 2px rgba(244, 63, 94, 0.25);
+  }
+
+  .rootmap-glow-conflict {
+    box-shadow:
+      0 0 0 2px rgba(245, 158, 11, 0.25),
+      0 0 12px 2px rgba(139, 92, 246, 0.25);
   }
 
   .rootmap-filter-tray,

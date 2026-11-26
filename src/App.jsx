@@ -27,6 +27,7 @@ import {
   sleeperTeamIndexFrom
 } from './utils/playerTeam';
 import { cleanYahooPlayerName, parseYahooMatchupText } from './utils/yahooPaste';
+import { sharePlayerBragCard } from './utils/shareCardGenerator';
 import {
   fetchNflState,
   fetchSleeperLiveScores,
@@ -1811,6 +1812,45 @@ function rosterCardSurface(isLight, isLive, isConflict, isHovered, inRedZone, ze
     : `${zone} border border-emerald-500/45 border-l-[3px] border-l-emerald-400 bg-emerald-950/50 hover:border-emerald-400 ${isHovered ? 'shadow-md' : 'shadow-sm'}`;
 }
 
+function PlayerShareButton({ player, isLight, compact = false }) {
+  const [sharing, setSharing] = useState(false);
+  const lockRef = useRef(false);
+  const onShare = async (event) => {
+    event.stopPropagation();
+    event.preventDefault();
+    if (lockRef.current) return;
+    lockRef.current = true;
+    setSharing(true);
+    try {
+      await sharePlayerBragCard(player);
+    } catch {
+      // Cancellation is ignored inside the share helper. Other failures re-enable the button.
+    } finally {
+      lockRef.current = false;
+      setSharing(false);
+    }
+  };
+  return (
+    <button
+      type="button"
+      disabled={sharing}
+      aria-busy={sharing}
+      aria-label={`Share ${player?.name || 'player'} card`}
+      onClick={onShare}
+      onPointerDown={(event) => event.stopPropagation()}
+      className={`shrink-0 inline-flex items-center justify-center rounded-full border font-black tracking-wide touch-manipulation disabled:opacity-40 ${
+        compact ? 'min-h-7 px-2 text-[10px]' : 'min-h-11 px-3.5 text-[11px]'
+      } ${
+        isLight
+          ? 'border-slate-300 bg-white text-slate-700'
+          : 'border-slate-600 bg-slate-950 text-slate-100'
+      }`}
+    >
+      {sharing ? 'Sharing' : 'Share'}
+    </button>
+  );
+}
+
 function RosterCard({
   player,
   side,
@@ -1845,7 +1885,7 @@ function RosterCard({
   // Keep Double Down / Cross Fire badges; hide plain Root For / Root Against on single-league cards.
   const footerStance = isConflict
     ? (
-      <span className={`inline-flex items-center rounded-full px-1.5 py-0.5 text-[8px] font-black tracking-wide ${
+      <span className={`rootmap-glow-conflict inline-flex items-center rounded-full px-1.5 py-0.5 text-[8px] font-black tracking-wide ${
         isLight ? 'bg-gradient-to-r from-emerald-100 to-rose-100 text-slate-800' : 'bg-gradient-to-r from-emerald-950 to-rose-950 text-slate-100'
       }`}>
         ⚡ {forCount} FOR • {againstCount} AGAINST
@@ -1853,7 +1893,7 @@ function RosterCard({
     )
     : isDoubleFor
       ? (
-        <span className={`rootmap-doubledown-for inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[8px] font-bold tracking-wide ${
+        <span className={`rootmap-glow-emerald rootmap-doubledown-for inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[8px] font-bold tracking-wide ${
           isLight
             ? 'bg-emerald-500/20 border-emerald-500 text-emerald-800'
             : 'bg-emerald-500/25 border-emerald-400 text-emerald-200'
@@ -1863,7 +1903,7 @@ function RosterCard({
       )
       : isDoubleAgainst
         ? (
-          <span className={`rootmap-doubledown-against inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[8px] font-bold tracking-wide ${
+          <span className={`rootmap-glow-crimson rootmap-doubledown-against inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[8px] font-bold tracking-wide ${
             isLight
               ? 'bg-rose-500/20 border-rose-500 text-rose-800'
               : 'bg-rose-500/25 border-rose-400 text-rose-200'
@@ -1956,10 +1996,13 @@ function RosterCard({
           ? isLight ? 'border-rose-100' : 'border-rose-900/50'
           : isLight ? 'border-emerald-100' : 'border-emerald-900/50'
       }`}>
-        <span className={`text-[9px] font-black uppercase tracking-wide tabular-nums ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+        <span className={`text-[9px] font-black uppercase tracking-wide tabular-nums whitespace-nowrap ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
           {leagueCount} {leagueCount === 1 ? 'LEAGUE' : 'LEAGUES'}
         </span>
         {footerStance ? <div className="min-w-0 shrink text-right">{footerStance}</div> : null}
+      </div>
+      <div className="mt-1 flex justify-end">
+        <PlayerShareButton player={player} isLight={isLight} compact />
       </div>
     </div>
   );
@@ -2070,7 +2113,7 @@ function SlateExposureBadge({ exposure, isLight }) {
   const { kind, label } = exposure;
   if (kind === 'conflict') {
     return (
-      <span className={`rounded-full border px-1.5 py-0.5 text-[8px] font-black uppercase tracking-wide whitespace-nowrap ${
+      <span className={`rootmap-glow-conflict rounded-full border px-1.5 py-0.5 text-[8px] font-black uppercase tracking-wide whitespace-nowrap ${
         isLight ? 'bg-amber-100 text-amber-800 border-amber-300' : 'bg-amber-950 text-amber-300 border-amber-700'
       }`}>
         ⚡ CONFLICT
@@ -2079,7 +2122,7 @@ function SlateExposureBadge({ exposure, isLight }) {
   }
   if (kind === 'multiFor') {
     return (
-      <span className={`rootmap-doubledown-for inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[8px] font-black tracking-wide whitespace-nowrap ${
+      <span className={`rootmap-glow-emerald rootmap-doubledown-for inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[8px] font-black tracking-wide whitespace-nowrap ${
         isLight
           ? 'bg-emerald-500/20 border-emerald-500 text-emerald-800'
           : 'bg-emerald-500/25 border-emerald-400 text-emerald-200'
@@ -2090,7 +2133,7 @@ function SlateExposureBadge({ exposure, isLight }) {
   }
   if (kind === 'multiAgainst') {
     return (
-      <span className={`rootmap-doubledown-against inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[8px] font-black tracking-wide whitespace-nowrap ${
+      <span className={`rootmap-glow-crimson rootmap-doubledown-against inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[8px] font-black tracking-wide whitespace-nowrap ${
         isLight
           ? 'bg-rose-500/20 border-rose-500 text-rose-800'
           : 'bg-rose-500/25 border-rose-400 text-rose-200'
@@ -5605,6 +5648,7 @@ export default function App() {
                                   layout="compact"
                                 />
                                 <SlateExposureBadge exposure={exposure} isLight={isLight} />
+                                <PlayerShareButton player={player} isLight={isLight} compact />
                               </div>
                             </div>
                           </div>
@@ -5845,14 +5889,17 @@ export default function App() {
                   <span className="font-mono">{drawerPlayer.gameClock}</span>
                 </div>
               </div>
-              <button
-                onClick={() => setSelectedPlayer(null)}
-                className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm ${
-                  isLight ? 'bg-slate-100 text-slate-500 hover:bg-slate-200' : 'bg-slate-800 text-slate-400'
-                }`}
-              >
-                ✕
-              </button>
+              <div className="flex items-center gap-2 shrink-0">
+                <PlayerShareButton player={drawerPlayer || selectedPlayer} isLight={isLight} />
+                <button
+                  onClick={() => setSelectedPlayer(null)}
+                  className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm ${
+                    isLight ? 'bg-slate-100 text-slate-500 hover:bg-slate-200' : 'bg-slate-800 text-slate-400'
+                  }`}
+                >
+                  ✕
+                </button>
+              </div>
             </div>
 
             <div className={`p-3 rounded-xl border flex justify-between items-center text-xs ${
