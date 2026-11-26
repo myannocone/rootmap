@@ -2,8 +2,11 @@ import { playerPosTeamLabel } from './playerIdentity.js';
 import { canonTeamCode, normalizePlayerMatchName } from './playerTeam.js';
 import { cleanYahooPlayerName } from './yahooPaste.js';
 
-const CARD_WIDTH = 1080;
-const CARD_HEIGHT = 1350;
+const DESIGN_WIDTH = 1080;
+const DESIGN_HEIGHT = 1350;
+const CARD_SCALE = 2;
+const CARD_WIDTH = DESIGN_WIDTH * CARD_SCALE;
+const CARD_HEIGHT = DESIGN_HEIGHT * CARD_SCALE;
 const FONT = 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif';
 
 const EMERALD = '#10B981';
@@ -137,15 +140,29 @@ function scoreView(player) {
     ?? finiteNumber(player?.projected);
   const bye = Boolean(player?.isBye || player?.gameStatus === 'BYE');
   const live = !bye && (player?.gameStatus === 'IN_PROGRESS' || Boolean(player?.isLive) || clockIsLive(player?.gameClock));
-  const finalGame = !bye && player?.gameStatus === 'FINAL';
+  const finalGame = !bye && (player?.gameStatus === 'FINAL' || Boolean(player?.isFinal));
+  const started = !bye && (live || finalGame);
   const proj = explicitProj != null
     ? explicitProj
-    : (actual == null && stored != null && stored !== 0 ? stored : null);
-  const hasActual = actual != null && (live || finalGame || actual !== 0);
-  const pregameValue = proj != null ? proj : (stored != null && stored !== 0 ? stored : null);
-  const shown = hasActual ? actual : (live ? 0 : (pregameValue ?? 0));
-  const delta = hasActual && proj != null ? actual - proj : null;
-  return { live, bye, final: finalGame, shown, proj, delta, hasActual };
+    : (!started && stored != null && stored !== 0 ? stored : (started ? explicitProj : null));
+  if (!started) {
+    return {
+      live: false,
+      bye,
+      final: false,
+      pregame: true,
+      shown: proj ?? 0,
+      proj,
+      delta: null,
+      hasActual: false
+    };
+  }
+  const pointsAreProjection = stored != null && proj != null && stored === proj;
+  const shown = actual != null
+    ? actual
+    : (!pointsAreProjection && stored != null ? stored : 0);
+  const delta = proj != null ? shown - proj : null;
+  return { live, bye, final: finalGame, pregame: false, shown, proj, delta, hasActual: true };
 }
 
 function cardStatus(player) {
@@ -153,7 +170,7 @@ function cardStatus(player) {
   const { delta } = scoreView(player);
   const { forCount, againstCount } = exposure;
   if (forCount >= 1 && againstCount >= 1) {
-    return { key: 'conflict', color: AMBER, badge: 'CONFLICT', exposure };
+    return { key: 'conflict', color: AMBER, badge: 'CONFLICTED', exposure };
   }
   if (againstCount >= 2 && forCount === 0) {
     return { key: 'against', color: CRIMSON, badge: `${againstCount}X AGAINST`, exposure };
@@ -328,41 +345,39 @@ function drawWordmark(ctx, x, y, size, align = 'left') {
   return rootW + mapW;
 }
 
-function drawLogoFallback(ctx, x, y) {
-  const tile = 92;
-  roundRectPath(ctx, x, y, tile, tile, 22);
-  const fill = ctx.createLinearGradient(x, y, x, y + tile);
-  fill.addColorStop(0, '#34D399');
-  fill.addColorStop(1, '#047857');
-  ctx.fillStyle = fill;
-  ctx.fill();
+function drawMarkTile(ctx, logo, x, y, size) {
+  ctx.save();
+  roundRectPath(ctx, x, y, size, size, 22);
+  ctx.clip();
+  if (logo) {
+    // logo.png bakes a second "RootMap" wordmark into the bottom band. Crop it off
+    // so the header mark does not repeat that tiny text inside the icon.
+    const cropH = Math.max(1, logo.height * 0.74);
+    ctx.drawImage(logo, 0, 0, logo.width, cropH, x, y, size, size);
+  } else {
+    const fill = ctx.createLinearGradient(x, y, x, y + size);
+    fill.addColorStop(0, '#34D399');
+    fill.addColorStop(1, '#047857');
+    ctx.fillStyle = fill;
+    ctx.fillRect(x, y, size, size);
+    ctx.fillStyle = '#FFFFFF';
+    ctx.font = `900 ${Math.round(size * 0.58)}px ${FONT}`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('R', x + size / 2, y + size / 2 + 2);
+  }
+  ctx.restore();
+  roundRectPath(ctx, x, y, size, size, 22);
   ctx.lineWidth = 2;
-  ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+  ctx.strokeStyle = 'rgba(255,255,255,0.28)';
   ctx.stroke();
-  ctx.fillStyle = '#FFFFFF';
-  ctx.font = `900 58px ${FONT}`;
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText('R', x + tile / 2, y + tile / 2 + 2);
-  drawWordmark(ctx, x + tile + 18, y + tile / 2, 40, 'left');
 }
 
-function drawLogo(ctx, logo, x, y, size) {
-  if (!logo) {
-    drawLogoFallback(ctx, x, y + 8);
-    return;
-  }
-  ctx.save();
-  roundRectPath(ctx, x, y, size, size, 28);
-  ctx.clip();
-  drawImageCover(ctx, logo, x, y, size, size, false);
-  ctx.restore();
-  ctx.save();
-  roundRectPath(ctx, x, y, size, size, 28);
-  ctx.lineWidth = 2;
-  ctx.strokeStyle = 'rgba(255,255,255,0.16)';
-  ctx.stroke();
-  ctx.restore();
+function drawHeaderLockup(ctx, logo, x, y) {
+  const size = 96;
+  drawMarkTile(ctx, logo, x, y, size);
+  drawWordmark(ctx, x + size + 16, y + size / 2, 34, 'left');
+  return size;
 }
 
 function drawBadge(ctx, text, color, right, cy) {
@@ -444,6 +459,7 @@ function wrapName(ctx, name, maxWidth) {
 }
 
 function pillParts(view) {
+  if (view.pregame) return [{ text: 'PRE-GAME PROJECTION', color: '#E2E8F0' }];
   const parts = [];
   if (view.proj != null && view.delta != null) {
     parts.push({ text: `PROJ ${formatPoints(view.proj)}`, color: '#E2E8F0' });
@@ -453,11 +469,9 @@ function pillParts(view) {
     });
     return parts;
   }
-  if (view.proj != null && view.hasActual) {
-    return [{ text: `PROJ ${formatPoints(view.proj)}`, color: '#E2E8F0' }];
-  }
-  if (!view.hasActual && view.proj != null) return [{ text: 'PROJECTED', color: '#E2E8F0' }];
-  return [{ text: view.live ? 'LIVE' : view.final ? 'FINAL' : 'PROJ', color: '#E2E8F0' }];
+  if (view.live) return [{ text: 'LIVE', color: EMERALD }];
+  if (view.final) return [{ text: 'FINAL', color: '#E2E8F0' }];
+  return [{ text: 'LIVE', color: '#E2E8F0' }];
 }
 
 function drawDeltaPill(ctx, view, cx, y) {
@@ -605,16 +619,31 @@ function drawSlab(ctx, box, color) {
   ctx.restore();
 
   ctx.save();
-  const inset = 8;
-  roundRectPath(ctx, x + inset, y + inset, w - inset * 2, h - inset * 2, r - 8);
+  roundRectPath(ctx, x + 3, y + 3, w - 6, h - 6, Math.max(8, r - 3));
+  ctx.strokeStyle = 'rgba(255,255,255,0.28)';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.restore();
+
+  ctx.save();
+  const inset = 10;
+  roundRectPath(ctx, x + inset, y + inset, w - inset * 2, h - inset * 2, Math.max(8, r - inset));
   const metal = ctx.createLinearGradient(x, y, x + w, y + h);
   metal.addColorStop(0, 'rgba(255,255,255,0.92)');
-  metal.addColorStop(0.16, color);
-  metal.addColorStop(0.48, shadeColor(color, -48));
-  metal.addColorStop(0.8, color);
-  metal.addColorStop(1, 'rgba(255,255,255,0.72)');
+  metal.addColorStop(0.18, color);
+  metal.addColorStop(0.5, shadeColor(color, -70));
+  metal.addColorStop(0.82, color);
+  metal.addColorStop(1, 'rgba(255,255,255,0.55)');
   ctx.strokeStyle = metal;
-  ctx.lineWidth = 11;
+  ctx.lineWidth = 12;
+  ctx.stroke();
+  ctx.restore();
+
+  ctx.save();
+  const lip = 22;
+  roundRectPath(ctx, x + lip, y + lip, w - lip * 2, h - lip * 2, Math.max(8, r - lip));
+  ctx.strokeStyle = 'rgba(0,0,0,0.55)';
+  ctx.lineWidth = 5;
   ctx.stroke();
   ctx.restore();
 }
@@ -637,21 +666,21 @@ function paintCard(player, assets) {
   const ctx = canvas.getContext('2d');
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = 'high';
+  ctx.scale(CARD_SCALE, CARD_SCALE);
 
   const status = cardStatus(player);
   const view = scoreView(player);
   const box = { x: 36, y: 36, w: 1008, h: 1278, r: 56 };
   drawSlab(ctx, box, status.color);
 
-  const logoSize = 132;
   const logoX = box.x + 40;
   const logoY = box.y + 36;
-  drawLogo(ctx, assets.logo, logoX, logoY, logoSize);
+  const logoSize = drawHeaderLockup(ctx, assets.logo, logoX, logoY);
   drawBadge(ctx, status.badge, status.color, box.x + box.w - 40, logoY + logoSize / 2);
 
-  const avatarR = 118;
-  const cx = CARD_WIDTH / 2;
-  const cy = logoY + logoSize + 28 + avatarR;
+  const avatarR = 156;
+  const cx = DESIGN_WIDTH / 2;
+  const cy = logoY + logoSize + 22 + avatarR;
   drawHeadshot(ctx, player, assets.headshot, cx, cy, avatarR, status.color);
 
   let y = cy + avatarR + 64;
@@ -665,8 +694,8 @@ function paintCard(player, assets) {
     y = drawCenteredLines(ctx, [subline], cx, y + 8, 36, '#94A3B8');
   }
 
-  const score = formatPoints(view.shown);
-  const caption = view.hasActual ? 'PTS' : 'PROJ';
+  const score = view.pregame && view.proj == null ? '—' : formatPoints(view.shown);
+  const caption = view.pregame ? 'PROJ' : 'PTS';
   ctx.font = `900 108px ${FONT}`;
   const scoreW = ctx.measureText(score).width;
   ctx.font = `800 28px ${FONT}`;
@@ -694,8 +723,8 @@ function canvasToPng(canvas) {
 }
 
 /**
- * 1080×1350 (4:5) trading-card PNG for a player.
- * Headshot and the bundled RootMap logo load with crossOrigin anonymous
+ * 2160×2700 (4:5 Retina) trading-card PNG for a player.
+ * Headshot and the bundled RootMap mark load with crossOrigin anonymous
  * and fall back to initials / a monogram when the image is blocked.
  */
 export async function renderPlayerBragCardDataUrl(player) {

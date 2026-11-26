@@ -1,5 +1,14 @@
 export const OFFER_CODE_INVALID_MESSAGE = "That offer code isn't valid or isn't active yet. Double-check the code or try again later.";
 
+function nestedText(error) {
+  const nested = [error?.cause, error?.underlyingError, error?.userInfo?.NSUnderlyingError];
+  return nested.map((item) => {
+    if (!item) return '';
+    if (typeof item === 'string') return item;
+    return `${item.domain || ''} ${item.code ?? ''} ${item.message || item.localizedDescription || ''}`;
+  }).filter(Boolean).join(' ');
+}
+
 function errorParts(error) {
   if (!error) return { message: '', code: '', domain: '' };
   if (typeof error === 'string') return { message: error, code: '', domain: '' };
@@ -7,7 +16,8 @@ function errorParts(error) {
     error.message,
     error.underlyingErrorMessage,
     error.localizedDescription,
-    error.userInfo?.NSLocalizedDescription
+    error.userInfo?.NSLocalizedDescription,
+    nestedText(error)
   ].filter((part) => typeof part === 'string' && part.trim()).join(' ');
   const code = String(error.code ?? error.errorCode ?? '');
   const domain = String(error.domain || error.userInfo?.NSErrorDomain || '');
@@ -46,10 +56,30 @@ export function isOfferCodeCancellation(error) {
 }
 
 export function offerCodeFailureMessage(error) {
+  if (isOfferCodeCancellation(error)) return '';
   if (isInvalidOfferCodeError(error)) return OFFER_CODE_INVALID_MESSAGE;
   const { message } = errorParts(error);
+  if (/skinternalerrordomain/i.test(message) && /\b12\b/.test(message)) return OFFER_CODE_INVALID_MESSAGE;
   if (/SKInternalErrorDomain|SKErrorDomain/i.test(message)) {
     return 'Offer code redemption could not be completed. Try again.';
   }
   return message;
+}
+
+/** Banner copy for an offer-code result. Cancellations return null so the UI stays quiet. */
+export function publicOfferCodeNotice(result) {
+  if (!result || result.status === 'cancelled') return null;
+  const raw = typeof result === 'string' ? result : String(result.message || '');
+  if (!raw.trim()) return null;
+  if (result.status !== 'pending' && isOfferCodeCancellation(raw)) return null;
+  if (isInvalidOfferCodeError(raw) || /skinternalerrordomain/i.test(raw)) {
+    return { tone: 'error', message: OFFER_CODE_INVALID_MESSAGE };
+  }
+  if (/skerrordomain/i.test(raw)) {
+    return { tone: 'error', message: 'Offer code redemption could not be completed. Try again.' };
+  }
+  return {
+    tone: result.status === 'error' ? 'error' : 'info',
+    message: raw
+  };
 }

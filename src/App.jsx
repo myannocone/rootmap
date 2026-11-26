@@ -19,7 +19,7 @@ import {
   starterWeekProjection,
   sumListedStarterProjections
 } from './utils/matchupLineup';
-import { compareGamesByKickoff, compareSlateGamePlayers, kickoffMillis } from './utils/slateGameOrder';
+import { compareSlateGamePlayers, kickoffMillis, sortGamesByKickoff } from './utils/slateGameOrder';
 import {
   backfillPlayerTeam,
   canonTeamCode,
@@ -537,7 +537,7 @@ function MatchupPointFigure({ player, isLight }) {
   if (!kickedOff) {
     const proj = starterProjectionValue(player);
     return (
-      <span className={`inline-flex shrink-0 items-center gap-1 text-[9px] font-bold tabular-nums ${isLight ? 'text-slate-400' : 'text-slate-500'}`}>
+      <span data-point-state="proj" className={`inline-flex shrink-0 items-center gap-1 whitespace-nowrap text-[9px] font-bold tabular-nums ${isLight ? 'text-slate-400' : 'text-slate-500'}`}>
         <span>{proj == null ? '—' : scoreText(proj)}</span>
         <span className={`rounded px-1 py-px text-[7px] font-black tracking-wider ${isLight ? 'bg-slate-200 text-slate-500' : 'bg-slate-800 text-slate-400'}`}>
           PROJ
@@ -549,7 +549,7 @@ function MatchupPointFigure({ player, isLight }) {
   const finalGame = !live && starterIsFinal(player);
   const status = live ? 'LIVE' : finalGame ? 'FINAL' : null;
   return (
-    <span className={`inline-flex shrink-0 items-center gap-1 text-[10px] font-black tabular-nums ${isLight ? 'text-slate-950' : 'text-white'}`}>
+    <span data-point-state={live ? 'live' : 'final'} className={`inline-flex shrink-0 items-center gap-1 whitespace-nowrap text-[10px] font-black tabular-nums ${isLight ? 'text-slate-950' : 'text-white'}`}>
       <span>{scoreText(starterRealGamePoints(player))}</span>
       {status ? (
         <span className={`rounded px-1 py-px text-[7px] font-black tracking-wider ${
@@ -684,8 +684,8 @@ function LeagueScoreboard({ league, isLight, onRemove }) {
           {teamSeasonDetail(record, rank)}
         </div>
       ) : null}
-      <div className={`font-black text-3xl leading-none tabular-nums tracking-tight ${scoreClass(leading)}`}>
-        {scoreText(score)}
+      <div data-score-source="actual" className={`font-black text-3xl leading-none tabular-nums tracking-tight ${scoreClass(leading)}`}>
+        {matchupHeaderScore(score)}
       </div>
     </div>
   );
@@ -744,6 +744,13 @@ function scoreText(value) {
   if (number == null) return '—';
   const hundredths = number.toFixed(2);
   return hundredths.endsWith('0') ? number.toFixed(1) : hundredths;
+}
+
+/** Matchup header: real points only. A week that has not kicked off is 0.00, never a projection. */
+function matchupHeaderScore(value) {
+  const number = finiteNumber(value) ?? 0;
+  if (!number) return '0.00';
+  return scoreText(number);
 }
 
 function cleanListedPlayer(player) {
@@ -1712,21 +1719,16 @@ function LivePoints({ player, isLight, tone = 'for', layout = 'inline', onScoreJ
     const scoreLabel = view.bye ? 'BYE' : (view.live || view.final) ? 'PTS' : 'PROJ';
     const mainShown = preGame && view.proj != null ? view.proj : view.shown;
     const showDash = Boolean(view.bye || view.unknownProj || (preGame && view.proj == null && !(mainShown > 0)));
-    const projLine = (view.live || view.final) && view.proj != null
-      ? (deltaText ? `Proj ${view.proj.toFixed(1)} (${deltaText})` : `Proj ${view.proj.toFixed(1)}`)
-      : null;
     return (
-      <div className="relative text-right shrink-0 leading-none min-w-0">
+      <div className="relative shrink-0 text-right leading-none min-w-0">
         {floatNode}
-        <div className={`font-black tabular-nums text-[15px] tracking-tight ${color} ${scorePop ? 'rootmap-score-pop' : ''}`}>
+        <div className={`whitespace-nowrap font-black tabular-nums text-[15px] leading-none tracking-tight ${color} ${scorePop ? 'rootmap-score-pop' : ''}`}>
           {showDash ? '—' : mainShown.toFixed(1)}
           <span className={`ml-0.5 text-[9px] font-black uppercase ${muted}`}>{scoreLabel}</span>
+          {(view.live || view.final) && deltaText ? (
+            <span className={`ml-1 text-[9px] font-black ${deltaColor}`}>{deltaText}</span>
+          ) : null}
         </div>
-        {projLine && (
-          <div className={`mt-0.5 text-[10px] font-semibold tabular-nums leading-tight ${muted}`}>
-            {projLine}
-          </div>
-        )}
       </div>
     );
   }
@@ -1776,8 +1778,8 @@ function LivePoints({ player, isLight, tone = 'for', layout = 'inline', onScoreJ
 function rosterCardSurface(isLight, isLive, isConflict, isHovered, inRedZone, zeroProj, side = 'for', isDoubleDown = false) {
   if (zeroProj && !isLive) {
     return isLight
-      ? 'border border-rose-500 bg-amber-50 ring-2 ring-inset ring-amber-400 shadow-sm'
-      : 'border border-rose-400 bg-rose-950/40 ring-2 ring-inset ring-amber-400 shadow-sm';
+      ? 'border-2 border-rose-500 bg-amber-50 ring-2 ring-inset ring-amber-400 shadow-sm'
+      : 'border-2 border-rose-400 bg-rose-950/40 ring-2 ring-inset ring-amber-400 shadow-sm';
   }
   const zone = inRedZone ? 'rootmap-redzone' : '';
   if (isConflict) {
@@ -1785,12 +1787,12 @@ function rosterCardSurface(isLight, isLive, isConflict, isHovered, inRedZone, ze
     const accent = side === 'against' ? 'border-l-[3px] border-l-rose-500' : 'border-l-[3px] border-l-emerald-500';
     if (isLive) {
       return isLight
-        ? `${pulse} ${accent} border border-violet-600 bg-violet-50 ring-2 ring-inset ring-violet-500 ${isHovered ? 'shadow-md' : 'shadow-sm'}`
-        : `${pulse} ${accent} border border-violet-300 bg-violet-950/50 ring-2 ring-inset ring-violet-300 ${isHovered ? 'shadow-md' : 'shadow-sm'}`;
+        ? `${pulse} ${accent} border-2 border-violet-600 bg-violet-50 ring-2 ring-inset ring-violet-500 ${isHovered ? 'shadow-md' : 'shadow-sm'}`
+        : `${pulse} ${accent} border-2 border-violet-300 bg-violet-950/50 ring-2 ring-inset ring-violet-300 ${isHovered ? 'shadow-md' : 'shadow-sm'}`;
     }
     return isLight
-      ? `${pulse} ${accent} border border-violet-500 bg-violet-50 ring-2 ring-violet-400 ${isHovered ? 'shadow-md' : 'shadow-sm'}`
-      : `${pulse} ${accent} border border-violet-400 bg-violet-950/40 ring-2 ring-violet-400 ${isHovered ? 'shadow-md' : 'shadow-sm'}`;
+      ? `${pulse} ${accent} border-2 border-violet-500 bg-violet-50 ring-2 ring-violet-400 ${isHovered ? 'shadow-md' : 'shadow-sm'}`
+      : `${pulse} ${accent} border-2 border-violet-400 bg-violet-950/40 ring-2 ring-violet-400 ${isHovered ? 'shadow-md' : 'shadow-sm'}`;
   }
   if (isDoubleDown && side === 'against') {
     return isLight
@@ -1804,17 +1806,28 @@ function rosterCardSurface(isLight, isLive, isConflict, isHovered, inRedZone, ze
   }
   if (side === 'against') {
     return isLight
-      ? `${zone} border border-rose-300 border-l-[3px] border-l-rose-500 bg-rose-50/95 hover:shadow ${isHovered ? 'shadow-md' : 'shadow-sm'}`
-      : `${zone} border border-rose-500/45 border-l-[3px] border-l-rose-400 bg-rose-950/50 hover:border-rose-400 ${isHovered ? 'shadow-md' : 'shadow-sm'}`;
+      ? `${zone} border-2 border-rose-300 border-l-[3px] border-l-rose-500 bg-rose-50/95 hover:shadow ${isHovered ? 'shadow-md' : 'shadow-sm'}`
+      : `${zone} border-2 border-rose-500/45 border-l-[3px] border-l-rose-400 bg-rose-950/50 hover:border-rose-400 ${isHovered ? 'shadow-md' : 'shadow-sm'}`;
   }
   return isLight
-    ? `${zone} border border-emerald-300 border-l-[3px] border-l-emerald-500 bg-emerald-50/95 hover:shadow ${isHovered ? 'shadow-md' : 'shadow-sm'}`
-    : `${zone} border border-emerald-500/45 border-l-[3px] border-l-emerald-400 bg-emerald-950/50 hover:border-emerald-400 ${isHovered ? 'shadow-md' : 'shadow-sm'}`;
+    ? `${zone} border-2 border-emerald-300 border-l-[3px] border-l-emerald-500 bg-emerald-50/95 hover:shadow ${isHovered ? 'shadow-md' : 'shadow-sm'}`
+    : `${zone} border-2 border-emerald-500/45 border-l-[3px] border-l-emerald-400 bg-emerald-950/50 hover:border-emerald-400 ${isHovered ? 'shadow-md' : 'shadow-sm'}`;
 }
 
-function PlayerShareButton({ player, isLight, compact = false }) {
+function ShareArrowIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="M12 15.5V4.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <path d="M7.5 8.25 12 3.75 16.5 8.25" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M6.25 11.5v6.25A1.75 1.75 0 0 0 8 19.5h8a1.75 1.75 0 0 0 1.75-1.75V11.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function PlayerShareButton({ player, isLight }) {
   const [sharing, setSharing] = useState(false);
   const lockRef = useRef(false);
+  const name = player?.name || 'player';
   const onShare = async (event) => {
     event.stopPropagation();
     event.preventDefault();
@@ -1835,18 +1848,14 @@ function PlayerShareButton({ player, isLight, compact = false }) {
       type="button"
       disabled={sharing}
       aria-busy={sharing}
-      aria-label={`Share ${player?.name || 'player'} card`}
+      aria-label={sharing ? `Sharing ${name} card` : `Share ${name} card`}
       onClick={onShare}
       onPointerDown={(event) => event.stopPropagation()}
-      className={`shrink-0 inline-flex items-center justify-center rounded-full border font-black tracking-wide touch-manipulation disabled:opacity-40 ${
-        compact ? 'min-h-7 px-2 text-[10px]' : 'min-h-11 px-3.5 text-[11px]'
-      } ${
-        isLight
-          ? 'border-slate-300 bg-white text-slate-700'
-          : 'border-slate-600 bg-slate-950 text-slate-100'
+      className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md touch-manipulation disabled:opacity-40 ${
+        isLight ? 'text-slate-400 hover:text-slate-700' : 'text-slate-500 hover:text-slate-200'
       }`}
     >
-      {sharing ? 'Sharing' : 'Share'}
+      <ShareArrowIcon />
     </button>
   );
 }
@@ -1885,30 +1894,30 @@ function RosterCard({
   // Keep Double Down / Cross Fire badges; hide plain Root For / Root Against on single-league cards.
   const footerStance = isConflict
     ? (
-      <span className={`rootmap-glow-conflict inline-flex items-center rounded-full px-1.5 py-0.5 text-[8px] font-black tracking-wide ${
+      <span className={`rootmap-glow-conflict inline-flex h-[18px] items-center whitespace-nowrap rounded-full border border-transparent px-1.5 text-[8px] font-black leading-none tracking-wide ${
         isLight ? 'bg-gradient-to-r from-emerald-100 to-rose-100 text-slate-800' : 'bg-gradient-to-r from-emerald-950 to-rose-950 text-slate-100'
       }`}>
-        ⚡ {forCount} FOR • {againstCount} AGAINST
+        CONFLICTED
       </span>
     )
     : isDoubleFor
       ? (
-        <span className={`rootmap-glow-emerald rootmap-doubledown-for inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[8px] font-bold tracking-wide ${
+        <span className={`rootmap-glow-emerald rootmap-doubledown-for inline-flex h-[18px] items-center whitespace-nowrap rounded-full border px-1.5 text-[8px] font-bold leading-none tracking-wide ${
           isLight
             ? 'bg-emerald-500/20 border-emerald-500 text-emerald-800'
             : 'bg-emerald-500/25 border-emerald-400 text-emerald-200'
         }`}>
-          <span>🔥 {forCount}X FOR</span>
+          🔥 {forCount}X FOR
         </span>
       )
       : isDoubleAgainst
         ? (
-          <span className={`rootmap-glow-crimson rootmap-doubledown-against inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[8px] font-bold tracking-wide ${
+          <span className={`rootmap-glow-crimson rootmap-doubledown-against inline-flex h-[18px] items-center whitespace-nowrap rounded-full border px-1.5 text-[8px] font-bold leading-none tracking-wide ${
             isLight
               ? 'bg-rose-500/20 border-rose-500 text-rose-800'
               : 'bg-rose-500/25 border-rose-400 text-rose-200'
           }`}>
-            <span>🚨 {againstCount}X AGAINST</span>
+            🚨 {againstCount}X AGAINST
           </span>
         )
         : null;
@@ -1934,8 +1943,8 @@ function RosterCard({
           boxShadow: live ? `0 0 10px ${accent.bg}` : undefined
         }}
       />
-      <div className="flex items-start gap-2 min-w-0">
-        <div className="relative shrink-0 mt-0.5">
+      <div className="flex items-center gap-2 min-w-0">
+        <div className="relative shrink-0">
           <PlayerHeadshot key={`${player.name}-${headshotTick}`} name={player.name} team={player.nflTeam} defense={isTeamDefense(player)} size={28} />
           {hasBall && !player.inRedZone && (
             <span className="absolute -top-0.5 -right-0.5">
@@ -1944,27 +1953,21 @@ function RosterCard({
           )}
         </div>
         <div className="min-w-0 flex-1">
-          {/* Row 1: full-width name + live indicators (no score/proj squeeze) */}
-          <div className="flex items-start gap-1 min-w-0">
+          <div className="flex items-center gap-1 min-w-0">
             {live && (
-              <span className="mt-1 shrink-0">
+              <span className="shrink-0">
                 <LivePulse size={6} tone={statusTone} />
               </span>
             )}
-            <div className={`min-w-0 flex-1 font-extrabold text-[12px] leading-snug tracking-tight whitespace-normal break-normal hyphens-none ${isLight ? 'text-slate-950' : 'text-white'}`}>
+            <div className={`min-w-0 flex-1 truncate whitespace-nowrap font-extrabold text-[12px] leading-4 tracking-tight ${isLight ? 'text-slate-950' : 'text-white'}`}>
               {player.name}
             </div>
-            {timeBadge && (
-              <span className={`shrink-0 mt-0.5 px-1 py-0.5 rounded text-[7px] font-black uppercase tracking-wide tabular-nums ${
-                timeBadge === 'LIVE'
-                  ? isLight ? 'bg-emerald-100 text-emerald-700' : 'bg-emerald-950 text-emerald-300'
-                  : timeBadge === 'FINAL' || timeBadge === 'BYE'
-                    ? isLight ? 'bg-slate-100 text-slate-500' : 'bg-slate-800 text-slate-400'
-                    : isLight ? 'bg-slate-100 text-slate-600' : 'bg-slate-800 text-slate-300'
-              }`}>
-                {timeBadge}
-              </span>
-            )}
+            <PlayerShareButton player={player} isLight={isLight} />
+          </div>
+          <div className="mt-0.5 flex items-center gap-1 min-w-0">
+            <div className={`min-w-0 flex-1 truncate whitespace-nowrap text-[9px] font-bold leading-4 ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+              {timeBadge ? `${timeBadge} · ` : ''}{playerPosTeamLabel(player)}
+            </div>
             {player.inRedZone && (
               <span className="shrink-0 px-1 py-0.5 rounded text-[7px] font-black uppercase bg-rose-600 text-white tracking-wider">
                 RZ
@@ -1975,12 +1978,6 @@ function RosterCard({
                 0 PROJ
               </span>
             )}
-          </div>
-          {/* Row 2: POS • TEAM left, score + Proj differential right */}
-          <div className="mt-0.5 flex items-start justify-between gap-2 min-w-0">
-            <div className={`min-w-0 text-[9px] font-bold leading-tight whitespace-nowrap ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
-              {playerPosTeamLabel(player)}
-            </div>
             <LivePoints
               player={player}
               isLight={isLight}
@@ -1991,18 +1988,15 @@ function RosterCard({
           </div>
         </div>
       </div>
-      <div className={`mt-1 flex items-center justify-between gap-1 pt-1 border-t ${
+      <div className={`mt-1 flex h-[22px] items-center justify-between gap-1 border-t ${
         side === 'against'
           ? isLight ? 'border-rose-100' : 'border-rose-900/50'
           : isLight ? 'border-emerald-100' : 'border-emerald-900/50'
       }`}>
-        <span className={`text-[9px] font-black uppercase tracking-wide tabular-nums whitespace-nowrap ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+        <span className={`text-[9px] font-black uppercase tracking-wide tabular-nums whitespace-nowrap leading-none ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
           {leagueCount} {leagueCount === 1 ? 'LEAGUE' : 'LEAGUES'}
         </span>
-        {footerStance ? <div className="min-w-0 shrink text-right">{footerStance}</div> : null}
-      </div>
-      <div className="mt-1 flex justify-end">
-        <PlayerShareButton player={player} isLight={isLight} compact />
+        {footerStance ? <div className="shrink-0">{footerStance}</div> : null}
       </div>
     </div>
   );
@@ -2033,7 +2027,7 @@ function classifyPlayerExposure(player) {
     return {
       kind: 'conflict',
       tone: 'cross',
-      label: 'CONFLICT',
+      label: 'CONFLICTED',
       forCount,
       againstCount,
       forLeagues,
@@ -2116,7 +2110,7 @@ function SlateExposureBadge({ exposure, isLight }) {
       <span className={`rootmap-glow-conflict rounded-full border px-1.5 py-0.5 text-[8px] font-black uppercase tracking-wide whitespace-nowrap ${
         isLight ? 'bg-amber-100 text-amber-800 border-amber-300' : 'bg-amber-950 text-amber-300 border-amber-700'
       }`}>
-        ⚡ CONFLICT
+        CONFLICTED
       </span>
     );
   }
@@ -4684,20 +4678,7 @@ export default function App() {
     ).sort(compareSlateGamePlayers);
   };
 
-  const orderedGames = useMemo(() => {
-    const exposure = (game) => getGamePlayers(game).reduce(
-      (sum, player) => sum + (player.myShares || 0) + (player.oppShares || 0),
-      0
-    );
-    return [...(games || [])].sort((a, b) => {
-      const kickoffDelta = compareGamesByKickoff(a, b);
-      if (kickoffDelta) return kickoffDelta;
-      const exposureDelta = exposure(b) - exposure(a);
-      if (exposureDelta) return exposureDelta;
-      return String(a?.away || '').localeCompare(String(b?.away || ''))
-        || String(a?.home || '').localeCompare(String(b?.home || ''));
-    });
-  }, [games, playerMasterIndex]);
+  const orderedGames = useMemo(() => sortGamesByKickoff(games), [games]);
 
   const jumpToGame = (gameId) => {
     const node = gameCardRefs.current.get(gameId);
@@ -5514,11 +5495,12 @@ export default function App() {
                             }`}
                           >
                             <div className="flex items-center justify-between gap-2">
-                              <span className={`text-[11px] font-extrabold ${isLight ? 'text-slate-900' : 'text-white'}`}>
+                              <span className={`min-w-0 truncate text-[11px] font-extrabold ${isLight ? 'text-slate-900' : 'text-white'}`}>
                                 {game.away} @ {game.home}
                               </span>
-                              <span className={`text-[10px] font-black tabular-nums ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
-                                {total} {total === 1 ? 'root' : 'roots'}
+                              <span className={`shrink-0 text-[10px] font-black tabular-nums ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+                                {`${etClock(game.kickoff)?.weekday || ''} ${formatEtKickoffShort(game.kickoff) || game.time || ''}`.trim()}
+                                {` · ${total}`}
                               </span>
                             </div>
                             <div className={`mt-1.5 h-1.5 overflow-hidden rounded-full ${isLight ? 'bg-slate-200' : 'bg-slate-800'}`}>

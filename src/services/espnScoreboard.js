@@ -1,4 +1,5 @@
 ﻿import { byeTeamsForGames, canonTeam, getActiveSlate, getSlateByWeek } from '../data/nflSchedule';
+import { sortGamesByKickoff } from '../utils/slateGameOrder';
 
 function pairKey(away, home) {
   return [canonTeam(away), canonTeam(home)].sort().join('|');
@@ -163,6 +164,6 @@ export async function fetchLiveNFLSlate(now = new Date(), week = null, { forceRe
     range: slate.range,
     byes: byeTeamsForGames(games, slate.byes),
     opensAt: slate.opensAt,
-    games: games.map((game) => withPhase(game, now))
+    games: sortGamesByKickoff(games.map((game) => withPhase(game, now)))
   };
 }
