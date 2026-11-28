@@ -122,33 +122,37 @@ enum YahooLinks {
         var match = text.match(/^(\\d+\\.\\d{1,2})$/);
         return match ? match[1] : '';
       }
-      function floatsInText(value) {
-        var matches = clean(value).match(/\\d+\\.\\d{1,2}/g) || [];
-        return matches.map(function(item) { return item; });
-      }
-      function attachScores(player, floats) {
-        if (!player || !floats || !floats.length) return player;
-        var nums = floats.map(function(item) { return parseFloat(item); }).filter(function(n) { return isFinite(n); });
-        if (!nums.length) return player;
-        if (nums.length >= 2) {
-          player.projPoints = String(nums[nums.length - 2]);
-          player.projectedPoints = player.projPoints;
-          player.points = String(nums[nums.length - 1]);
-          player.actualPoints = player.points;
-        } else {
-          // Single float: treat as projection when still scheduled, else actual.
-          var clock = clean(player.gameClock || '');
-          if (/^(Final|Q[1-4]|OT|Halftime)\\b/i.test(clock)) {
-            player.points = String(nums[0]);
-            player.actualPoints = player.points;
-          } else {
-            player.projPoints = String(nums[0]);
-            player.projectedPoints = player.projPoints;
-            if (!player.points) {
-              player.points = '';
-              player.actualPoints = '';
-            }
+      function attachScores(player, slots) {
+        if (!player || !slots) return player;
+        // Top score slot is actual. Bottom score slot is projected.
+        // A dash is unplayed (null). 0.00 stays 0. Projection never overwrites actual.
+        var actual = slots.actual;
+        var proj = slots.proj;
+        if (Array.isArray(slots)) {
+          var nums = slots.map(function(item) { return parseFloat(item); }).filter(function(n) { return isFinite(n); });
+          if (nums.length >= 2) {
+            actual = String(nums[0]);
+            proj = String(nums[1]);
+          } else if (nums.length === 1) {
+            var clock = clean(player.gameClock || '');
+            if (/^(Final|Q[1-4]|OT|Halftime)\\b/i.test(clock)) actual = String(nums[0]);
+            else proj = String(nums[0]);
           }
+        }
+        if (proj != null && proj !== '') {
+          player.projPoints = String(proj);
+          player.projectedPoints = player.projPoints;
+        }
+        if (actual === '') {
+          player.points = '';
+          player.actualPoints = '';
+          player.scoreSlotSeen = true;
+        } else if (actual != null && actual !== '') {
+          player.points = String(actual);
+          player.actualPoints = player.points;
+          player.scoreSlotSeen = true;
+        } else if (proj != null && proj !== '') {
+          player.scoreSlotSeen = true;
         }
         return player;
       }
@@ -236,10 +240,12 @@ enum YahooLinks {
           if (clock) gameClock = clock;
         }
         if (seenFloats.length >= 2) {
-          projPoints = seenFloats[seenFloats.length - 2];
-          points = seenFloats[seenFloats.length - 1];
-        } else if (seenFloats.length === 1) {
+          // Document order inside a cell follows the stack: top actual, bottom proj.
           points = seenFloats[0];
+          projPoints = seenFloats[1];
+        } else if (seenFloats.length === 1) {
+          if (/^(Final|Q[1-4]|OT|Halftime)\\b/i.test(gameClock)) points = seenFloats[0];
+          else projPoints = seenFloats[0];
         }
         return {
           name: name,
@@ -253,16 +259,83 @@ enum YahooLinks {
           gameClock: gameClock || 'Scheduled'
         };
       }
-      function floatsFromCells(cellList) {
-        var out = [];
-        for (var i = 0; i < cellList.length; i++) {
-          var text = clean(cellList[i].innerText || cellList[i].textContent || '');
-          if (!text || isStatBlurb(text) || isHeaderLabel(text)) continue;
-          if (playerLink(cellList[i])) continue;
-          var floats = floatsInText(text);
-          for (var f = 0; f < floats.length; f++) out.push(floats[f]);
+      function scoreTokenText(value) {
+        var text = clean(value);
+        if (/^[-–—]$/.test(text)) return { dash: true, value: '' };
+        var labeled = text.match(/^(?:proj(?:ected)?\\s+)?(\\d+\\.\\d{1,2})(?:\\s+proj(?:ected)?)?$/i);
+        if (!labeled) return null;
+        return { dash: false, value: labeled[1], projLabel: /proj/i.test(text) };
+      }
+      function isProjElement(node) {
+        var cls = String((node && node.className) || '');
+        var label = '';
+        try {
+          label = (node && node.getAttribute && (node.getAttribute('aria-label') || node.getAttribute('title') || '')) || '';
+        } catch (err) {}
+        // Only the score node itself. A wrapper around both numbers must not mark the actual slot as proj.
+        return /proj/i.test(cls) || /proj/i.test(label);
+      }
+      function scoreSlotsFromCells(cellList) {
+        var entries = [];
+        var seen = {};
+        function pushEntry(text, top, proj) {
+          var token = scoreTokenText(text);
+          if (!token) return;
+          var key = Math.round(top) + ':' + (token.dash ? '-' : token.value) + ':' + (proj ? 'p' : 'a');
+          if (seen[key]) return;
+          seen[key] = true;
+          entries.push({
+            dash: token.dash,
+            value: token.value,
+            top: top,
+            proj: Boolean(proj || token.projLabel)
+          });
         }
-        return out;
+        for (var i = 0; i < cellList.length; i++) {
+          var cell = cellList[i];
+          if (!cell || playerLink(cell)) continue;
+          var cellText = clean(cell.innerText || cell.textContent || '');
+          if (!cellText || isStatBlurb(cellText) || isHeaderLabel(cellText)) continue;
+          var nodes = cell.querySelectorAll ? cell.querySelectorAll('span, div, b, strong, em, p') : [];
+          var found = false;
+          for (var n = 0; n < nodes.length; n++) {
+            var node = nodes[n];
+            var nestedScore = false;
+            if (node.children && node.children.length) {
+              for (var c = 0; c < node.children.length; c++) {
+                if (scoreTokenText(node.children[c].textContent || '')) nestedScore = true;
+              }
+            }
+            if (nestedScore) continue;
+            var nodeText = clean(node.textContent || '');
+            if (!scoreTokenText(nodeText)) continue;
+            var rect = node.getBoundingClientRect ? node.getBoundingClientRect() : { top: 0, width: 1, height: 1 };
+            if (rect.width === 0 && rect.height === 0) continue;
+            pushEntry(nodeText, rect.top || 0, isProjElement(node));
+            found = true;
+          }
+          if (!found) {
+            var base = 0;
+            try { base = cell.getBoundingClientRect().top || 0; } catch (err2) {}
+            var lines = String(cell.innerText || cell.textContent || '').split(/\\n/);
+            for (var li = 0; li < lines.length; li++) {
+              if (!scoreTokenText(lines[li])) continue;
+              pushEntry(lines[li], base + (li * 20), /proj/i.test(lines[li]));
+            }
+          }
+        }
+        if (!entries.length) return null;
+        entries.sort(function(a, b) { return a.top - b.top; });
+        var projEntry = null;
+        for (var p = 0; p < entries.length; p++) {
+          if (entries[p].proj && !entries[p].dash) { projEntry = entries[p]; break; }
+        }
+        var stack = entries.filter(function(entry) { return entry !== projEntry; });
+        var actual = null;
+        var proj = projEntry ? projEntry.value : null;
+        if (stack.length) actual = stack[0].dash ? '' : stack[0].value;
+        if (proj == null && stack.length >= 2 && !stack[1].dash) proj = stack[1].value;
+        return { actual: actual, proj: proj };
       }
       function harvest() {
         var mine = [];
@@ -334,15 +407,16 @@ enum YahooLinks {
                   break;
                 }
               }
-              var leftFloats = floatsFromCells(cellList.slice(0, splitAt));
-              var rightFloats = floatsFromCells(cellList.slice(splitAt));
+              var leftSlots = scoreSlotsFromCells(cellList.slice(0, splitAt));
+              var rightSlots = scoreSlotsFromCells(cellList.slice(splitAt));
               // Prefer row-level proj/actual cells over any float glued inside the name cell.
-              if (leftFloats.length) attachScores(found[0], leftFloats);
-              if (rightFloats.length) attachScores(found[1], rightFloats);
+              // Each column's top slot is actual and its bottom slot is projected.
+              if (leftSlots) attachScores(found[0], leftSlots);
+              if (rightSlots) attachScores(found[1], rightSlots);
               paired.push(found);
             } else if (found.length === 1) {
-              var soloFloats = floatsFromCells(cellList);
-              if (soloFloats.length) attachScores(found[0], soloFloats);
+              var soloSlots = scoreSlotsFromCells(cellList);
+              if (soloSlots) attachScores(found[0], soloSlots);
               singles.push(found[0]);
             }
           }
@@ -385,7 +459,7 @@ enum YahooLinks {
       var teamId = pathMatch && pathMatch[2] ? pathMatch[2] : '';
       function readableName(value) {
         var text = clean(value).replace(/\\d+\\s*-\\s*\\d+\\s*-\\s*\\d+.*/, '').trim();
-        if (!text || text.length > 40 || isGenericName(text) || slotToken(text) || isHeaderLabel(text)) return '';
+        if (!text || text.length > 80 || isGenericName(text) || slotToken(text) || isHeaderLabel(text)) return '';
         if (/^league\\s*\\d+$/i.test(text)) return '';
         return text;
       }
@@ -512,13 +586,15 @@ enum YahooLinks {
         if (img && img.src && !/spacer|blank|pixel/i.test(img.src)) logo = img.src;
         var oddsMatch = text.match(/(\\d{1,3})\\s*%/);
         var floats = text.match(/\\d+\\.\\d{1,2}/g) || [];
-        var score = floats.length ? floats[floats.length - 1] : '';
-        var proj = floats.length >= 2 ? floats[0] : '';
+        // Header stack matches player rows: top/first number is the live total.
+        var score = floats.length ? floats[0] : '';
+        var proj = floats.length >= 2 ? floats[1] : '';
         var projLabeled = text.match(/proj(?:ected)?\\s*(\\d+\\.\\d{1,2})/i)
           || text.match(/(\\d+\\.\\d{1,2})\\s*proj/i);
         if (projLabeled) proj = projLabeled[1];
+        var resolved = hit.name || nameFromColumn(container, hit.node);
         return {
-          name: hit.name || '',
+          name: resolved || '',
           record: recordOf(text),
           rank: rankOf(text),
           score: score,
@@ -530,10 +606,41 @@ enum YahooLinks {
         };
       }
       function teamAnchorName(link) {
+        if (!link) return '';
+        var img = link.querySelector ? link.querySelector('img') : null;
+        var imgName = img ? (img.getAttribute('alt') || img.getAttribute('title') || '') : '';
         return readableName(link.innerText || link.textContent || '')
           || readableName(link.getAttribute('title') || '')
           || readableName(link.getAttribute('aria-label') || '')
-          || readableName(link.getAttribute('data-name') || '');
+          || readableName(link.getAttribute('data-name') || '')
+          || readableName(imgName);
+      }
+      function nameFromColumn(container, link) {
+        var named = teamAnchorName(link);
+        if (named) return named;
+        if (!container) return '';
+        var lines = String(container.innerText || '').split(/\\n/).map(clean).filter(Boolean);
+        for (var i = 0; i < lines.length; i++) {
+          var line = readableName(lines[i]);
+          if (line && !recordOf(line)) return line;
+        }
+        return readableName(container.innerText || '');
+      }
+      function columnOwned(link) {
+        var node = link;
+        for (var i = 0; i < 6 && node; i++) {
+          var cls = String(node.className || '');
+          var flag = '';
+          try {
+            flag = node.getAttribute
+              ? (node.getAttribute('data-owner') || node.getAttribute('data-mine') || node.getAttribute('data-self') || node.getAttribute('data-is-own') || '')
+              : '';
+          } catch (err) {}
+          if (flag && flag !== '0' && flag !== 'false') return true;
+          if (/(\\bmy[-_ ]?team\\b|\\bowner\\b|\\bis-own|\\bown-team|\\blogged-in\\b)/i.test(cls)) return true;
+          node = node.parentElement;
+        }
+        return false;
       }
       function scoreboardSides() {
         var teams = [];
@@ -548,14 +655,14 @@ enum YahooLinks {
           var key = match[1] + ':' + match[2];
           if (seen[key]) continue;
           var name = teamAnchorName(link);
-          // Keep logo-only team links (common for "my team") so ydb can fill the nickname.
-          if (!name && !(teamId && String(match[2]) === String(teamId))) continue;
+          // Keep logo-only team links so each column stays bound to its own team id.
           seen[key] = true;
           teams.push({
             node: link,
             leagueId: match[1],
             teamId: match[2],
             name: name,
+            owned: columnOwned(link) || (teamId && String(match[2]) === String(teamId)),
             top: rect.top,
             left: rect.left
           });
@@ -566,21 +673,22 @@ enum YahooLinks {
           var band = teams.filter(function(item) { return Math.abs(item.top - top) < 140; });
           band.sort(function(a, b) { return a.left - b.left; });
           if (band.length >= 2) {
-            var mineHit = band[0];
-            var oppHit = band[band.length - 1];
-            if (teamId) {
-              var preferredMine = band.find(function(item) { return String(item.teamId) === String(teamId); });
-              var preferredOpp = band.find(function(item) { return String(item.teamId) !== String(teamId); });
-              if (preferredMine && preferredOpp) {
-                mineHit = preferredMine;
-                oppHit = preferredOpp;
-              }
+            // Column 0 is visual left, column 1 is visual right — same indexes as starter cells.
+            var leftHit = band[0];
+            var rightHit = band[band.length - 1];
+            if (String(leftHit.teamId) === String(rightHit.teamId)) {
+              rightHit = band.find(function(item) { return String(item.teamId) !== String(leftHit.teamId); }) || rightHit;
             }
-            // Never allow Team 2 to clone Team 1's identity.
-            if (String(mineHit.teamId) === String(oppHit.teamId)) {
-              oppHit = band.find(function(item) { return String(item.teamId) !== String(mineHit.teamId); }) || oppHit;
+            var leftSide = enrichSide(leftHit);
+            var rightSide = enrichSide(rightHit);
+            leftSide.owned = Boolean(leftHit.owned);
+            rightSide.owned = Boolean(rightHit.owned);
+            var userOnRight = Boolean(rightSide.owned && !leftSide.owned);
+            if (teamId && String(leftHit.teamId) === String(teamId)) userOnRight = false;
+            if (teamId && String(rightHit.teamId) === String(teamId) && String(leftHit.teamId) !== String(teamId)) {
+              userOnRight = true;
             }
-            return { mine: enrichSide(mineHit), opp: enrichSide(oppHit) };
+            return { mine: leftSide, opp: rightSide, userOnRight: userOnRight };
           }
         }
         // Fallback: record-bearing nodes, but still require distinct team links when possible.
@@ -614,7 +722,8 @@ enum YahooLinks {
         if (left.name && right.name && left.name === right.name && left.teamId && right.teamId && left.teamId === right.teamId) {
           right = emptySide();
         }
-        return { mine: left, opp: right };
+        var recordUserOnRight = Boolean(teamId && right.teamId && String(right.teamId) === String(teamId) && String(left.teamId) !== String(teamId));
+        return { mine: left, opp: right, userOnRight: recordUserOnRight };
       }
       function digYahooJson() {
         var sources = [];
@@ -719,47 +828,42 @@ enum YahooLinks {
       var board = scoreboardSides();
       var mineSide = board.mine;
       var oppSide = board.opp;
-      if (!teamId && mineSide.teamId) teamId = mineSide.teamId;
+      var userOnRight = Boolean(board.userOnRight);
       if (!leagueId && mineSide.leagueId) leagueId = mineSide.leagueId;
-      // Fill gaps / correct clones from embedded Yahoo JSON (ydb).
+      // Fill gaps from embedded Yahoo JSON only when the team id matches that column.
       var ydb = ydbEarly;
-      if (ydb.teams && ydb.teams.length) {
-        var mineJson = null;
-        var oppJson = null;
+      function jsonForTeamId(id) {
+        if (!id || !ydb.teams) return null;
         for (var yt = 0; yt < ydb.teams.length; yt++) {
-          var row = ydb.teams[yt];
-          var idTail = (row.teamKey.match(/\\.t\\.(\\d+)$/) || [])[1] || '';
-          if (teamId && idTail && String(idTail) === String(teamId)) mineJson = row;
-          else if (!oppJson && (!teamId || String(idTail) !== String(teamId))) oppJson = row;
+          var idTail = ((ydb.teams[yt].teamKey || '').match(/\\.t\\.(\\d+)$/) || [])[1] || '';
+          if (idTail && String(idTail) === String(id)) return ydb.teams[yt];
         }
-        if (!mineJson && ydb.teams[0]) mineJson = ydb.teams[0];
-        if (!oppJson) {
-          for (var yo = 0; yo < ydb.teams.length; yo++) {
-            if (ydb.teams[yo] !== mineJson) { oppJson = ydb.teams[yo]; break; }
-          }
-        }
-        if (mineJson) {
-          if (!mineSide.name) mineSide.name = mineJson.name;
-          if (!mineSide.score && mineJson.score) mineSide.score = mineJson.score;
-          if (!mineSide.proj && mineJson.proj) mineSide.proj = mineJson.proj;
-          if (!mineSide.winOdds && mineJson.winOdds) mineSide.winOdds = mineJson.winOdds;
-          if (!mineSide.logo && mineJson.logo) mineSide.logo = mineJson.logo;
-        }
-        if (oppJson && oppJson.name && (!mineJson || oppJson.name !== mineJson.name || oppJson.teamKey !== mineJson.teamKey)) {
-          if (!oppSide.name || oppSide.name === mineSide.name) oppSide.name = oppJson.name;
-          if (!oppSide.score || oppSide.score === mineSide.score) oppSide.score = oppJson.score || oppSide.score;
-          if (!oppSide.proj || oppSide.proj === mineSide.proj) oppSide.proj = oppJson.proj || oppSide.proj;
-          if (!oppSide.winOdds || oppSide.winOdds === mineSide.winOdds) oppSide.winOdds = oppJson.winOdds || oppSide.winOdds;
-          if (!oppSide.logo || oppSide.logo === mineSide.logo) oppSide.logo = oppJson.logo || oppSide.logo;
-          if (oppJson.score) oppSide.score = oppJson.score;
-          if (oppJson.proj) oppSide.proj = oppJson.proj;
-          if (oppJson.winOdds) oppSide.winOdds = oppJson.winOdds;
-        }
+        return null;
       }
+      function fillSideGaps(side, json) {
+        if (!side || !json) return;
+        if (!side.name && json.name) side.name = json.name;
+        if (!side.score && json.score) side.score = json.score;
+        if (!side.proj && json.proj) side.proj = json.proj;
+        if (!side.winOdds && json.winOdds) side.winOdds = json.winOdds;
+        if (!side.logo && json.logo) side.logo = json.logo;
+      }
+      fillSideGaps(mineSide, jsonForTeamId(mineSide.teamId));
+      fillSideGaps(oppSide, jsonForTeamId(oppSide.teamId));
       if (oppSide.name && mineSide.name && oppSide.name === mineSide.name && oppSide.teamId && mineSide.teamId && oppSide.teamId === mineSide.teamId) {
         oppSide = emptySide();
       }
       var rosters = harvest();
+      // Logged-in team was the right column. Move that column's name and roster to the left together.
+      if (userOnRight) {
+        var sideSwap = mineSide;
+        mineSide = oppSide;
+        oppSide = sideSwap;
+        var rosterSwap = rosters.mine;
+        rosters.mine = rosters.opp;
+        rosters.opp = rosterSwap;
+      }
+      if (!teamId && mineSide.teamId) teamId = mineSide.teamId;
       // Overlay ydb player points onto roster rows matched by name when DOM missed totals.
       if (ydb.players && ydb.players.length) {
         function applyYdbPoints(list) {
@@ -771,9 +875,11 @@ enum YahooLinks {
             for (var p = 0; p < ydb.players.length; p++) {
               var yName = clean(ydb.players[p].name).toLowerCase().replace(/[^a-z0-9]+/g, '');
               if (!yName || (yName !== key && yName.indexOf(key) === -1 && key.indexOf(yName) === -1)) continue;
-              if ((!starter.points || starter.points === '0' || starter.points === '0.0') && ydb.players[p].points) {
-                starter.points = ydb.players[p].points;
-                starter.actualPoints = ydb.players[p].actualPoints || ydb.players[p].points;
+              if (starter.scoreSlotSeen) {
+                // Top slot already decided actual, including 0.00 and a pregame dash.
+              } else if (!starter.points && ydb.players[p].actualPoints) {
+                starter.points = ydb.players[p].actualPoints;
+                starter.actualPoints = ydb.players[p].actualPoints;
               }
               if (!starter.projPoints && ydb.players[p].projPoints) {
                 starter.projPoints = ydb.players[p].projPoints;
@@ -807,6 +913,20 @@ enum YahooLinks {
       if (oppSide.score) lines.push(oppSide.score);
       else if (oppSide.proj) lines.push(oppSide.proj);
       lines.push('Starters');
+      function pushScoreStack(player) {
+        if (!player) return;
+        var actual = player.actualPoints;
+        var proj = player.projPoints;
+        var hasProj = proj != null && proj !== '';
+        if (actual === '') {
+          if (hasProj) lines.push('—');
+        } else if (actual != null && actual !== '') {
+          lines.push(String(actual));
+        } else if (player.points) {
+          lines.push(String(player.points));
+        }
+        if (hasProj) lines.push(String(proj));
+      }
       var count = Math.max(rosters.mine.length, rosters.opp.length);
       for (var i = 0; i < count; i++) {
         var minePlayer = rosters.mine[i];
@@ -815,14 +935,12 @@ enum YahooLinks {
           lines.push(minePlayer.name);
           if (minePlayer.nflTeam) lines.push(minePlayer.nflTeam + ' - ' + (minePlayer.position || minePlayer.slot));
           if (minePlayer.gameClock) lines.push(minePlayer.gameClock);
-          if (minePlayer.projPoints) lines.push(minePlayer.projPoints);
-          if (minePlayer.points) lines.push(minePlayer.points);
+          pushScoreStack(minePlayer);
         }
         var rowSlot = (minePlayer && minePlayer.slot) || (oppPlayer && oppPlayer.slot) || '';
         if (rowSlot) lines.push(rowSlot);
         if (oppPlayer && !isOppMark(oppPlayer.name)) {
-          if (oppPlayer.points) lines.push(oppPlayer.points);
-          if (oppPlayer.projPoints) lines.push(oppPlayer.projPoints);
+          pushScoreStack(oppPlayer);
           lines.push(oppPlayer.name);
           if (oppPlayer.nflTeam) lines.push(oppPlayer.nflTeam + ' - ' + (oppPlayer.position || oppPlayer.slot));
           if (oppPlayer.gameClock) lines.push(oppPlayer.gameClock);
@@ -850,6 +968,8 @@ enum YahooLinks {
         oppWinOdds: winOddsNumber(oppSide.winOdds),
         myLogo: mineSide.logo,
         oppLogo: oppSide.logo,
+        myTeamId: mineSide.teamId || '',
+        oppTeamId: oppSide.teamId || '',
         myStarters: rosters.mine,
         oppStarters: rosters.opp
       };
@@ -857,6 +977,7 @@ enum YahooLinks {
         href: href,
         leagueId: leagueId,
         teamId: teamId,
+        teamName: mineSide.name || '',
         leagueName: leagueName,
         pageText: clip(lines.join('\\n'), 180000),
         html: '',

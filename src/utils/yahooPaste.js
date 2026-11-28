@@ -92,7 +92,7 @@ function isNameLine(line) {
   if (isGameLine(text) || isStatLine(text) || RECORD_RE.test(text) || RANK_RE.test(text) || isYahooChromeLine(text)) return false;
   if (isOpponentMark(text) || isLeagueLine(text) || HEADER_CELL_RE.test(text) || GENERIC_YAHOO_RE.test(text) || STAT_BLURB_RE.test(text)) return false;
   const cleaned = stripNameNoise(text);
-  if (cleaned.length < 2 || cleaned.length > 48) return false;
+  if (cleaned.length < 2 || cleaned.length > 80) return false;
   return /[A-Za-z]/.test(cleaned);
 }
 
@@ -164,27 +164,6 @@ function readRecord(line, nextLine) {
   };
 }
 
-function teamNameBefore(header, index) {
-  const names = [];
-  for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
-    const prev = header[cursor];
-    if (RECORD_RE.test(prev)) break;
-    if (isLeagueLine(prev) || isOpponentMark(prev)) continue;
-    if (isNameLine(prev)) names.unshift(stripNameNoise(prev));
-  }
-  return names[0] || '';
-}
-
-function projectionAfter(header, index) {
-  let proj = null;
-  for (let cursor = index + 1; cursor < header.length; cursor += 1) {
-    const line = header[cursor];
-    if (RECORD_RE.test(line) || isNameLine(line)) break;
-    if (isFloatLine(line) && proj == null) proj = parseFloat(line);
-  }
-  return proj;
-}
-
 function parseYahooHeader(lines) {
   const leagueLine = lines.find((line) => isLeagueLine(line));
   const leagueRaw = leagueLine ? (leagueLine.match(LEAGUE_LINE_RE)?.[1] || '').trim() : '';
@@ -193,18 +172,58 @@ function parseYahooHeader(lines) {
   const firstSlot = lines.findIndex((line) => SLOT_TOKEN_RE.test(line));
   const end = startersAt >= 0 ? startersAt : (firstSlot >= 0 ? firstSlot : lines.length);
   const header = lines.slice(0, end);
-  const teams = [];
+  const names = [];
+  const records = [];
   header.forEach((line, index) => {
     const record = readRecord(line, header[index + 1]);
-    if (!record) return;
-    teams.push({
-      name: teamNameBefore(header, index),
-      record: { wins: record.wins, losses: record.losses, ties: record.ties },
-      rank: record.rank,
-      proj: projectionAfter(header, index),
-      score: null
-    });
+    if (record) {
+      records.push({ ...record, index });
+      return;
+    }
+    if (isNameLine(line)) names.push({ name: stripNameNoise(line), index });
   });
+  const teams = records.map((record) => ({
+    name: '',
+    record: { wins: record.wins, losses: record.losses, ties: record.ties },
+    rank: record.rank,
+    proj: null,
+    score: null,
+    index: record.index
+  }));
+  if (teams.length) {
+    const firstRecordAt = records[0].index;
+    const namesBefore = names.filter((entry) => entry.index < firstRecordAt);
+    const namesGrouped = names.length > 0 && names.every((entry) => entry.index < firstRecordAt);
+    if (namesGrouped && namesBefore.length >= teams.length) {
+      // Side-by-side header: column 0 name, column 1 name, then each column's record.
+      teams.forEach((team, index) => {
+        team.name = namesBefore[index]?.name || '';
+      });
+    } else {
+      teams.forEach((team, index) => {
+        const prevAt = index === 0 ? -1 : records[index - 1].index;
+        const between = names.filter((entry) => entry.index > prevAt && entry.index < team.index);
+        team.name = between.length ? between[between.length - 1].name : '';
+      });
+      const used = new Set(teams.map((team) => team.name).filter(Boolean));
+      const leftovers = names.map((entry) => entry.name).filter((name) => name && !used.has(name));
+      teams.forEach((team) => {
+        if (!team.name && leftovers.length) team.name = leftovers.shift();
+      });
+    }
+    teams.forEach((team, index) => {
+      const start = records[index].index + 1;
+      const stop = index + 1 < records.length ? records[index + 1].index : header.length;
+      const floats = [];
+      for (let cursor = start; cursor < stop; cursor += 1) {
+        if (isNameLine(header[cursor])) break;
+        if (isFloatLine(header[cursor])) floats.push(parseFloat(header[cursor]));
+      }
+      // First number under a record is that column's live total; the next is its projection.
+      if (floats[0] != null) team.score = floats[0];
+      if (floats[1] != null) team.proj = floats[1];
+    });
+  }
   if (teams.length && teams.every((team) => team.proj == null && team.score == null)) {
     const floats = header.filter(isFloatLine).map((line) => parseFloat(line));
     // Header floats are usually live totals (one per team). Older layouts may only show proj.
@@ -239,14 +258,24 @@ function parseYahooHeader(lines) {
   };
 }
 
-function readScorePair(nums, projFirst) {
-  if (nums.length >= 2) {
-    return projFirst
-      ? { projPoints: nums[nums.length - 2], actualPoints: nums[nums.length - 1] }
-      : { projPoints: nums[nums.length - 1], actualPoints: nums[0] };
+/**
+ * Yahoo stacks two numbers per side. The top slot is actual points
+ * ("-" / "—" means unplayed). The bottom slot is the projection and must
+ * never be stored as the actual.
+ */
+function readStackedScores(tokens, gameClock) {
+  const liveOrFinal = /^(final|q[1-4]|ot|halftime|1st|2nd|3rd|4th)\b/i.test(String(gameClock || ''));
+  if (!tokens || !tokens.length) return { actualPoints: null, projPoints: null };
+  if (tokens.length >= 2) {
+    return {
+      actualPoints: tokens[0].dash ? null : tokens[0].value,
+      projPoints: tokens[1].dash ? null : tokens[1].value
+    };
   }
-  if (nums.length === 1) return { projPoints: nums[0], actualPoints: null };
-  return { projPoints: null, actualPoints: null };
+  if (tokens[0].dash) return { actualPoints: null, projPoints: null };
+  // A lone number is the actual only after kickoff. Pregame lines are projections.
+  if (liveOrFinal) return { actualPoints: tokens[0].value, projPoints: null };
+  return { actualPoints: null, projPoints: tokens[0].value };
 }
 
 function toStarterRecord(player, side) {
@@ -260,19 +289,24 @@ function toStarterRecord(player, side) {
   const hasYahooStats = actual != null || proj != null;
   const slot = player.slot || player.position;
   const teamRaw = player.nflTeam || player.team || '';
+  const clock = player.gameClock || 'Scheduled';
+  const final = /^final\b/i.test(clock);
+  const live = /^(Q[1-4]|OT|Halftime|1st|2nd|3rd|4th)/i.test(clock);
   return {
     name: cleanYahooPlayerName(player.name),
     nflTeam: canonTeamCode(teamRaw) || String(teamRaw || '').toUpperCase(),
     position: displayPlayerPosition({ position: player.position, slot }),
     slot,
-    points: actual ?? 0,
+    points: actual != null ? actual : 0,
     projPoints: proj,
     actualPoints: actual,
     scoringSource: hasYahooStats ? 'yahoo' : undefined,
     yahooNative: hasYahooStats,
-    isLive: /^(1st|2nd|3rd|4th|OT|Q)/i.test(player.gameClock || ''),
+    isLive: live,
+    isFinal: final,
+    gameStatus: final ? 'FINAL' : (live ? 'IN_PROGRESS' : 'UPCOMING'),
     inRedZone: false,
-    gameClock: player.gameClock || 'Scheduled',
+    gameClock: clock,
     bigPlay: null,
     isStarter: true,
     ownership: isMine ? 1 : 0,
@@ -284,18 +318,19 @@ function toStarterRecord(player, side) {
 function parseMySlotBlock(linesBeforeSlot, slotToken) {
   const lines = (linesBeforeSlot || []).map((line) => String(line).trim()).filter(Boolean);
   let idx = lines.length - 1;
-  const nums = [];
+  const tokens = [];
   while (idx >= 0 && (isFloatLine(lines[idx]) || isDash(lines[idx]))) {
-    if (isFloatLine(lines[idx])) nums.unshift(parseFloat(lines[idx]));
+    if (isDash(lines[idx])) tokens.unshift({ dash: true });
+    else tokens.unshift({ dash: false, value: parseFloat(lines[idx]) });
     idx -= 1;
   }
-  const scores = readScorePair(nums, true);
 
   let gameClock = 'Scheduled';
   if (idx >= 0 && isGameLine(lines[idx])) {
     gameClock = lines[idx];
     idx -= 1;
   }
+  const scores = readStackedScores(tokens, gameClock);
 
   let nflTeam = '';
   let position = normalizeSlot(slotToken);
@@ -320,7 +355,7 @@ function parseMySlotBlock(linesBeforeSlot, slotToken) {
     nflTeam,
     position,
     slot: normalizeSlot(slotToken),
-    points: scores.actualPoints ?? scores.projPoints ?? 0,
+    points: scores.actualPoints != null ? scores.actualPoints : 0,
     projPoints: scores.projPoints,
     actualPoints: scores.actualPoints,
     gameClock
@@ -329,16 +364,14 @@ function parseMySlotBlock(linesBeforeSlot, slotToken) {
 
 function parseOppSlotBlock(lines, startIndex, slotToken) {
   let i = startIndex;
-  while (i < lines.length && isDash(lines[i])) i += 1;
-
-  const nums = [];
+  const tokens = [];
   while (i < lines.length && (isFloatLine(lines[i]) || isDash(lines[i]))) {
-    if (isFloatLine(lines[i])) nums.push(parseFloat(lines[i]));
+    if (isDash(lines[i])) tokens.push({ dash: true });
+    else tokens.push({ dash: false, value: parseFloat(lines[i]) });
     i += 1;
-    if (nums.length >= 2) break;
+    if (tokens.length >= 2) break;
   }
   while (i < lines.length && isDash(lines[i])) i += 1;
-  const scores = readScorePair(nums, false);
 
   let name = '';
   if (i < lines.length && isNameLine(lines[i])) {
@@ -361,6 +394,7 @@ function parseOppSlotBlock(lines, startIndex, slotToken) {
     i += 1;
   }
   while (i < lines.length && isStatLine(lines[i])) i += 1;
+  const scores = readStackedScores(tokens, gameClock);
 
   return {
     player: {
@@ -368,7 +402,7 @@ function parseOppSlotBlock(lines, startIndex, slotToken) {
       nflTeam,
       position,
       slot: normalizeSlot(slotToken),
-      points: scores.actualPoints ?? scores.projPoints ?? 0,
+      points: scores.actualPoints != null ? scores.actualPoints : 0,
       projPoints: scores.projPoints,
       actualPoints: scores.actualPoints,
       gameClock
@@ -416,4 +450,103 @@ export function parseYahooMatchupText(raw) {
     myStarters,
     oppStarters
   };
+}
+
+function teamNameKey(value) {
+  return String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
+function sameYahooTeam(a, b) {
+  const left = teamNameKey(a);
+  const right = teamNameKey(b);
+  return Boolean(left && right && left === right);
+}
+
+function genericYahooSideName(value) {
+  return !String(value || '').trim() || /^(opponent|my team)$/i.test(String(value || '').trim());
+}
+
+function rosterNameHits(starters, names) {
+  const wanted = new Set((names || []).map(teamNameKey).filter(Boolean));
+  if (!wanted.size) return 0;
+  return (starters || []).filter((player) => wanted.has(teamNameKey(player?.name))).length;
+}
+
+function renameSide(team, name) {
+  if (!team || typeof team !== 'object') return team;
+  return { ...team, name };
+}
+
+/**
+ * Keep each column's name, record, rank, logo, and roster together.
+ * The logged-in team (team id, lobby nickname, or the roster already on the
+ * RootMap board) is placed on the left. A nickname that landed on the user
+ * while the opponent slot is blank is the opponent's name.
+ */
+export function alignYahooMatchupSides(parsed, hint = {}) {
+  if (!parsed || typeof parsed !== 'object') return parsed;
+  const knownName = String(hint.teamName || '').trim();
+  const knownId = String(hint.teamId || '').trim();
+  const rosterNames = hint.rosterNames || [];
+
+  const swapSides = (source) => ({
+    ...source,
+    myTeamName: source.oppTeamName,
+    oppTeamName: source.myTeamName,
+    myRecord: source.oppRecord,
+    oppRecord: source.myRecord,
+    myRank: source.oppRank,
+    oppRank: source.myRank,
+    myScore: source.oppScore,
+    oppScore: source.myScore,
+    myProj: source.oppProj,
+    oppProj: source.myProj,
+    myLogo: source.oppLogo,
+    oppLogo: source.myLogo,
+    myTeamId: source.oppTeamId,
+    oppTeamId: source.myTeamId,
+    myStarters: source.oppStarters,
+    oppStarters: source.myStarters,
+    userTeam: source.oppTeam,
+    oppTeam: source.userTeam
+  });
+
+  const idOnRight = Boolean(
+    knownId
+    && String(parsed.oppTeamId || '') === knownId
+    && String(parsed.myTeamId || '') !== knownId
+  );
+  const nameOnRight = Boolean(
+    knownName
+    && sameYahooTeam(parsed.oppTeamName, knownName)
+    && !sameYahooTeam(parsed.myTeamName, knownName)
+  );
+  const rightHits = rosterNameHits(parsed.oppStarters, rosterNames);
+  const leftHits = rosterNameHits(parsed.myStarters, rosterNames);
+  const rosterOnRight = rosterNames.length >= 3 && rightHits >= 3 && rightHits > leftHits;
+
+  let next = (idOnRight || nameOnRight || rosterOnRight) ? swapSides(parsed) : parsed;
+  const mine = String(next.myTeamName || '').trim();
+  const opp = String(next.oppTeamName || '').trim();
+  if (
+    knownName
+    && !genericYahooSideName(mine)
+    && !sameYahooTeam(mine, knownName)
+    && genericYahooSideName(opp)
+  ) {
+    next = {
+      ...next,
+      myTeamName: knownName,
+      oppTeamName: mine,
+      userTeam: renameSide(next.userTeam, knownName),
+      oppTeam: renameSide(next.oppTeam, mine)
+    };
+  } else if (knownName && genericYahooSideName(mine)) {
+    next = {
+      ...next,
+      myTeamName: knownName,
+      userTeam: renameSide(next.userTeam, knownName)
+    };
+  }
+  return next;
 }
