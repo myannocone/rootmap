@@ -234,12 +234,14 @@ function playerIsBye(player) {
 }
 
 function playerLiveOrFinal(player) {
+  const clock = String(player?.gameClock || '');
   return Boolean(
     player?.isLive
     || player?.isFinal
     || player?.gameStatus === 'IN_PROGRESS'
     || player?.gameStatus === 'FINAL'
     || player?.hasActualLine === true
+    || /^(final|q[1-4]|ot|halftime|1st|2nd|3rd|4th)\b/i.test(clock)
   );
 }
 
@@ -257,12 +259,9 @@ export function starterScoredPoints(player) {
   const points = finiteNumber(player.points);
   const proj = finiteNumber(player.projPoints ?? player.projectedPoints ?? player.projected);
   const liveOrFinal = playerLiveOrFinal(player);
-  if (actual != null) {
-    if (actual === 0 && liveOrFinal && points != null && points !== 0 && (proj == null || points !== proj)) {
-      return points;
-    }
-    return actual;
-  }
+  // An explicit actual, including 0.00 on a live or final line, is the score.
+  // The projection must not replace it.
+  if (actual != null) return actual;
   if (!liveOrFinal) return 0;
   if (points != null && (proj == null || points !== proj)) return points;
   return 0;

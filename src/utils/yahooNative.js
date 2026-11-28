@@ -1,7 +1,7 @@
 import { registerPlugin } from '@capacitor/core';
 import { resolveNflTeam } from './leagueParser';
 import { canonTeamCode, displayPlayerPosition } from './playerIdentity';
-import { cleanYahooPlayerName, parseYahooMatchupText } from './yahooPaste';
+import { alignYahooMatchupSides, cleanYahooPlayerName, parseYahooMatchupText } from './yahooPaste';
 import { extractYahooLeagueTitle, isGenericYahooLeagueName, resolvedYahooLeagueName } from './yahooSync';
 
 export const YahooLogin = registerPlugin('YahooLogin');
@@ -82,13 +82,19 @@ export function writeYahooSession(session) {
   // before the guard. Bare lobby URLs have no league id and stay dropped.
   const identity = yahooIdentity(session);
   if (!identity.leagueId || !isConcreteYahooMatchupUrl(identity.matchupUrl)) return;
-  const next = readYahooSessions().filter((item) => {
+  const previous = readYahooSessions();
+  const next = previous.filter((item) => {
     if (identity.matchupUrl && item.matchupUrl === identity.matchupUrl) return false;
     const sameLeague = identity.leagueId && item.leagueId === identity.leagueId;
     const sameTeam = Boolean(identity.teamId && item.teamId && item.teamId === identity.teamId);
     const bothUntagged = Boolean(sameLeague && !identity.teamId && !item.teamId);
     return !(sameTeam || bothUntagged);
   });
+  const prior = previous.find((item) => !next.includes(item));
+  if (prior) {
+    if (!identity.teamName && prior.teamName) identity.teamName = prior.teamName;
+    if (!identity.leagueName && prior.leagueName) identity.leagueName = prior.leagueName;
+  }
   next.push(identity);
   try {
     localStorage.setItem(YAHOO_SESSION_KEY, JSON.stringify(next.length === 1 ? next[0] : next));
@@ -284,6 +290,7 @@ function starterFromStructured(player, side) {
   const isMine = side === 'mine';
   const clock = player.gameClock || 'Scheduled';
   const live = /^(Q[1-4]|OT|Halftime|1st|2nd|3rd|4th)/i.test(clock);
+  const final = /^final\b/i.test(clock);
   // Keep actual and projection distinct — never copy proj into actualPoints.
   const points = actualPoints != null ? actualPoints : 0;
   return {
@@ -298,6 +305,8 @@ function starterFromStructured(player, side) {
     scoringSource: hasYahooStats ? 'yahoo' : undefined,
     yahooNative: hasYahooStats,
     isLive: live,
+    isFinal: final,
+    gameStatus: final ? 'FINAL' : (live ? 'IN_PROGRESS' : 'UPCOMING'),
     inRedZone: false,
     gameClock: clock,
     bigPlay: null,
@@ -339,6 +348,8 @@ function fromStructured(result) {
     oppWinOdds: oppTeamName ? numberOrNull(lineup.oppWinOdds) : null,
     myLogo: textValue(lineup.myLogo),
     oppLogo: oppTeamName ? textValue(lineup.oppLogo) : '',
+    myTeamId: textValue(lineup.myTeamId),
+    oppTeamId: textValue(lineup.oppTeamId),
     myStarters,
     oppStarters
   };
@@ -353,10 +364,18 @@ function parsedLineups(pageText, html) {
   return null;
 }
 
-export function leagueFromYahooCapture(result, week) {
+export function leagueFromYahooCapture(result, week, hint = {}) {
   const identity = yahooIdentity(result);
-  const parsed = fromStructured(result) || parsedLineups(result?.pageText, result?.html);
-  if (!parsed) return null;
+  const parsedRaw = fromStructured(result) || parsedLineups(result?.pageText, result?.html);
+  if (!parsedRaw) return null;
+  const knownTeam = usableName(identity.teamName, '')
+    || usableName(result?.teamName, '')
+    || usableName(hint?.teamName, '');
+  const parsed = alignYahooMatchupSides(parsedRaw, {
+    teamName: knownTeam,
+    teamId: identity.teamId || hint?.teamId || '',
+    rosterNames: hint?.rosterNames || []
+  });
   const myStarters = parsed.myStarters || [];
   const oppStarters = parsed.oppStarters || [];
   if (!myStarters.length && !oppStarters.length) return null;

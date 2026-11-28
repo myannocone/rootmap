@@ -26,7 +26,7 @@ import {
   needsTeamBackfill,
   sleeperTeamIndexFrom
 } from './utils/playerTeam';
-import { cleanYahooPlayerName, parseYahooMatchupText } from './utils/yahooPaste';
+import { alignYahooMatchupSides, cleanYahooPlayerName, parseYahooMatchupText } from './utils/yahooPaste';
 import { sharePlayerBragCard } from './utils/shareCardGenerator';
 import {
   fetchNflState,
@@ -408,10 +408,8 @@ function starterRealGamePoints(player) {
   const points = finiteNumber(player?.points);
   const proj = starterProjectionValue(player);
   const pointsAreProjection = points != null && proj != null && points === proj;
-  if (actual != null) {
-    if (actual === 0 && points != null && points !== 0 && !pointsAreProjection) return points;
-    return actual;
-  }
+  // 0.00 is a real final/live line. Never replace it with the projection underneath.
+  if (actual != null) return actual;
   if (points != null && !pointsAreProjection) return points;
   return 0;
 }
@@ -428,7 +426,9 @@ function leagueSideRecord(league, side) {
 }
 
 function starterIsFinal(player) {
-  return player?.gameStatus === 'FINAL' || Boolean(player?.isFinal);
+  return player?.gameStatus === 'FINAL'
+    || Boolean(player?.isFinal)
+    || /^final\b/i.test(String(player?.gameClock || ''));
 }
 
 function starterIsLive(player) {
@@ -747,6 +747,20 @@ function LeagueScoreboard({ league, isLight, onRemove }) {
 
 function getLeagueOppName(lg) {
   return lg?.oppTeamName || lg?.opponent || lg?.oppTeam?.name || MISSING_OPPONENT_NAME;
+}
+
+function yahooBoardRosterNames(leagues, teamId = '') {
+  const names = [];
+  const wanted = String(teamId || '');
+  (leagues || []).forEach((league) => {
+    const yahoo = String(league?.platform || '').toLowerCase().includes('yahoo') || league?.yahooNative;
+    if (!yahoo) return;
+    if (wanted && String(league?.yahooTeamId || '') !== wanted) return;
+    getLeaguePortfolio(league).forEach((player) => {
+      if (player?.name) names.push(player.name);
+    });
+  });
+  return names;
 }
 
 function scoreText(value) {
@@ -3027,7 +3041,9 @@ export default function App() {
 
   const ingestYahooLoginResult = async (result, week) => {
     const discovered = discoverYahooLeagues(result);
-    const direct = leagueFromYahooCapture(result, week);
+    const direct = leagueFromYahooCapture(result, week, {
+      rosterNames: yahooBoardRosterNames(leagues, result?.teamId)
+    });
     if (direct) writeYahooSession(result);
 
     if (!discovered.length && !direct) {
@@ -3427,7 +3443,9 @@ export default function App() {
               const stable = await fetchYahooMatchupCapture(saved, week);
               if (cancelled || !stable) continue;
               writeYahooSession(stable);
-              const imported = leagueFromYahooCapture(stable, week);
+              const imported = leagueFromYahooCapture(stable, week, {
+                rosterNames: yahooBoardRosterNames(current, stable?.teamId)
+              });
               if (imported) {
                 const id = stable.leagueId
                   ? `yahoo-${stable.leagueId}${stable.teamId ? `-${stable.teamId}` : ''}`
@@ -3449,7 +3467,9 @@ export default function App() {
             const captured = await YahooLogin.login();
             if (!cancelled && captured) {
               writeYahooSession(captured);
-              const imported = leagueFromYahooCapture(captured, week);
+              const imported = leagueFromYahooCapture(captured, week, {
+                rosterNames: yahooBoardRosterNames(current, captured?.teamId)
+              });
               if (imported) updates.set(imported.id, imported);
             }
           }
@@ -4405,7 +4425,10 @@ export default function App() {
 
   const handleImportYahooMatchup = () => {
     const espnPaste = isEspnMatchupText(yahooPaste);
-    const parsed = espnPaste ? parseEspnMatchupText(yahooPaste) : parseYahooMatchupText(yahooPaste);
+    const parsedRaw = espnPaste ? parseEspnMatchupText(yahooPaste) : parseYahooMatchupText(yahooPaste);
+    const parsed = espnPaste
+      ? parsedRaw
+      : alignYahooMatchupSides(parsedRaw, { rosterNames: yahooBoardRosterNames(leagues) });
     const myStarters = parsed.userTeam?.starters || parsed.myStarters || [];
     const oppStarters = parsed.oppTeam?.starters || parsed.oppStarters || [];
     if (!myStarters.length && !oppStarters.length) {
